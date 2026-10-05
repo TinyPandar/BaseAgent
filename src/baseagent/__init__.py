@@ -1,1 +1,3 @@
-from baseagent.agent import run_agent
+from .main import main
+
+__all__ = ["main"]

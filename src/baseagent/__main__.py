@@ -1,3 +1,3 @@
 from baseagent.main import main
 
-main()
+raise SystemExit(main())

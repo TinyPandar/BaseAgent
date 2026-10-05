@@ -1,1 +1,1 @@
-from .deepseek import client, MODEL
+from .model import Model
