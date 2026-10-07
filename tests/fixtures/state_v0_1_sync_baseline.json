@@ -1,0 +1,79 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "baseline"
+    },
+    {
+      "role": "user",
+      "content": "旧任务"
+    }
+  ],
+  "step": 2,
+  "max_steps": 8,
+  "model_calls": 3,
+  "tool_calls": 1,
+  "status": "interrupted",
+  "final_answer": null,
+  "error": "execution interrupted",
+  "metadata": {
+    "custom": {
+      "values": [
+        1,
+        "保留"
+      ]
+    }
+  },
+  "session_id": "baseline-session",
+  "turn_id": "baseline-turn",
+  "turn_start": 1,
+  "workspace_root": "C:/workspace",
+  "max_model_calls": 8,
+  "max_tool_calls": 32,
+  "blocked_tool_calls": [],
+  "max_context_bytes": 96000,
+  "max_tool_context_bytes": 4000,
+  "prompt_tokens": 7,
+  "completion_tokens": 2,
+  "total_tokens": 9,
+  "unknown_usage_calls": 1,
+  "max_total_tokens": 100,
+  "max_duration_seconds": null,
+  "turn_started_at": null,
+  "events": [
+    {
+      "type": "model_started",
+      "timestamp": 123.0,
+      "data": {
+        "attempt": 3
+      }
+    }
+  ],
+  "unsafe_tool_calls": 0,
+  "plan": [
+    {
+      "description": "verify",
+      "status": "pending"
+    }
+  ],
+  "plan_revision": 1,
+  "verifications": [
+    {
+      "passed": true
+    }
+  ],
+  "memory_notes": {
+    "note": {
+      "text": "keep"
+    }
+  },
+  "memory_revision": 2,
+  "history_summary": {
+    "text": "earlier"
+  },
+  "estimate_model": false,
+  "preauthorize_model": true,
+  "model_reservations": {
+    "3": 10
+  }
+}

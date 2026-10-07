@@ -2,6 +2,8 @@
 
 import time
 
+from baseagent.kernel.events import AgentEvent
+
 
 def event(kind: str, **data) -> dict:
     return {"type": kind, "timestamp": time.time(), "data": data}
