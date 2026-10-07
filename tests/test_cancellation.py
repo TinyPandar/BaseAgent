@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from baseagent.agent import run_agent
 from baseagent.agent.cancellation import CancellationToken, Cancelled
@@ -148,11 +149,28 @@ class CancellationTests(unittest.TestCase):
     def test_verify_cancel_is_completed_ledger_with_cancelled_record(self):
         token = CancellationToken()
         self.tools = coding_tools(Workspace(self.root, allow_command=True))
-        timer = threading.Timer(0.5, token.cancel)
-        timer.start()
-        self.addCleanup(timer.join)
-        state = self.run_turn(Model([{"tool_calls": [call("verify_command", {"argv": [sys.executable, "-c", "import time; time.sleep(20)"], "paths": []})]}]), "task", cancellation=token)
+        started = threading.Event()
+        original_popen = subprocess.Popen
+
+        def start_process(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            # Cancel after launch, so the command returns a durable result
+            # rather than raising at its pre-launch cancellation check.
+            started.set()
+            return process
+
+        def cancel_when_started():
+            if started.wait(timeout=5):
+                token.cancel()
+
+        canceller = threading.Thread(target=cancel_when_started)
+        canceller.start()
+        self.addCleanup(canceller.join, 6)
+        with patch("baseagent.tools.process.subprocess.Popen", side_effect=start_process):
+            state = self.run_turn(Model([{"tool_calls": [call("verify_command", {"argv": [sys.executable, "-c", "import time; time.sleep(20)"], "paths": []})]}]), "task", cancellation=token)
+        self.assertTrue(started.is_set(), "verification command did not start before cancellation")
         self.assertEqual(state.status, RunStatus.CANCELLED)
+        self.assertTrue(state.verifications, "cancelled verification must retain a verification record")
         self.assertEqual(state.verifications[-1]["status"], "cancelled")
         self.assertEqual(self.store.call(state, "a")["status"], "completed")
         resumed = self.run_turn(Model([{"content": "cancelled check recorded"}]))

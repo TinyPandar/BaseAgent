@@ -16,6 +16,7 @@ from baseagent.llm import Model
 from baseagent.middleware import AgentMiddleware
 from baseagent.middleware.retry import RetryMiddleware
 from baseagent.middleware.repository import RepositoryMiddleware
+from baseagent.middleware.execution_guidance import ExecutionGuidanceMiddleware
 from baseagent.session import SessionBusy, SessionStore
 from baseagent.session.compatibility import digest
 from hashlib import sha256
@@ -30,7 +31,10 @@ from baseagent.llm.bounds import request_bound_profile
 from baseagent.llm.estimation import TokenizerEstimator
 
 
-SYSTEM_PROMPT = """You are a coding assistant working inside a workspace.
+SYSTEM_PROMPT = """You are a helpful assistant with optional coding tools inside a workspace.
+Answer general questions directly. Only inspect files, plan coding work or create
+documents when the user's request calls for it. Local file search is not web research.
+If external research is needed, disclose that no web search tool is available.
 Inspect relevant files before editing. Use tools to make changes, inspect git diff,
 and run focused verification when commands are enabled. Report what changed,
 what was verified, and any limitations. Never claim a tool action succeeded
@@ -364,7 +368,7 @@ def main() -> int:
             config["request_bound"] = request_bound_profile(args.request_bound_profile, config["model"], config["endpoint"], args.max_completion_tokens).contract()
         if estimator:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
-        layers = [RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
+        layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
         if args.trace:
             layers.append(TraceMiddleware())
         if args.model_retries or args.tool_retries:

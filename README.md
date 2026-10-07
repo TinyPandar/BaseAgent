@@ -20,6 +20,29 @@ Use `--trace` to print model steps and tool names without dumping file contents 
 
 Host JSON files (`--tool-policy`, `--completion-policy`, `--subtasks-config`, `--result-file`, `--resolve-usage`) are read with actual byte limits and must be UTF-8 objects; UTF-8 BOM is accepted. Duplicate fields at any nesting level, non-finite numbers including exponent overflow, invalid Unicode and unsupported nesting are refused. Rejected reconciliation files leave the session, tool ledger and events unchanged. Limits are respectively 20 KB, 20 KB, 32 KB, 256 KB and 4 KB.
 
+## Optional browser UI (Chainlit)
+
+Chainlit supplies the chat interface, expandable execution steps and approval buttons. No frontend build is required:
+
+```powershell
+uv sync --extra ui
+uv run --extra ui baseagent-ui
+# Enable capabilities when needed; sensitive calls still require approval.
+uv run --extra ui baseagent-ui --allow-write --allow-command
+```
+
+Open `http://127.0.0.1:8000`. The default workspace is the current directory; use `--root PATH`, `--db PATH`, `--port 8001` or `--model NAME` as needed. Model credentials still come from the local `.env`. The UI server listens on the local loopback interface.
+
+Send a task and follow-up messages in the chat. `/status` shows the current session, `/sessions` lists up to 100 saved sessions for this workspace, `/load SESSION_ID` displays a saved conversation, and `/resume` continues its unfinished turn. Chainlit's new-chat button starts a separate agent session. Session storage uses the existing SQLite ledger; the Chainlit history sidebar is not used.
+
+Write, edit and command requests display their exact tool arguments with allow/deny buttons. Approval applies only to that session, turn and request. Startup capability flags are still required. The stop button requests cancellation; an in-flight provider call may take until its timeout to return. Paused tasks can be resumed. Changes to configuration or workspace require an explicit acceptance action.
+
+The UI runs the existing CLI in a bounded subprocess and reads its committed checkpoints/events. It displays execution metadata as calls progress and the final answer after completion; individual answer tokens are not streamed. Advanced recovery (uncertain side effects, token reconciliation and subtask management) continues to use the CLI commands below. Generated framework settings live under the ignored `.baseagent/ui-runtime` directory. Install the `ui` extra only when using the browser interface.
+
+The CLI projects task and capability guidance into each model request. General questions should be answered directly; local searches are not internet research. Tools disabled by startup capabilities are omitted from model-visible specifications, and the UI automatically denies those tools without presenting an approval button. Runtime permission checks remain in place.
+
+Two consecutive tool rounds with identical arguments and outcomes trigger a model warning; a third identical round stops with `tool_loop_detected` before another model request. IDs and JSON key ordering do not count as progress; changed arguments or results do. This narrow guard does not detect every form of task drift. The existing step/model/tool budgets remain the final limits. UI resume does not relaunch exhausted or uncertain sessions; use a new chat for a revised task or the CLI for explicit recovery and budget changes.
+
 ## Durable sessions and recovery
 
 Every CLI run uses a SQLite session. The default database is `.baseagent/sessions.sqlite3` under the current directory, ignored by Git. An omitted session ID is generated and printed on stderr. Use the same `--db` when running from another directory. Sessions bind to their original workspace; an explicitly different `--root` is rejected.

@@ -7,6 +7,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
+    TOOL_LOOP_DETECTED = "tool_loop_detected"
     MAX_TOOL_CALLS_EXCEEDED = "max_tool_calls_exceeded"
     MAX_MODEL_CALLS_EXCEEDED = "max_model_calls_exceeded"
     FAILED = "failed"

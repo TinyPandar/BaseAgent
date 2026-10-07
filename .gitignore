@@ -11,3 +11,8 @@ wheels/
 .env
 .baseagent/
 **/.baseagent-edit-*
+
+# Optional chat UI runtime assets
+.chainlit/
+.files/
+chainlit.md

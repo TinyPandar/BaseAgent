@@ -19,6 +19,12 @@ dependencies = [
 
 [project.scripts]
 baseagent = "baseagent:main"
+baseagent-ui = "baseagent.ui.launch:main"
+
+[project.optional-dependencies]
+ui = [
+    "chainlit>=2.9,<3",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13.0"]

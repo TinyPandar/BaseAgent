@@ -508,6 +508,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
     except BudgetExceeded as exc:
         state.status = exc.status
         state.error = {RunStatus.USAGE_UNAVAILABLE: "model usage is unknown; verify provider records and reconcile usage before continuing with a token budget",
+                       RunStatus.TOOL_LOOP_DETECTED: "three consecutive tool rounds returned identical requests and outcomes; change the approach before resuming",
                        RunStatus.REQUEST_BOUND_VIOLATED: "adapter request bound violated; verify usage and repair the counter before explicitly acknowledging this violation",
                        RunStatus.RESERVATION_UNAVAILABLE: state.error or "trusted model reservation unavailable",
                        RunStatus.MAX_TOKENS_EXCEEDED: "reported token budget exhausted; increase the absolute turn limit to continue",
