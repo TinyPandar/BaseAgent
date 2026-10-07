@@ -112,3 +112,75 @@ class MiddlewarePipeline:
 
 # Keep the original import usable for external callers.
 Middleware = AgentMiddleware
+
+
+class LoopHooks(AgentMiddleware):
+    """Execution boundaries used by the synchronous harness adapter.
+
+    The kernel owns conversation advancement. Implementations own dispatch
+    accounting, checkpoints and external decisions; they never run a loop.
+    """
+
+    def check(self):
+        raise NotImplementedError
+
+    def check_start(self):
+        raise NotImplementedError
+
+    def started(self):
+        raise NotImplementedError
+
+    def model_started(self):
+        raise NotImplementedError
+
+    def model_returned(self, duration_seconds):
+        raise NotImplementedError
+
+    def model_failed(self, exc, duration_seconds):
+        raise NotImplementedError
+
+    def messages(self):
+        raise NotImplementedError
+
+    def model_result(self, request):
+        raise NotImplementedError
+
+    def prepare_tool(self, request):
+        raise NotImplementedError
+
+    def tool_started(self, request):
+        raise NotImplementedError
+
+    def tool_result(self, request):
+        raise NotImplementedError
+
+    def commit_tool(self, request, result):
+        raise NotImplementedError
+
+    def tool_returned(self, request, result, duration_seconds):
+        raise NotImplementedError
+
+    def tool_completed(self, request, result):
+        raise NotImplementedError
+
+    def accept_completion(self):
+        raise NotImplementedError
+
+    def commit_assistant(self, calls):
+        raise NotImplementedError
+
+    def step_completed(self, calls):
+        raise NotImplementedError
+
+    def handle_exception(self, exc):
+        raise NotImplementedError
+
+    def cleanup(self):
+        raise NotImplementedError
+
+    def stopped(self):
+        raise NotImplementedError
+
+
+class TaskStopped(BaseException):
+    """A hook stopped a task after recording its status and checkpoint."""

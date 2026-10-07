@@ -8,14 +8,10 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 from uuid import uuid4
 
 from baseagent.middleware import AgentMiddleware, MiddlewarePipeline, ModelRequest, ToolCallRequest
-from baseagent.kernel import AgentEvent, iter_agent
-from baseagent.kernel.agent import _as_dict, _pending_calls, _tool_calls
-from baseagent.kernel.hooks import LoopHooks, TaskStopped
-from baseagent.kernel.model import Model
 from baseagent.tools.registry import ToolRegistry
 from baseagent.tools.result import ErrorCode, ToolResult
 from baseagent.tools.context import ToolContext
@@ -34,6 +30,49 @@ from baseagent.llm.reservation import TokenReservation, ReservationUnavailable
 
 if TYPE_CHECKING:
     from baseagent.session import SessionStore
+
+
+class Model(Protocol):
+    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any: ...
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    raise TypeError("model message must be a dict or support model_dump()")
+
+
+def _tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    calls = message.get("tool_calls") or []
+    if not isinstance(calls, list):
+        raise ValueError("tool_calls must be a list")
+    normalized = []
+    ids = set()
+    for value in calls:
+        call = deepcopy(_as_dict(value))
+        function = _as_dict(call.get("function", {}))
+        if not isinstance(call.get("id"), str) or not call["id"] or call["id"] in ids:
+            raise ValueError("tool call IDs must be nonempty and unique")
+        if not isinstance(function.get("name"), str) or not isinstance(function.get("arguments"), str):
+            raise ValueError("tool function name and arguments must be strings")
+        call["function"] = function
+        ids.add(call["id"])
+        normalized.append(call)
+    return normalized
+
+
+def _pending_calls(state: State) -> list[dict[str, Any]]:
+    replies = set()
+    for message in reversed(state.messages[state.turn_start:]):
+        if message["role"] == "tool":
+            replies.add(message["tool_call_id"])
+        elif message["role"] == "assistant":
+            return [call for call in _tool_calls(message) if call["id"] not in replies]
+        elif message["role"] == "user":
+            break
+    return []
 
 
 def _set_limits(state: State, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
@@ -367,167 +406,137 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
     tool_handler = pipeline.wrap_tool(execute_tool)
 
-    class _HarnessHooks(LoopHooks):
-        """Keep existing harness boundaries around the kernel's shared loop."""
-
-        def check_start(self):
-            cancellation.check()
-
-        def check(self):
+    try:
+        checkpoint("run_started", model_calls=state.model_calls, tool_calls=state.tool_calls)
+        cancellation.check()
+        pipeline.before_agent(state)
+        while True:
             check_budgets()
-
-        def started(self):
-            checkpoint("run_started", model_calls=state.model_calls, tool_calls=state.tool_calls)
-            return AgentEvent("run_started", data={"model_calls": state.model_calls, "tool_calls": state.tool_calls})
-
-        def before_agent(self, current):
-            pipeline.before_agent(current)
-
-        def before_model(self, current):
-            pipeline.before_model(current)
-
-        def model_started(self):
-            # Actual dispatch events are still recorded inside execute_model.
-            return AgentEvent("model_started", data={"attempt": state.model_calls + 1})
-
-        def model_returned(self, duration_seconds):
-            return AgentEvent("model_returned", data={"attempt": state.model_calls})
-
-        def model_failed(self, exc, duration_seconds):
-            if isinstance(exc, (Exception, Cancelled, KeyboardInterrupt)):
-                return AgentEvent("model_failed", data={"attempt": state.model_calls, "error_type": type(exc).__name__})
-
-        def messages(self):
-            return project_history(state)
-
-        def model_result(self, request):
-            return model_handler(request)
-
-        def prepare_tool(self, request):
-            nonlocal active_call_id
-            active_call_id = request.call_id
-            self.record = store.call(state, active_call_id) if store else None
-            record = self.record
-            if record and record["status"] == "completed":
-                return ToolResult.from_dict(json.loads(record["result_json"]))
-            if record and subtasks and subtasks.managed(tool_context(active_call_id), record):
-                return tools.normalize_result(subtasks.resume(tool_context(active_call_id), record))
-            scope.admit_tool()
-            cancellation.check()
-            pipeline.before_tool(request)
-            cancellation.check()
-            self.action = policy.action(state, active_call_id, request.name, request.arguments)
-            if self.action == "ask":
-                state.metadata["approval_request"] = {"call_id": active_call_id, "turn_id": state.turn_id,
-                    "name": request.name, "request_digest": request_digest(request.name, request.arguments),
-                    "policy": policy.fingerprint}
-                state.status = RunStatus.AWAITING_APPROVAL
-                state.error = "tool requires an explicit approval or denial: " + active_call_id
-                checkpoint("approval_requested", call_id=active_call_id, name=request.name)
-                raise TaskStopped()
-            state.metadata.pop("approval_request", None)
+            pending = _pending_calls(state)
+            if pending:
+                for call in pending:
+                    active_call_id = call["id"]
+                    function = call["function"]
+                    record = store.call(state, active_call_id) if store else None
+                    if record and record["status"] == "completed":
+                        result = ToolResult.from_dict(json.loads(record["result_json"]))
+                    elif record and subtasks and subtasks.managed(tool_context(active_call_id), record):
+                        result = tools.normalize_result(subtasks.resume(tool_context(active_call_id), record))
+                    else:
+                        # Stop before entering middleware when no execution budget remains.
+                        scope.admit_tool()
+                        cancellation.check()
+                        request = ToolCallRequest(state, active_call_id, function["name"], function["arguments"], cancellation)
+                        pipeline.before_tool(request)
+                        cancellation.check()
+                        action = policy.action(state, active_call_id, request.name, request.arguments)
+                        if action == "ask":
+                            state.metadata["approval_request"] = {"call_id": active_call_id, "turn_id": state.turn_id,
+                                "name": request.name, "request_digest": request_digest(request.name, request.arguments),
+                                "policy": policy.fingerprint}
+                            state.status = RunStatus.AWAITING_APPROVAL
+                            state.error = "tool requires an explicit approval or denial: " + active_call_id
+                            checkpoint("approval_requested", call_id=active_call_id, name=request.name)
+                            return state
+                        state.metadata.pop("approval_request", None)
+                        if store:
+                            store.start_call(state, active_call_id)
+                        else:
+                            checkpoint("tool_started", call_id=active_call_id)
+                        result = (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
+                                  if action == "deny" else tool_handler(request))
+                        if not isinstance(result, ToolResult):
+                            raise TypeError("wrap_tool_call must return ToolResult")
+                        result = tools.normalize_result(result)
+                    reply = {"role": "tool", "tool_call_id": active_call_id, "content": json.dumps(result.to_dict(), ensure_ascii=False, allow_nan=False)}
+                    state.messages.append(reply)
+                    try:
+                        if store:
+                            if record["status"] == "completed":
+                                checkpoint()
+                            else:
+                                store.complete_call(state, active_call_id, result)
+                        else:
+                            checkpoint("tool_completed", call_id=active_call_id, ok=result.ok, error_code=result.error.code if result.error else None)
+                    except BaseException:
+                        state.messages.pop()
+                        raise
+                continue
+            last_message = state.messages[-1]
+            if last_message["role"] == "assistant" and not _tool_calls(last_message):
+                if completion_policy is not None:
+                    report = completion_policy.evaluate(state)
+                    state.metadata["completion_report"] = report
+                    checkpoint("completion_checked", passed=report["passed"], issue_count=len(report["issues"]))
+                    if not report["passed"]:
+                        state.messages.append({"role": "system", "content": "Harness completion requirements are unmet. Continue the current task within remaining budgets. " + json.dumps(report["issues"], ensure_ascii=False)})
+                        checkpoint("completion_rejected", issue_count=len(report["issues"]))
+                        continue
+                state.status = RunStatus.COMPLETED
+                state.final_answer = last_message.get("content") or ""
+                break
+            if state.step >= state.max_steps:
+                state.status = RunStatus.MAX_STEPS_EXCEEDED
+                break
+            pipeline.before_model(state)
+            message = deepcopy(_as_dict(model_handler(ModelRequest(state, project_history(state), tools.specs(), cancellation))))
+            if message.get("role", "assistant") != "assistant":
+                raise ValueError("model returned a non-assistant message")
+            message["role"] = "assistant"
+            calls = _tool_calls(message)
+            known_ids = {call["id"] for previous in state.messages[state.turn_start:] if previous["role"] == "assistant" for call in _tool_calls(previous)}
+            if any(call["id"] in known_ids for call in calls):
+                raise ValueError("model reused a tool call ID within the same turn")
+            if calls:
+                message["tool_calls"] = calls
+            state.messages.append(message)
+            state.step += 1
             if store:
-                store.start_call(state, active_call_id)
-            else:
-                checkpoint("tool_started", call_id=active_call_id)
-            return None
-
-        def tool_started(self, request):
-            return AgentEvent("tool_started", data={"call_id": request.call_id})
-
-        def tool_result(self, request):
-            return (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
-                    if self.action == "deny" else tool_handler(request))
-
-        def commit_tool(self, request, result):
-            if store:
-                if self.record["status"] == "completed":
-                    checkpoint()
-                else:
-                    store.complete_call(state, active_call_id, result)
-            else:
-                checkpoint("tool_completed", call_id=active_call_id, ok=result.ok, error_code=result.error.code if result.error else None)
-
-        def tool_returned(self, request, result, duration_seconds):
-            return AgentEvent("tool_returned", data={"call_id": request.call_id, "ok": result.ok,
-                                                   "error_code": result.error.code if result.error else None})
-
-        def tool_completed(self, request, result):
-            return AgentEvent("tool_completed", data={"call_id": request.call_id, "ok": result.ok,
-                                                    "error_code": result.error.code if result.error else None})
-
-        def accept_completion(self):
-            if completion_policy is not None:
-                report = completion_policy.evaluate(state)
-                state.metadata["completion_report"] = report
-                checkpoint("completion_checked", passed=report["passed"], issue_count=len(report["issues"]))
-                if not report["passed"]:
-                    state.messages.append({"role": "system", "content": "Harness completion requirements are unmet. Continue the current task within remaining budgets. " + json.dumps(report["issues"], ensure_ascii=False)})
-                    checkpoint("completion_rejected", issue_count=len(report["issues"]))
-                    return False
-            return True
-
-        def commit_assistant(self, calls):
-            if store:
-                store.save(state, calls, event=event("assistant_checkpoint", step=state.step, tool_count=len(calls)))
-
-        def after_model(self, current, message):
-            pipeline.after_model(current, message)
-
-        def step_completed(self, calls):
-            return AgentEvent("assistant_checkpoint", data={"step": state.step, "tool_count": len(calls)})
-
-        def handle_exception(self, exc):
-            if isinstance(exc, TaskPaused):
-                state.status = exc.status
-                state.error = f"subtask {exc.task_id} paused; inspect its node and reconcile or approve before resuming"
-            elif isinstance(exc, Cancelled):
-                state.status = RunStatus.CANCELLED
-                state.error = "execution cancelled; inspect completed and uncertain calls before resuming"
-            elif isinstance(exc, BudgetExceeded):
-                state.status = exc.status
-                state.error = {RunStatus.USAGE_UNAVAILABLE: "model usage is unknown; verify provider records and reconcile usage before continuing with a token budget",
-                               RunStatus.TOOL_LOOP_DETECTED: "three consecutive tool rounds returned identical requests and outcomes; change the approach before resuming",
-                               RunStatus.REQUEST_BOUND_VIOLATED: "adapter request bound violated; verify usage and repair the counter before explicitly acknowledging this violation",
-                               RunStatus.RESERVATION_UNAVAILABLE: state.error or "trusted model reservation unavailable",
-                               RunStatus.MAX_TOKENS_EXCEEDED: "reported token budget exhausted; increase the absolute turn limit to continue",
-                               RunStatus.DEADLINE_EXCEEDED: "turn deadline exceeded; increase the duration from the original turn start to continue"}.get(exc.status)
-            elif isinstance(exc, ContextLimitExceeded):
-                state.status = RunStatus.CONTEXT_LIMIT_EXCEEDED
-                state.error = str(exc)
-            elif isinstance(exc, WorkspaceChanged):
-                state.status = RunStatus.WORKSPACE_CHANGED
-                state.error = str(exc)
-            elif isinstance(exc, KeyboardInterrupt):
-                state.status = RunStatus.INTERRUPTED
-                state.error = "execution interrupted; resume the session to inspect its checkpoint"
-            elif isinstance(exc, Exception):
-                state.status = RunStatus.FAILED
-                state.error = f"{type(exc).__name__}: {exc}"
-            else:
-                return False
-            return True
-
-        def cleanup(self):
-            try:
-                pipeline.after_agent(state)
-            except Cancelled:
-                state.status = RunStatus.CANCELLED
-                state.error = "execution cancelled during cleanup; inspect the saved session"
-            except KeyboardInterrupt:
-                state.status = RunStatus.INTERRUPTED
-                state.error = "execution interrupted during cleanup; resume the saved session"
-            except Exception as exc:
-                state.status = RunStatus.FAILED
-                state.error = f"{type(exc).__name__}: {exc}"
-
-        def stopped(self):
-            checkpoint("run_stopped", status=state.status, model_calls=state.model_calls, tool_calls=state.tool_calls,
-                       total_tokens=state.total_tokens, unknown_usage_calls=state.unknown_usage_calls)
-            return AgentEvent("run_stopped", data={"status": state.status, "model_calls": state.model_calls,
-                                                  "tool_calls": state.tool_calls, "total_tokens": state.total_tokens,
-                                                  "unknown_usage_calls": state.unknown_usage_calls})
-
-    for _ in iter_agent(model, state, tools=tools, hooks=(_HarnessHooks(),), cancellation=cancellation):
-        pass
+                try:
+                    store.save(state, calls, event=event("assistant_checkpoint", step=state.step, tool_count=len(calls)))
+                except BaseException:
+                    state.messages.pop()
+                    state.step -= 1
+                    raise
+            pipeline.after_model(state, message)
+    except TaskPaused as exc:
+        state.status = exc.status
+        state.error = f"subtask {exc.task_id} paused; inspect its node and reconcile or approve before resuming"
+    except Cancelled:
+        state.status = RunStatus.CANCELLED
+        state.error = "execution cancelled; inspect completed and uncertain calls before resuming"
+    except BudgetExceeded as exc:
+        state.status = exc.status
+        state.error = {RunStatus.USAGE_UNAVAILABLE: "model usage is unknown; verify provider records and reconcile usage before continuing with a token budget",
+                       RunStatus.TOOL_LOOP_DETECTED: "three consecutive tool rounds returned identical requests and outcomes; change the approach before resuming",
+                       RunStatus.REQUEST_BOUND_VIOLATED: "adapter request bound violated; verify usage and repair the counter before explicitly acknowledging this violation",
+                       RunStatus.RESERVATION_UNAVAILABLE: state.error or "trusted model reservation unavailable",
+                       RunStatus.MAX_TOKENS_EXCEEDED: "reported token budget exhausted; increase the absolute turn limit to continue",
+                       RunStatus.DEADLINE_EXCEEDED: "turn deadline exceeded; increase the duration from the original turn start to continue"}.get(exc.status)
+    except ContextLimitExceeded as exc:
+        state.status = RunStatus.CONTEXT_LIMIT_EXCEEDED
+        state.error = str(exc)
+    except WorkspaceChanged as exc:
+        state.status = RunStatus.WORKSPACE_CHANGED
+        state.error = str(exc)
+    except KeyboardInterrupt:
+        state.status = RunStatus.INTERRUPTED
+        state.error = "execution interrupted; resume the session to inspect its checkpoint"
+    except Exception as exc:
+        state.status = RunStatus.FAILED
+        state.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            pipeline.after_agent(state)
+        except Cancelled:
+            state.status = RunStatus.CANCELLED
+            state.error = "execution cancelled during cleanup; inspect the saved session"
+        except KeyboardInterrupt:
+            state.status = RunStatus.INTERRUPTED
+            state.error = "execution interrupted during cleanup; resume the saved session"
+        except Exception as exc:
+            state.status = RunStatus.FAILED
+            state.error = f"{type(exc).__name__}: {exc}"
+        checkpoint("run_stopped", status=state.status, model_calls=state.model_calls, tool_calls=state.tool_calls,
+                   total_tokens=state.total_tokens, unknown_usage_calls=state.unknown_usage_calls)
     return state

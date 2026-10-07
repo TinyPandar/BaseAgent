@@ -2,6 +2,40 @@
 
 A small coding-agent harness built around a provider-independent loop, a tool registry, middleware hooks, and a workspace boundary. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
 
+## Single-task kernel
+
+`iter_agent(model, state, *, tools, hooks=(), cancellation=None)` advances a prepared task and yields `AgentEvent` values. Consume the iterator to completion; the supplied state contains the result. Existing `run_agent(...)` calls consume this kernel through the synchronous harness adapter and still return `State`.
+
+```python
+from baseagent.agent import KernelState, iter_agent
+from baseagent.kernel import ToolRegistry
+
+
+class Model:
+    def complete(self, messages, tools):
+        return {"content": "done"}
+
+
+state = KernelState(messages=[
+    {"role": "system", "content": "You are a helpful agent."},
+    {"role": "user", "content": "Say done."},
+])
+for event in iter_agent(Model(), state, tools=ToolRegistry()):
+    print(event.type)
+print(state.status, state.final_answer)
+```
+
+`state.to_dict()` and `KernelState.from_dict(...)` support JSON checkpoints. Iterator events bracket logical wrapped operations; counters include every actual dispatch made by middleware retries. The synchronous adapter retains the existing persistent event format and per-attempt accounting. Session storage, approvals, MCP integration and subtask execution contexts remain outside `baseagent.kernel`.
+
+The kernel imports only the standard library, its own modules, and `jsonschema>=4.23,<5`. `jsonschema` imports are confined to `kernel/tools.py`; the AST boundary tests enforce that exception.
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_kernel*.py" -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
+Kernel extraction acceptance requires three consecutive successful runs of the full test command. Differential tests use a frozen copy of the `v0.1-sync-baseline` loop under `tests/fixtures/`; production code does not execute that copy.
+
 ## Run
 
 Set `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and optionally `DEEPSEEK_MODEL` in `.env` (the file is ignored by Git). Then:
