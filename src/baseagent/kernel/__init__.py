@@ -1,6 +1,14 @@
-"""Single-task contracts; execution will be extracted in the next stage."""
+"""Single-task execution without harness persistence or authorization imports."""
 
+from .agent import iter_agent
+from .cancellation import CancellationToken, Cancelled
 from .events import AgentEvent
+from .hooks import AgentMiddleware, MiddlewarePipeline, ModelRequest, ToolCallRequest
 from .state import KernelState, RunStatus
+from .tools import ToolRegistry
 
-__all__ = ["KernelState", "RunStatus", "AgentEvent"]
+__all__ = [
+    "iter_agent", "KernelState", "RunStatus", "AgentEvent",
+    "AgentMiddleware", "MiddlewarePipeline", "ModelRequest", "ToolCallRequest",
+    "ToolRegistry", "CancellationToken", "Cancelled",
+]

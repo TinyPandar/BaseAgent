@@ -15,6 +15,7 @@ from baseagent.kernel import AgentEvent, KernelState, RunStatus
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL = ROOT / "src" / "baseagent" / "kernel"
 BASELINE_STATE = Path(__file__).parent / "fixtures" / "state_v0_1_sync_baseline.json"
+ALLOWED_THIRD_PARTY = {"jsonschema"}
 
 
 def forbidden_imports(source, package="baseagent.kernel"):
@@ -38,7 +39,7 @@ def forbidden_imports(source, package="baseagent.kernel"):
         for module in modules:
             if module == "baseagent.kernel" or module.startswith("baseagent.kernel."):
                 continue
-            if module.split(".")[0] not in sys.stdlib_module_names:
+            if module.split(".")[0] not in sys.stdlib_module_names | ALLOWED_THIRD_PARTY:
                 rejected.append((node.lineno, module))
     return rejected
 
@@ -147,7 +148,7 @@ class KernelImportBoundaryTests(unittest.TestCase):
 
     def test_scanner_rejects_external_and_parent_imports_even_when_nested(self):
         for source in (
-            "import jsonschema", "from baseagent.tools.result import ToolResult",
+            "import pydantic", "from baseagent.tools.result import ToolResult",
             "from ..agent.state import State", "from .. import tools",
             "if False:\n    import openai", "def build():\n    from baseagent.llm import response",
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from baseagent.agent.state import State",
@@ -156,6 +157,21 @@ class KernelImportBoundaryTests(unittest.TestCase):
                 self.assertTrue(forbidden_imports(source))
         self.assertEqual(forbidden_imports("import json\nfrom typing import Any\nfrom .state import KernelState"), [])
         self.assertEqual(forbidden_imports("from ..state import KernelState", "baseagent.kernel.tools"), [])
+
+    def test_jsonschema_imports_are_confined_to_tools_module(self):
+        importing_files = set()
+        for path in KERNEL.rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    modules = [node.module or ""] if not node.level else []
+                else:
+                    continue
+                if any(module.split(".")[0] == "jsonschema" for module in modules):
+                    importing_files.add(path.relative_to(KERNEL).as_posix())
+        self.assertEqual(importing_files, {"tools.py"})
+        self.assertEqual(forbidden_imports("from jsonschema import Draft202012Validator"), [])
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ class KernelState:
     max_context_bytes: int = 96_000
     max_tool_context_bytes: int = 4_000
     events: list[dict[str, Any]] = field(default_factory=list)
+    unsafe_tool_calls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
