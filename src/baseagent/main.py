@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from baseagent.agent import run_agent
 from baseagent.jsondata import read_json_object
+from baseagent.config import load_harness_config
 from baseagent.llm import Model
 from baseagent.middleware import AgentMiddleware
 from baseagent.middleware.retry import RetryMiddleware
@@ -23,8 +24,9 @@ from hashlib import sha256
 from importlib.metadata import version
 from baseagent.tools.result import ToolResult
 from baseagent.llm.response import TokenUsage
-from baseagent.tools.workspace import Workspace, coding_tools
+from baseagent.tools.workspace import Workspace
 from baseagent.tools.policy import ToolPolicy
+from baseagent.capabilities import assemble_capabilities, SkillCatalog, SkillMiddleware
 from baseagent.agent.completion import CompletionPolicy
 from baseagent.llm.reservation import ReservationUnavailable
 from baseagent.llm.bounds import request_bound_profile
@@ -67,13 +69,15 @@ class TraceMiddleware(AgentMiddleware):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Workspace coding agent")
+    parser = argparse.ArgumentParser(description="Workspace coding agent", allow_abbrev=False)
+    parser.add_argument("--config", type=Path, help="Versioned JSON harness configuration; explicit CLI options override it")
     parser.add_argument("prompt", nargs="?", help="Task or next conversation turn")
     parser.add_argument("--root", type=Path, help="Workspace directory (saved root on resume)")
     parser.add_argument("--session", help="Session ID (generated when omitted)")
     parser.add_argument("--db", type=Path, default=Path.cwd() / ".baseagent" / "sessions.sqlite3")
     operations = parser.add_mutually_exclusive_group()
     operations.add_argument("--eval-harness", action="store_true", help="Run offline end-to-end harness scenarios in isolated temporary workspaces")
+    operations.add_argument("--list-tool-packages", action="store_true", help="List available built-in tool modules without model or database access")
     operations.add_argument("--resume", action="store_true", help="Continue an unfinished turn")
     operations.add_argument("--inspect-session", action="store_true", help="Inspect checkpoint and current tool ledger")
     operations.add_argument("--task-tree", action="store_true", help="Inspect persisted child task snapshots and ledgers without model access")
@@ -124,29 +128,50 @@ def main() -> int:
     parser.add_argument("--max-context-bytes", type=int, help="Serialized model input UTF-8 bytes (default 96000; resume: preserve)")
     parser.add_argument("--max-tool-context-bytes", type=int, help="Per-tool data excerpt limit (default 4000; resume: preserve)")
     parser.add_argument("--max-total-tokens", type=int, help="Reported token budget per turn; unknown usage blocks execution")
-    parser.add_argument("--estimate-model", action="store_const", const=True, default=None, help="Estimate request tokens locally; actual usage can exceed budget")
+    parser.add_argument("--estimate-model", action=argparse.BooleanOptionalAction, default=None, help="Estimate request tokens locally; actual usage can exceed budget")
     parser.add_argument("--tokenizer-file", help="Local tokenizer.json for estimated budgets; never executes remote tokenizer code")
     parser.add_argument("--estimate-margin-percent", type=int, default=20)
     parser.add_argument("--estimate-fixed-margin", type=int, default=256)
-    parser.add_argument("--preauthorize-model", action="store_const", const=True, default=None, help="Require trusted adapter request reservations; default CLI adapter has no prompt counter and refuses before dispatch")
+    parser.add_argument("--preauthorize-model", action=argparse.BooleanOptionalAction, default=None, help="Require trusted adapter request reservations; default CLI adapter has no prompt counter and refuses before dispatch")
     parser.add_argument("--accept-request-bound-violation", action="store_true", help="Acknowledge a verified request bound violation after repairing the adapter counter; usage/budgets remain")
     parser.add_argument("--max-duration-seconds", type=float, help="Wall duration from original turn start, including time between resumes")
     parser.add_argument("--model-retries", type=int, default=0, help="Retries after transient model errors (0-4; default disabled)")
     parser.add_argument("--tool-retries", type=int, default=0, help="Retries of explicitly safe, retryable tool failures (0-4)")
-    parser.add_argument("--allow-write", action="store_true", help="Allow file writes")
-    parser.add_argument("--allow-command", action="store_true", help="Allow subprocess commands")
-    parser.add_argument("--allow-memory-publish", action="store_true", help="Allow publishing/withdrawing workspace-shared reference notes")
-    parser.add_argument("--trace", action="store_true", help="Show model steps and tool names on stderr")
+    parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
+    parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
+    parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
+    parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
+    parser.add_argument("--tool-package", action="append", choices=["coding", "memory", "shared-memory"], help="Select built-in tool packages; repeat to combine (default: all)")
+    parser.add_argument("--skills-dir", action="append", type=Path, help="Explicit local skill package directory; repeat to combine")
+    bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    bootstrap.add_argument("--config", type=Path)
+    initial, _ = bootstrap.parse_known_args()
+    defaults = {}
+    if initial.config is not None:
+        try:
+            defaults = load_harness_config(initial.config)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+    # Append actions must replace configured arrays, rather than concatenate them.
+    packages_default = defaults.pop("tool_package", None)
+    skills_default = defaults.pop("skills_dir", [])
+    parser.set_defaults(**defaults)
     args = parser.parse_args()
+    if args.tool_package is None:
+        args.tool_package = packages_default
+    if args.skills_dir is None:
+        args.skills_dir = skills_default
     if (args.max_steps is not None and args.max_steps < 1) or (args.max_model_calls is not None and args.max_model_calls < 1) or (args.max_tool_calls is not None and args.max_tool_calls < 0):
         parser.error("step/model limits must be positive and tool limit nonnegative")
     session_operation = args.resume or args.inspect_session or args.task_tree or args.acknowledge_task_bound or args.resolve_tool is not None or args.approve_tool is not None or args.deny_tool is not None or args.cancel_session or args.clear_cancel is not None or args.events or args.follow_events is not None or args.prune_events is not None or args.shared_memory or args.resolve_usage is not None or args.export_session is not None or args.delete_session
     database_operation = args.list_sessions or args.backup_db is not None or args.cleanup_days is not None
-    operation = session_operation or database_operation or args.eval_harness
+    operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages
     if (args.eval_report or args.eval_case) and not args.eval_harness:
         parser.error("evaluation report/cases require --eval-harness")
     if args.eval_harness and (args.prompt is not None or args.session or args.root):
         parser.error("evaluation uses isolated fixtures; omit prompt, session and root")
+    if args.list_tool_packages and (args.prompt is not None or args.session):
+        parser.error("package discovery requires no prompt or session")
     if session_operation and (not args.session or args.prompt is not None):
         parser.error("resume/inspect/resolve require --session and no prompt")
     if database_operation and (args.session is not None or args.prompt is not None):
@@ -223,6 +248,10 @@ def main() -> int:
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
     try:
+        if args.list_tool_packages:
+            from baseagent.capabilities.assembly import BUILTIN_PACKAGES
+            print(json.dumps({name: list(tools) for name, tools in BUILTIN_PACKAGES.items()}, ensure_ascii=False, indent=2))
+            return 0
         if args.eval_harness:
             from baseagent.evaluation import evaluate
             report = evaluate(cases=args.eval_case, report_path=args.eval_report)
@@ -369,12 +398,16 @@ def main() -> int:
         if estimator:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
+        skills = SkillCatalog(args.skills_dir) if args.skills_dir else None
+        tools = assemble_capabilities(workspace, packages=args.tool_package, skills=skills)
+        if skills is not None:
+            layers.append(SkillMiddleware(skills))
         if args.trace:
             layers.append(TraceMiddleware())
         if args.model_retries or args.tool_retries:
             layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
         state = run_agent(
-            LazyModel(), args.prompt, tools=coding_tools(workspace),
+            LazyModel(), args.prompt, tools=tools,
             middleware=layers,
             system_prompt=SYSTEM_PROMPT, max_steps=args.max_steps,
             max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,

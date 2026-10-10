@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from copy import deepcopy
+from dataclasses import replace
 import json
 import math
 import time
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 from baseagent.middleware import AgentMiddleware, MiddlewarePipeline, ModelRequest, ToolCallRequest
 from baseagent.kernel import AgentEvent, iter_agent
+from baseagent.kernel.errors import ModelTimeoutError
 from baseagent.kernel.agent import _as_dict, _pending_calls, _tool_calls
 from baseagent.kernel.hooks import LoopHooks, TaskStopped
 from baseagent.kernel.model import Model
@@ -401,7 +403,12 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             return project_history(state)
 
         def model_result(self, request):
-            return model_handler(request)
+            try:
+                return model_handler(replace(request, remaining_seconds=remaining_seconds))
+            except ModelTimeoutError:
+                # Preserve task deadline/budget statuses without another dispatch.
+                check_budgets()
+                raise
 
         def prepare_tool(self, request):
             nonlocal active_call_id
@@ -436,8 +443,12 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             return AgentEvent("tool_started", data={"call_id": request.call_id})
 
         def tool_result(self, request):
-            return (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
-                    if self.action == "deny" else tool_handler(request))
+            try:
+                return (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
+                        if self.action == "deny" else tool_handler(replace(request, remaining_seconds=remaining_seconds)))
+            except ModelTimeoutError:
+                check_budgets()
+                raise
 
         def commit_tool(self, request, result):
             if store:

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "workspace": {
+    "root": "..",
+    "db": "../.baseagent/sessions.sqlite3"
+  },
+  "capabilities": {
+    "tool_packages": ["coding", "memory", "shared-memory"],
+    "skills_dirs": ["skills"]
+  },
+  "permissions": {
+    "allow_write": true,
+    "allow_command": true,
+    "allow_memory_publish": false
+  },
+  "run": {
+    "max_steps": 16,
+    "max_tool_calls": 64
+  }
+}

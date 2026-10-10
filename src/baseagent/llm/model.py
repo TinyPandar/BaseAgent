@@ -1,12 +1,17 @@
 import time
-from openai import OpenAI, DefaultHttpxClient
+import json
+from openai import OpenAI, DefaultHttpxClient, APIConnectionError, APITimeoutError, APIStatusError, APIResponseValidationError
 from .response import ModelResponse, TokenUsage
 from .reservation import TokenReservation, ReservationUnavailable, request_digest
+from ._common import positive_seconds, generation_params, http_error
+from baseagent.kernel.errors import ModelTimeoutError, TransientError, ResponseParseError
 
 class Model:
-    def __init__(self, model_name: str, api_key: str, base_url: str | None = None, *, token_counter=None, max_completion_tokens=512, request_bound=None, token_estimator=None):
+    def __init__(self, model_name: str, api_key: str, base_url: str | None = None, *, token_counter=None, max_completion_tokens=512, request_bound=None, token_estimator=None, timeout=30.0, generation=None):
         self.model_name = model_name
         self.token_estimator = token_estimator
+        self.timeout = positive_seconds(timeout)
+        self.generation_params = generation_params(generation, {"temperature", "top_p", "stop", "seed", "frequency_penalty", "presence_penalty"})
         if token_estimator is not None and (token_counter is not None or request_bound is not None):
             raise ValueError("estimated and strict counters cannot be combined")
         self.token_counter = token_counter
@@ -24,8 +29,8 @@ class Model:
             api_key=api_key,
             base_url=base_url,
             max_retries=0,
-            timeout=30.0,
-            **({"http_client": DefaultHttpxClient(follow_redirects=False, trust_env=False)} if request_bound is not None else {}),
+            timeout=self.timeout,
+            http_client=DefaultHttpxClient(follow_redirects=False, trust_env=False),
         )
 
     def complete(self, messages, tools=None):
@@ -69,14 +74,49 @@ class Model:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
         if timeout is not None:
-            kwargs["timeout"] = min(30.0, timeout)
+            kwargs["timeout"] = min(self.timeout, positive_seconds(timeout))
         if max_completion_tokens is not None:
             kwargs["max_tokens"] = max_completion_tokens
-        response = self.client.chat.completions.create(**kwargs)
+        kwargs.update(self.generation_params)
+        try:
+            response = self.client.chat.completions.create(**kwargs)
+        except APITimeoutError:
+            raise ModelTimeoutError("model transport timed out") from None
+        except APIConnectionError:
+            raise TransientError("model transport connection failed") from None
+        except APIStatusError as exc:
+            raise http_error(exc.status_code, exc.body, exc.response.headers) from None
+        except (json.JSONDecodeError, APIResponseValidationError):
+            raise ResponseParseError("model response is not valid chat completion JSON") from None
         usage = None
-        if response.usage is not None:
+        if getattr(response, "usage", None) is not None:
             try:
                 usage = TokenUsage(response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens)
-            except (TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError):
                 pass
-        return ModelResponse(response.choices[0].message, usage)
+        try:
+            message = response.choices[0].message
+            ModelResponse(message, usage).to_dict()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise ResponseParseError("model response has an invalid message envelope") from None
+        return ModelResponse(message, usage)
+
+    def complete_with_control(self, messages, tools=None, *, cancellation, timeout=None):
+        cancellation.check()
+        try:
+            return self.complete_with_timeout(messages, tools, timeout=timeout)
+        except Exception:
+            cancellation.check()
+            raise
+
+    def close(self):
+        self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __repr__(self):
+        return f"<{type(self).__name__}>"

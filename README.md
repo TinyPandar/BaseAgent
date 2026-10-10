@@ -1,6 +1,8 @@
 # BaseAgent
 
-A small coding-agent harness built around a provider-independent loop, a tool registry, middleware hooks, and a workspace boundary. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
+A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
+
+The library includes strict deterministic recording/replay and OpenAI-compatible/Anthropic adapters with retry and rate-limit middleware. The current harness is the baseline for the next phase: a RAG-enabled Agent application with retrieval and answer evaluation. Corpus and application scope are still to be defined; RAG is not implemented yet. Runtime, concurrency admission, Redis/queues, and other framework extensions will follow demonstrated application needs. See [ARCHITECTURE.md](ARCHITECTURE.md) for current status, deferred milestones, and acceptance criteria.
 
 ## Single-task kernel
 
@@ -36,7 +38,187 @@ The kernel imports only the standard library, its own modules, and `jsonschema>=
 
 Kernel extraction acceptance requires three consecutive successful runs of the full test command. Differential tests use a frozen copy of the `v0.1-sync-baseline` loop under `tests/fixtures/`; production code does not execute that copy.
 
+## Model adapters, retries, and recording/replay
+
+The library exports `OpenAICompatModel` and `AnthropicModel` from `baseagent.llm`.
+New adapters read credentials from the named environment variable; they do not
+load `.env` automatically. Existing `Model(model_name, api_key, ...)` imports and
+reservation/estimation APIs remain supported. The new OpenAI-compatible entrypoint
+returns a detached dictionary message and applies its configured output cap;
+the old `Model` keeps its SDK-message return behavior.
+
+```python
+from baseagent.agent import run_agent
+from baseagent.kernel import ToolRegistry
+from baseagent.llm import OpenAICompatModel, AnthropicModel
+from baseagent.middleware import RetryMiddleware, RateLimiter, RateLimitMiddleware
+
+# Set DEEPSEEK_API_KEY in the environment before running this example.
+limiter = RateLimiter(requests_per_second=2, capacity=1)
+layers = [RetryMiddleware(model_retries=2, jitter=0.2),
+          RateLimitMiddleware(limiter)]
+with OpenAICompatModel("deepseek-chat", api_key_env="DEEPSEEK_API_KEY",
+                       base_url="https://api.deepseek.com", timeout=30,
+                       max_completion_tokens=512,
+                       generation={"temperature": 0}) as model:
+    state = run_agent(model, "Reply briefly.", tools=ToolRegistry(), middleware=layers)
+
+# Supply a model ID supported by your Anthropic account:
+# with AnthropicModel(model_id, api_key_env="ANTHROPIC_API_KEY") as model: ...
+```
+
+Share one limiter across tasks that use the same provider quota. The retry layer
+must be outside the rate-limit layer so every actual attempt acquires a token.
+The default bucket capacity is one; a higher capacity deliberately allows that
+initial/refilled burst. SDK retries are disabled. Retry-After is honored (seconds
+or HTTP date); optional jitter adds to bounded exponential backoff. Waiting is
+interruptible and respects the harness's remaining task deadline. Iterator events
+still bracket logical operations; counters and persistent events count actual
+attempts, including failures with unknown usage. Unknown usage can block further
+attempts under the existing token-budget policy. Unsafe tools still cannot retry.
+
+Provider failures become `baseagent.kernel.errors` types: `RateLimitError`,
+`TransientError`, `ModelTimeoutError`, `AuthError`, `BadRequestError`,
+`ContextLengthError`, and `ResponseParseError`, all under `ModelError`. Only the
+first three are retryable. Adapter diagnostics omit provider bodies and secrets.
+Successful responses arriving during cancellation are returned for usage accounting;
+the harness then stops. Synchronous I/O uses finite transport timeouts and cannot
+be forcibly interrupted. Close adapters explicitly or use their context managers.
+Anthropic supports text/system messages, grouped tool results, multiple tool calls,
+and reported usage (including cached input); it does not support streaming,
+multimodal content, or extended thinking. Its tool/error mappings follow the
+[Anthropic tool contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools)
+and [error contract](https://platform.claude.com/docs/en/api/errors).
+
+### Record, replay, and diagnose mismatches
+
+```python
+from baseagent.testing import CassetteModel
+
+# `live_model` is a configured adapter. Use synthetic prompts for shared fixtures.
+# with CassetteModel("synthetic.jsonl", live_model, mode="record") as recording:
+#     state = run_agent(recording, "Reply SYNTHETIC_OK.", tools=ToolRegistry())
+
+with CassetteModel("synthetic.jsonl", mode="replay") as replay:
+    state = run_agent(replay, "Reply SYNTHETIC_OK.", tools=ToolRegistry())
+```
+
+Absent an explicit mode, `BASEAGENT_CASSETTE_MODE` selects the mode, defaulting to
+`replay`. Missing/corrupt/unknown-version files never fall back to recording.
+The wrapper records protocol calls, not HTTP headers. Responses preserve reported
+usage; reservations and estimates are also recorded, and replay binds their digest
+to the supplied request without contacting a model or counter. `ModelResponse`
+supports `to_dict()` / `from_dict()`; SDK messages are stored as JSON dictionaries.
+Unknown exception classes replay as `ModelError` through a fixed safe allowlist.
+
+Matching uses sorted JSON and the full messages/tools, model identity, generation
+parameters, output cap and reservation kind/value. Tool IDs and pairing remain
+significant. Cancellation objects and transport timeout values are runtime controls,
+not generation input; they are not part of the request hash. A custom adapter must
+expose `model_name`, `generation_params`, and `max_completion_tokens` (or supply
+explicit generation metadata) to cover its provider-specific configuration.
+Do not mutate adapter generation configuration while recording.
+
+`CassetteMismatch` identifies the first differing field, without echoing its raw
+value; the message is bounded and redacted. Compare that field with the intended
+change. Correct an unintended regression, or explicitly record a fresh synthetic
+fixture for an intentional change. Overruns fail immediately. `close()` and the
+context manager check all recorded operations were consumed; callers can also use
+`assert_all_consumed()`. Harness failures appear in `state.status/error`, so inspect
+them as well. `comparable_events()` ignores timestamps/durations and
+`comparable_state()` additionally ignores the turn start time; neither removes
+semantic message IDs or invocation identities.
+
+Requests, responses and errors redact sensitive environment variable values,
+common key/Bearer patterns, the home path and email addresses. Additional rules
+use `Redactor(patterns=[...])`; use the same rules for recording and replay.
+Matching is strict on the redacted request, so distinct private values replaced by
+the same placeholder cannot be distinguished. Redaction is best effort and shared
+fixtures must remain synthetic; it is not a substitute for reviewing private data.
+Each wrapper is sequential; use separate files/wrappers for concurrent tasks.
+Recordings are published only on successful close, refuse overwrites, and are
+bounded to 8 MB total/1 MB per line. An escaping exception aborts publication;
+model errors caught by the harness can be saved as part of a completed test run.
+The wrapper does not close a caller-owned live model.
+
+```powershell
+# At most nine billed requests; fixed synthetic prompts only; no implicit retries.
+.\.venv\Scripts\python.exe -B scripts/record_cassettes.py
+# Offline suites, no credentials required:
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_cassette.py" -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_model*.py" -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_real_cassettes.py" -v
+```
+
+The recording script reads existing DeepSeek environment/local `.env` settings,
+refuses existing destinations, and publishes `tests/cassettes/deepseek_*.jsonl`
+only after all three scenarios (direct answer, one tool call, error correction)
+pass assertions, privacy scanning and offline replay. Missing settings exit 2;
+provider/check failures exit 1; success exits 0. Private recordings belong in
+ignored `tests/cassettes_local/`. The three real DeepSeek synthetic fixtures are
+now included and replay offline; recording took six billed model calls. Their
+privacy scan also checked the supplied credential value without persisting it.
+Fake-model fixtures live only in temporary directories and do not substitute for
+these real recordings. This release adds library APIs; CLI/config provider selection is
+unchanged.
+
 ## Run
+
+Current architecture and milestone status: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Capability packages and local skills
+
+Start from a reusable harness configuration:
+
+```powershell
+uv run baseagent --list-tool-packages
+uv run baseagent --config examples/harness.readonly.json "Explain the project"
+uv run baseagent --config examples/harness.coding.json "Fix the failing test"
+# Replace the configured module list and disable configured command permission:
+uv run baseagent --config examples/harness.coding.json --tool-package memory --no-allow-command "Recall our decisions"
+```
+
+Configuration is strict JSON, limited to 32 KB, with required `version: 1`.
+Supported sections are `workspace` (`root`, `db`), `capabilities`
+(`tool_packages`, `skills_dirs`), `permissions` (`allow_write`, `allow_command`,
+`allow_memory_publish`), `run` (model name, limits, retries, token reservation/
+estimation settings, and trace), and `policies` (`tool_policy`, `completion_policy`,
+`subtasks_config`). Config paths resolve against the configuration file's directory;
+explicit CLI paths retain their usual current-directory semantics. CLI options
+override config values; repeated package/skill flags replace the entire configured
+list. Empty `tool_packages` enables no built-in tools; omitted packages use all.
+Boolean settings can be overridden with `--no-allow-write`, `--no-allow-command`,
+`--no-allow-memory-publish`, `--no-trace`, `--no-estimate-model`, and
+`--no-preauthorize-model`. Use `skills_dirs: []` to disable skills in a profile.
+Credentials and provider endpoint remain in the local environment/`.env`.
+The configuration is a trusted host input and can grant the listed permissions.
+Unknown fields, wrong types, duplicate fields and unsupported versions are rejected
+before database/model access. Resume with the same configuration; changes to
+assembled capabilities still require `--accept-config-changes` for unfinished turns.
+Config references existing modules by name; arbitrary Python imports are not supported.
+The same validated defaults are available through `load_harness_config(path)` for
+host integrations. Available fields and value validation live in `baseagent/config.py`.
+
+The CLI defaults to all existing built-in tools. Select packages explicitly with
+`--tool-package coding --tool-package memory`; `shared-memory` is the third package.
+Selection does not grant write, command or publication permissions.
+
+`--skills-dir examples/skills` enables local skills. Each child directory contains
+`SKILL.md` with `---` frontmatter and single-line `name` and `description` fields.
+Names use lowercase letters, digits and hyphens. The model sees the catalog and
+can call `load_skill` and `read_skill_resource` on demand. Resources are read as
+text; scripts never run automatically. Catalog snapshots bind file hashes to the
+runtime contract, so changed content requires accepting configuration changes on
+unfinished recovery. Files are limited to 64 KB, 100 files per skill, 100 skills
+and 2 MB per catalog. Binary resources can be cataloged but not read as text.
+Configured directories are trusted host inputs; package/resource links are refused.
+Skill tool results remain subject to transcript and model context limits.
+
+Library callers use `assemble_capabilities(workspace, packages=..., skills=...,
+extensions=[ToolPackage(name, version, install)])` and pass `SkillMiddleware(catalog)`
+alongside their other middleware. Each extension installer registers handlers on
+the supplied registry; duplicate tools are rejected. Version extension implementations
+when behavior changes. MCP and automatic installation are future milestones.
 
 Set `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and optionally `DEEPSEEK_MODEL` in `.env` (the file is ignored by Git). Then:
 
@@ -503,7 +685,8 @@ Use a fresh output filename: report publication is atomic and refuses overwrites
 
 ## Architecture
 
-- `agent/agent.py`: model/tool cycle and stopping conditions; takes model, registry, and middleware as inputs.
+- `kernel/`: single-task model/tool loop, serializable state, events, context, cancellation, tools, and hook protocols.
+- `agent/agent.py`: synchronous harness adapter over the kernel, retaining persistence, authorization, budget and completion behavior.
 - `agent/state.py`: transcript and explicit outcome.
 - `agent/context.py`: bounded model context projection and tool-pair validation.
 - `session/store.py`: SQLite checkpoints, tool ledger, session locks, and manual reconciliation.
@@ -522,7 +705,7 @@ Use a fresh output filename: report publication is atomic and refuses overwrites
 
 The old customer-service examples remain in `tools/tools.py` as example functions; the coding CLI does not register them.
 
-See `HARNESS_PLAN.md` for remaining harness capabilities and acceptance criteria.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current roadmap and acceptance criteria; [HARNESS_PLAN.md](HARNESS_PLAN.md) retains historical phase evidence.
 
 Run local tests without a model key:
 

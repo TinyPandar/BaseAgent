@@ -16,3 +16,7 @@ wheels/
 .chainlit/
 .files/
 chainlit.md
+
+# Private model recordings; only synthetic fixtures belong in tests/cassettes.
+tests/cassettes_local/
+.cassette-*

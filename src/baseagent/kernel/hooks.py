@@ -17,6 +17,7 @@ class ModelRequest:
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]]
     cancellation: Any = None
+    remaining_seconds: Callable[[], float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class ToolCallRequest:
     name: str
     arguments: str
     cancellation: Any = None
+    remaining_seconds: Callable[[], float | None] | None = None
 
 
 class AgentMiddleware:

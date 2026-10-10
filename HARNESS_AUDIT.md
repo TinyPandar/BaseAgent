@@ -1,5 +1,57 @@
 # Harness completion audit
 
+> 本文记录各轮验收证据；当前架构和里程碑见 [ARCHITECTURE.md](ARCHITECTURE.md)。历史测试和忽略目录下的报告不代表当前 checkout 已重新验证。
+
+> 2026-10-09：后续范围已对齐可复用框架路线，见 ARCHITECTURE.md 的“目标路线与验收”。当时的完成声明仅覆盖同步 harness 约定范围；2026-10-09 当轮只改文档、未重跑代码验收。模型基础设施的后续实现与复验见下面 2026-10-10 记录，常驻 runtime 和个人 assistant 仍未实现。
+
+## Harness 阶段基线提交验收（2026-10-10）
+
+用户授权提交现有成果，下一阶段转向带 RAG 的 Agent 应用。此次保存同步 harness 上的能力/skill 装配、JSON 配置、模型适配器、统一模型错误、重试与共享速率限流、严格录制/回放、三个真实合成录像、回放演示及性能测量脚本。未实现新的 RAG、runtime、并发准入或 Redis/队列；后续框架工作由应用需求驱动。ARCHITECTURE.md、HARNESS_PLAN.md 与 README 已同步这一阶段选择。
+
+- 当前源码全量离线回归：`.venv/Scripts/python.exe -B -m unittest discover -s tests -q`，462 项全部通过，无跳过，196.201 秒，退出码 0；日志 `.baseagent/harness-checkpoint-tests.log`。
+- `scripts/demo_replay.py` 通过：禁止 socket 连接，读取两个保存的模型响应，实际执行一次本地加法工具；变更请求后明确拒绝回放。本轮未发起付费模型请求，真实录像来源仍为下方已有录制记录。
+- `scripts/benchmark_harness.py --samples 5 --warmups 1 --output .baseagent/checkpoint-performance-smoke.json` 通过：kernel、内存 harness、SQLite harness 的直接回答/单工具六组场景各 5 个样本全部成功。本轮仅验证脚本可用，不把小样本结果视为生产性能指标。
+- `uv build --wheel --offline --out-dir .baseagent/checkpoint-dist` 成功；wheel 中 81 个 Python 源文件与工作区逐字节一致，README 元数据一致，隔离解释器从 wheel 实际导入能力、配置、模型、中间件与回放公共 API 通过。
+- 待提交文件扫描未发现用户所提供凭据中的敏感值；三个合成 JSONL 的脱敏扫描通过。凭据、私有录像、数据库、测试日志和构建产物均保留在忽略范围内。`git diff --cached --check` 通过。
+
+本次为本地阶段基线，不发布包、不推送、不打 tag。Anthropic 真实 API、kernel 仅依赖 jsonschema 的独立运行环境验证和生产并发/负载验证仍未完成；这些边界不阻断用户选择的本地应用开发阶段。
+
+## 真实合成录像补证（2026-10-10）
+
+用户提供凭据文件后，仅将 DeepSeek 配置加载到本次子进程环境，未复制 .env 到仓库、未输出密钥。scripts/record_cassettes.py 使用固定合成提示词完成 6 次真实模型请求（上限 9，无自动重试），三个场景通过全部断言/脱敏扫描/离线回放后才发布：
+
+| 录像 | 实际模型调用 | 工具调用 | 直接验证 |
+| --- | --- | --- | --- |
+| tests/cassettes/deepseek_direct.jsonl | 1 | 0 | 固定直接回答 |
+| tests/cassettes/deepseek_tool.jsonl | 2 | 1 | 一次加法工具后回答 42 |
+| tests/cassettes/deepseek_correction.jsonl | 3 | 2 | 先除零失败，读取错误后下一次模型调用纠正为除以 2，再回答 42 |
+
+三场景报告未知用量均为 0；使用附件凭据值的隐私扫描通过，socket 连接被禁止时三个场景仍能完整回放。文件 hash、调用/用量及扫描/回放结果记录于忽略产物 `.baseagent/real-cassette-evidence.json`，不含凭据。
+
+录入后的全量回归：462 项全部通过、无跳过，208.807 秒，退出码 0。测试进程同样仅从附件加载配置供隐私扫描使用；单元/本地 HTTP 测试和真实录像回放均按已有离线测试入口执行。日志 `.baseagent/model-real-final-tests.log`。本轮未修改 Python 源码；新增三个真实录像并更新状态文档。离线 wheel 构建、81 个 Python 文件逐字节对比和当前 README 元数据核对通过，`git diff --check` 通过。
+
+DeepSeek 真实录像验收已完成；Anthropic 仍只有本地 HTTP 契约验证，kernel 的单独隔离环境/独立入口验证仍属于后续里程碑。本轮无提交、合并或推送。
+
+## 模型基础设施验收（2026-10-10，真实录像录入前）
+
+当前新增范围：库级严格录制/回放、OpenAI 兼容与 Anthropic 适配器、模型错误分类、Retry-After/可选抖动重试和共享令牌桶限流。复用既有同步/预算/工具安全重试机制；CLI/config 与既有未提交能力层未改动，无新增依赖、提交、合并、tag 或推送。
+
+| 契约 | 实现与直接证据 |
+| --- | --- |
+| 请求严格匹配、离线回放、用量/状态/事件一致 | testing/cassette.py；test_cassette.py 的 kernel 四场景、同步重试、同步/迭代共用请求与预留/估算测试；请求 hash 保留消息、工具 schema、生成参数和工具 ID，未知异常通过固定白名单恢复 |
+| JSONL 完整性及发布 | 缺文件/错误版本/重复字段/无效 usage/hash 拒绝；调用过多/不足明确失败；大小限额、无覆盖原子发布、失败关闭、真实并发使用拒绝；test_cassette.py |
+| 隐私与凭据 | 请求/响应/异常脱敏、私有目录忽略、短 secret/自定义规则测试；adapter repr/日志/traceback 不含假凭据；含换行的错误凭据预先拒绝；test_cassette.py、test_model_adapters.py、test_real_cassettes.py 的扫描 |
+| 两厂商模型契约 | llm/adapters.py、llm/model.py、llm/response.py；共享本地 HTTP 测试覆盖文本、工具、usage 缺失、429/500/529/504/401/上下文错误/坏 JSON/超时；Anthropic 多工具结果分组和缓存输入计数；无 SDK 隐式重试 |
+| 重试/限流/期限/实际账本 | middleware/retry.py、ratelimit.py、waiting.py；假时钟验证 Retry-After、抖动、取消、期限；共享并发限流；真实 SQLite 逐次尝试事件；限额不绕过；直接使用中间件到期也不调用 handler；test_model_middleware.py |
+| 取消后响应的用量 | 两适配器收到成功响应后由 harness 先记 usage，再停止后续执行；test_model_adapters.py 验证 cancelled、总用量 6、未知调用 0 |
+| 固定合成录像脚本 | scripts/record_cassettes.py：最多 9 次请求，三个场景全部断言/脱敏扫描/回放通过才发布，不覆盖；缺密钥、网络失败、录制失败均不发布；脚本端到端假模型只写临时目录，不冒充真实 fixtures |
+
+前置基线：423 项通过，197.598 秒。最终 `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v`：462 项，183.621 秒，退出码 0，459 项通过、3 项跳过。跳过项仅为缺少真实 DeepSeek 录像的 direct/tool/correction；不存在隐式模型请求。日志 `.baseagent/model-final-tests.log` 为忽略产物。新增 39 项（含 3 项真实录像待补），原有回归未删减。
+
+`uv build --wheel --offline` 成功；wheel 的全部 81 个 harness Python 文件与当前源码逐字节相同，从该 wheel 成功导入新增模型、回放、脱敏、重试及限流 API。`git diff --check` 通过。Kernel AST 边界/冻结基线差分包含在最终全量中；这些证据不替代未来仅 jsonschema 环境下的真实独立性验证。
+
+录入前的真实验证限制：当时缺少 DeepSeek 配置，脚本报告待补、三个录像测试跳过。这一 DeepSeek 缺口已由上方真实录入记录补齐；下述记录保留为初次实现的历史证据。Anthropic 本轮仅经过本地 HTTP 契约验证，无真实 API 冒烟。同步 I/O 仍受协作和传输超时约束；脱敏后的匹配不能区分同一占位符代表的不同私密值。完整用法和边界见 README.md。
+
 状态：2026-10-05 用户明确接受最后一次请求可能超预算，新增分词器估算预算模式。严格输入上界计数器不再是用户当前要求的阻断条件；原严格模式作为可选能力保留。其余 Windows 机械能力按下文逐项审查，新增模式最终全量门槛通过，当前约定范围已完成，适用边界见下文。范围来自 `HARNESS_PLAN.md` 的能力表、`SUBTASK_DESIGN.md` 的调用/状态/恢复契约和十项验收场景，以及 README 的实际入口。以下索引明确实现、直接断言与适用边界；测试数量不是完成证明。
 
 此前门槛（不覆盖新增估算模式）：最终源码 347 项全量测试通过（185.315 秒，退出码 0），命令 `.venv/Scripts/python.exe -m unittest discover -s tests -q`。wheel 中全部 harness Python 文件与当前 checkout 字节一致；wheel CLI 六场景共 35 项检查、构建产物专项 6 项检查和当前真实预授权委派 13 项检查均通过。源码摘要 `a0c17577a285948e50d9eb9f04a2c85f9f293f0eb29db70a301597b4f6bb450f`，报告路径及执行边界见下方。
