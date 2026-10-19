@@ -6,6 +6,130 @@ The library includes strict deterministic recording/replay and OpenAI-compatible
 
 For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
 
+## 快速上手（Quick Start）
+
+> 以下命令基于 HEAD `e4b4437` 的 `pyproject.toml`、`src/baseagent/main.py`、`applications/project_assistant/config.py` 与 `scripts/` 核对。
+
+### 1. 环境要求与安装
+
+- Python `>=3.12`（`.python-version` 为 3.12）。
+- 推荐使用 [uv](https://docs.astral.sh/uv/)（仓库含 `uv.lock`）；也可用标准 venv + pip。
+
+使用 uv：
+
+```bash
+# bash
+git clone https://github.com/TinyPandar/BaseAgent.git && cd BaseAgent
+uv sync                 # 创建 .venv 并安装锁定依赖
+uv sync --extra ui      # 可选：浏览器 UI（Chainlit）
+```
+
+```powershell
+# PowerShell
+git clone https://github.com/TinyPandar/BaseAgent.git; cd BaseAgent
+uv sync
+uv sync --extra ui      # 可选
+```
+
+使用 venv + pip（可编辑安装）：
+
+```bash
+# bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+```
+
+```powershell
+# PowerShell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+### 2. 配置 `.env`
+
+`.env` 已被 `.gitignore` 忽略，不要提交。代码实际读取的变量如下：
+
+| 变量 | 是否必需 | 读取位置 | 说明 |
+| --- | --- | --- | --- |
+| `DEEPSEEK_API_KEY` | CLI/UI 调用模型时必需 | `src/baseagent/main.py` | 缺失时报错 `DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL are required in local .env` |
+| `DEEPSEEK_BASE_URL` | CLI/UI 调用模型时必需 | `main.py` | OpenAI 兼容端点地址 |
+| `DEEPSEEK_MODEL` | 可选 | `main.py` | 默认 `deepseek-chat`；`--model` 优先 |
+| `OPENAI_API_KEY` | 仅 RAG 真实 embedding 需要 | `applications/project_assistant/config.py`、`rag/embedding.py` | 用 `--mock-embedding` 时不需要 |
+| `RAG_EMBEDDING_PROVIDER` | 可选 | `config.py` | 默认 `openai` |
+| `RAG_EMBEDDING_MODEL` | 可选 | `config.py` | 默认 `text-embedding-3-small` |
+| `RAG_INDEX_DIR` | 可选 | `config.py` | 默认 `.baseagent/rag_index`（入库脚本的 `--output-dir` 会覆盖） |
+| `RAG_COLLECTION_NAME` | 可选 | `config.py` | 默认 `baseagent_docs` |
+| `BASEAGENT_CASSETTE_MODE` | 可选，测试用 | `src/baseagent/testing/cassette.py` | 默认 `replay` |
+
+```dotenv
+DEEPSEEK_API_KEY=你的密钥
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+# DEEPSEEK_MODEL=deepseek-chat
+```
+
+注意：只有 CLI（`main.py`）和 `scripts/record_cassettes.py` 会调用 `load_dotenv()`。`scripts/build_knowledge_base.py` / `query_knowledge_base.py` 只读取进程环境变量，不会自动加载 `.env`；`OPENAI_API_KEY`、`RAG_*` 需在 shell 中导出。Anthropic 适配器（`api_key_env="ANTHROPIC_API_KEY"`）只在库级调用时由调用方指定，CLI 不读取。
+
+### 3. 运行 CLI
+
+```bash
+# bash（uv）
+uv run baseagent --list-tool-packages                       # 不需要模型/数据库
+uv run baseagent --eval-harness                             # 离线六场景评估，不需要密钥
+uv run baseagent "Explain the project structure" --root .   # 只读（默认不允许写/命令）
+uv run baseagent "Fix the failing test and verify it" --root . --allow-write --allow-command
+uv run baseagent --config examples/harness.readonly.json "Explain the project"
+# 或直接用 venv：
+.venv/bin/python -m baseagent "Explain the project structure" --root .
+```
+
+```powershell
+# PowerShell
+uv run baseagent --list-tool-packages
+uv run baseagent --eval-harness
+.\.venv\Scripts\python.exe -m baseagent "Explain the project structure" --root .
+.\.venv\Scripts\python.exe -m baseagent "Fix the failing test and verify it" --root . --allow-write --allow-command
+```
+
+会话默认存于 `.baseagent/sessions.sqlite3`（`--db` 可改）。`--allow-command` 不是沙箱。可选 UI：`uv run --extra ui baseagent-ui`，打开 `http://127.0.0.1:8000`。
+
+### 4. Project Assistant（RAG）离线演示
+
+应用模块需从仓库根目录运行（脚本自行把仓库根加入 `sys.path`）。
+
+```bash
+# bash
+.venv/bin/python -B scripts/demo_knowledge_search.py
+.venv/bin/python -B scripts/build_knowledge_base.py --mock-embedding
+.venv/bin/python -B scripts/query_knowledge_base.py "kernel architecture" --mock-embedding
+```
+
+```powershell
+# PowerShell
+.\.venv\Scripts\python.exe -B scripts/demo_knowledge_search.py
+.\.venv\Scripts\python.exe -B scripts/build_knowledge_base.py --mock-embedding
+.\.venv\Scripts\python.exe -B scripts/query_knowledge_base.py "kernel architecture" --mock-embedding
+```
+
+Mock embedding 只验证流程，不代表语义检索质量。
+
+### 5. 运行测试
+
+测试使用标准库 `unittest`，无需密钥，不发起网络请求。
+
+```bash
+# bash
+.venv/bin/python -B -m unittest discover -s tests -v                       # 全量
+.venv/bin/python -B -m unittest discover -s tests -p "test_kernel*.py" -v  # kernel 专项
+.venv/bin/python -B -m unittest discover -s tests -p "test_rag*.py" -v     # RAG 专项
+```
+
+```powershell
+# PowerShell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_kernel*.py" -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_rag*.py" -v
+```
+
 ## Single-task kernel
 
 `iter_agent(model, state, *, tools, hooks=(), cancellation=None)` advances a prepared task and yields `AgentEvent` values. Consume the iterator to completion; the supplied state contains the result. Existing `run_agent(...)` calls consume this kernel through the synchronous harness adapter and still return `State`.
