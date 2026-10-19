@@ -1,5 +1,7 @@
 # 当前路线（2026-10-10）
 
+2026-10-19 应用进展：Project Assistant Phase 1 的文档/源码 RAG 基础设施已提交；Phase 2 实现 `knowledge_search` / ToolPackage、来源可见性、片段核对、结果脱敏及离线回放。详见 [应用 README](applications/project_assistant/README.md)；真实回答质量及 coding 应用验收留待后续。下述历史框架路线不替代当前应用阶段清单。
+
 最新决策：将当前 harness 作为应用开发的阶段基线，本地提交现有能力/配置、模型适配、中间件、录制回放和性能测量成果。下一阶段优先开发带 RAG 的 Agent 应用与评测；具体应用范围另定。框架继续支持缺陷修复与实际应用需要的接口调整，常驻 runtime、并发准入、Redis/队列与容器等候选能力后置。下述 2026-10-09 框架路线保留为历史规划，不作为 RAG 应用的前置门槛。
 
 当前目标是可复用、白盒的个人 agent 框架：轻量 kernel + 扩展/装配 + 外层 runtime，科研、项目 spec/看板和日程属于应用层。权威架构、当前实现与后续验收见 [ARCHITECTURE.md](ARCHITECTURE.md)。

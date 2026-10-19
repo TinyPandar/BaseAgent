@@ -2,10 +2,14 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import List, Set
 
 from .rag.chunking import chunk_document, chunk_python_code, Chunk
+from .access import SourceAccess, excluded_path
+from baseagent.tools.workspace import Workspace
+from baseagent.tools.result import ToolFailure
 
 
 def collect_corpus(
@@ -39,36 +43,29 @@ def collect_corpus(
             "*.egg-info",
         ]
 
-    root_dir = Path(root_dir)
+    root_dir = Path(root_dir).resolve(strict=True)
     all_chunks = []
-
-    # Collect markdown files
-    for pattern in ["*.md"]:
-        for file_path in root_dir.rglob(pattern):
+    access = SourceAccess(Workspace(root_dir), tuple(include_patterns), tuple(exclude_patterns))
+    for directory, dirs, files in os.walk(root_dir, followlinks=False):
+        dirs[:] = sorted(name for name in dirs
+                         if not (Path(directory) / name).is_symlink()
+                         and not (Path(directory) / name).is_junction()
+                         and not excluded_path(
+                             (Path(directory) / name).relative_to(root_dir).as_posix(), exclude_patterns
+                         ))
+        for name in sorted(files):
+            file_path = Path(directory) / name
             if _should_exclude(file_path, root_dir, exclude_patterns):
                 continue
-
-            try:
-                content = file_path.read_text(encoding="utf-8")
-                relative_path = file_path.relative_to(root_dir).as_posix()
-                chunks = chunk_document(content, relative_path)
-                all_chunks.extend(chunks)
-            except (UnicodeDecodeError, OSError):
-                # Skip files that can't be read
+            if file_path.suffix.casefold() not in {".md", ".py"}:
                 continue
-
-    # Collect Python source files
-    for pattern in ["*.py"]:
-        for file_path in root_dir.rglob(pattern):
-            if _should_exclude(file_path, root_dir, exclude_patterns):
-                continue
-
             try:
-                content = file_path.read_text(encoding="utf-8")
                 relative_path = file_path.relative_to(root_dir).as_posix()
-                chunks = chunk_python_code(content, relative_path)
+                content = access.read(relative_path).decode("utf-8")
+                chunker = chunk_document if file_path.suffix.casefold() == ".md" else chunk_python_code
+                chunks = chunker(content, relative_path)
                 all_chunks.extend(chunks)
-            except (UnicodeDecodeError, OSError, SyntaxError):
+            except (UnicodeDecodeError, OSError, SyntaxError, ToolFailure):
                 # Skip files that can't be read or parsed
                 continue
 
@@ -77,16 +74,7 @@ def collect_corpus(
 
 def _should_exclude(file_path: Path, root_dir: Path, exclude_patterns: List[str]) -> bool:
     """Check if a file should be excluded based on patterns."""
-    relative_path = file_path.relative_to(root_dir)
-    parts = relative_path.parts
-
-    for pattern in exclude_patterns:
-        # Check if any part of the path matches the exclude pattern
-        for part in parts:
-            if part.startswith(pattern.rstrip("/*")):
-                return True
-
-    return False
+    return excluded_path(file_path.relative_to(root_dir).as_posix(), exclude_patterns)
 
 
 def compute_corpus_version(chunks: List[Chunk]) -> str:
@@ -102,8 +90,8 @@ def compute_corpus_version(chunks: List[Chunk]) -> str:
     # Sort chunks by file path and line number for deterministic ordering
     sorted_chunks = sorted(chunks, key=lambda c: (c.file_path, c.line_start))
 
-    # Concatenate all chunk hashes
-    combined = "".join(c.content_hash for c in sorted_chunks)
+    # Bind identity as well as text: a rename changes citations and corpus version.
+    combined = json.dumps([c.doc_id for c in sorted_chunks], ensure_ascii=False)
 
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 

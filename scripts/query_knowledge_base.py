@@ -11,7 +11,10 @@ sys.path.insert(0, str(project_root))
 from applications.project_assistant.config import RAGConfig
 from applications.project_assistant.rag.embedding import OpenAIEmbedding, MockEmbedding
 from applications.project_assistant.rag.indexing import VectorIndex
-from applications.project_assistant.rag.retrieval import retrieve
+from applications.project_assistant.access import SourceAccess
+from applications.project_assistant.tools import knowledge_package
+from baseagent.kernel import ToolRegistry
+from baseagent.tools.workspace import Workspace
 
 
 def main():
@@ -36,6 +39,9 @@ def main():
         default=".baseagent/rag_index",
         help="Directory containing the index",
     )
+    parser.add_argument("--corpus-root", default=".", help="Root of the currently visible source files")
+    parser.add_argument("--include", action="append", help="Visible source glob; repeat to add scopes")
+    parser.add_argument("--exclude", action="append", default=[], help="Additional denied source glob")
 
     args = parser.parse_args()
 
@@ -66,7 +72,7 @@ def main():
             collection_name=config.collection_name,
         )
     except Exception as e:
-        print(f"ERROR: Failed to load index: {e}")
+        print(f"ERROR: Failed to load index ({type(e).__name__})")
         print("Run scripts/build_knowledge_base.py first to build the index")
         return 1
 
@@ -76,11 +82,18 @@ def main():
         return 1
 
     print(f"Index loaded: {chunk_count} chunks")
-    print(f"\nQuery: {args.query}")
     print(f"Top {args.top_k} results:\n")
 
-    # Retrieve evidence
-    evidence_list = retrieve(args.query, index, top_k=args.top_k)
+    # Use the same source visibility and redaction boundary as the agent tool.
+    registry = ToolRegistry()
+    knowledge_package(index, SourceAccess(Workspace(args.corpus_root),
+                      tuple(args.include or ("*.md", "*.py")), tuple(args.exclude)),
+                      corpus_version="untracked-interactive-query").install(registry)
+    result = registry.execute("knowledge_search", {"query": args.query, "top_k": args.top_k})
+    if not result.ok:
+        print(f"ERROR: {result.error.code}: {result.error.message}")
+        return 1
+    evidence_list = result.data["evidence"]
 
     if not evidence_list:
         print("No results found.")
@@ -88,18 +101,20 @@ def main():
 
     # Display results
     for i, evidence in enumerate(evidence_list, 1):
-        print(f"--- Result {i} (score: {evidence.score:.4f}) ---")
-        print(f"Citation: {evidence.citation}")
-        print(f"Type: {evidence.chunk_type}")
-        if evidence.parent_section:
-            print(f"Section: {evidence.parent_section}")
-        if evidence.function_name:
-            print(f"Function: {evidence.function_name}")
-        if evidence.class_name:
-            print(f"Class: {evidence.class_name}")
+        print(f"--- Result {i} (distance: {evidence['score']:.4f}) ---")
+        print(f"Citation: {evidence['citation']}")
+        print(f"Type: {evidence['chunk_type']}")
+        if evidence["parent_section"]:
+            print(f"Section: {evidence['parent_section']}")
+        if evidence["function_name"]:
+            print(f"Function: {evidence['function_name']}")
+        if evidence["class_name"]:
+            print(f"Class: {evidence['class_name']}")
+        if evidence["redacted"]:
+            print("Sensitive text redacted")
         print(f"\nContent preview (first 200 chars):")
-        print(evidence.content[:200])
-        if len(evidence.content) > 200:
+        print(evidence["content"][:200])
+        if len(evidence["content"]) > 200:
             print("...")
         print()
 

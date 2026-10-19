@@ -2,6 +2,18 @@
 
 > 本文记录各轮验收证据；当前架构和里程碑见 [ARCHITECTURE.md](ARCHITECTURE.md)。历史测试和忽略目录下的报告不代表当前 checkout 已重新验证。
 
+## Project Assistant Phase 2（2026-10-19）
+
+本轮从 `ca9f431` 的干净工作区接续应用开发，范围为 `knowledge_search` 工具包、来源可见性、结果脱敏及录制/回放。应用实现位于 `applications/project_assistant/access.py`、`tools.py`，复用现有 `ToolPackage`、registry、run_agent、工具策略和配置漂移检查；没有修改 kernel 或增加第三方依赖。
+
+- 开发前全量基线：477 项通过，218.732 秒，退出码 0，日志 `.baseagent/phase2-baseline-tests.log`。
+- 最终全量回归：`.venv/Scripts/python.exe -B -m unittest discover -s tests -v`，497 项全部通过，无跳过，235.373 秒，退出码 0，日志 `.baseagent/phase2-full-tests.log`。所有本轮 Python 实现修改均先于此运行；随后仅补充文档。`git diff --cached --check` 通过；13 个待提交文件未检出敏感环境变量原值，索引、数据库和日志保留在忽略目录内。
+- RAG 专项：`.venv/Scripts/python.exe -B -m unittest discover -s tests -p "test_rag*.py" -v`，35 项通过，3.592 秒，退出码 0，日志 `.baseagent/phase2-rag-tests.log`。其中新增 20 项覆盖宿主文件 ACL、backend 保护路径、路径穿越/Windows junction 拒绝、过期/伪造引用过滤、脱敏后才持久化/录制、结果限额、策略拒绝/审批/取消、恢复配置漂移及查询 CLI。
+- `.venv/Scripts/python.exe -B scripts/demo_knowledge_search.py`：7 项检查全部通过。临时合成语料、Mock embedding、真实 Chroma 查询、确定性模型响应；record 后断网 replay，检索在 replay 中仍实际执行，状态一致且写权限保持关闭。脚本生成的临时假模型录像不会作为真实 provider 录像入库。
+- 仓库语料 CLI smoke：`build_knowledge_base.py --mock-embedding --output-dir .baseagent/phase2-smoke-index --metadata-file .baseagent/phase2-smoke-corpus.json` 成功入库 147 个文件、1916 个片段，版本 `ab74db3b4a8de83c`。随后 `query_knowledge_base.py "kernel architecture" --mock-embedding --index-dir .baseagent/phase2-smoke-index --top-k 3` 成功返回 3 条带有效行号的证据。日志为 `.baseagent/phase2-build-smoke.log`、`.baseagent/phase2-query-smoke.log`；这些是入库/接口证据，Mock embedding 结果不代表语义检索质量。语料统计仅对应当时的工作区快照。
+
+边界：knowledge ACL 与 coding ToolPolicy 分别由宿主配置；固定包背后的索引不应静默变更，重新入库需以新语料版本重新装配。默认排除私有路径且出口尽力脱敏，不保证识别所有未知凭据格式，也不自动清理索引中的历史原文。工具只核对被检索片段及当前引用位置，不保证整个索引快照始终最新。底层 LocalBackend 的访问竞态边界仍适用，不是 OS 沙箱。引用/参考标记不能保证模型回答正确或免疫提示词注入。本轮没有付费 API 调用；真实回答质量、检索质量评测和受控 coding 闭环留待后续。
+
 > 2026-10-09：后续范围已对齐可复用框架路线，见 ARCHITECTURE.md 的“目标路线与验收”。当时的完成声明仅覆盖同步 harness 约定范围；2026-10-09 当轮只改文档、未重跑代码验收。模型基础设施的后续实现与复验见下面 2026-10-10 记录，常驻 runtime 和个人 assistant 仍未实现。
 
 ## Harness 阶段基线提交验收（2026-10-10）

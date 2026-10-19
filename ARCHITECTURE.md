@@ -4,6 +4,8 @@
 
 ## 当前阶段决策（2026-10-10）
 
+2026-10-19 更新：Project Assistant Phase 1 已交付 RAG 基础设施，Phase 2 已实现应用层 `knowledge_search` 工具包、文件可见范围、引用原文核对、脱敏及离线模型/真实检索回放。代码位于 `applications/project_assistant/`，不改 kernel 或默认 CLI 工具集。现状与边界见 [应用 README](applications/project_assistant/README.md)；下方 2026-10-10 路线及交接中的“RAG 待开发”是历史快照，真实模型质量与 coding 闭环评测仍待实施。
+
 2026-10-19 应用讨论与新会话交接见 [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md)：保留已有 coding 应用，候选方向为带 RAG 的个人开发者知识与项目助理；其中建议范围与待定选型不代表已经实现或最终确认。
 
 用户决定将当前同步 harness、能力/配置装配和模型基础设施作为应用开发的阶段基线，提交现有成果。下一阶段优先开发带 RAG 的 Agent 应用与检索/回答评测，面向 AI 应用 / Agent 工程项目展示；具体知识库和应用需求另行确定。本次只保存框架成果与路线，不实现 RAG。

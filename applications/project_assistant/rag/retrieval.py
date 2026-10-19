@@ -19,6 +19,7 @@ class Evidence:
     parent_section: Optional[str] = None
     function_name: Optional[str] = None
     class_name: Optional[str] = None
+    content_hash: Optional[str] = None
 
     @property
     def citation(self) -> str:
@@ -40,6 +41,7 @@ class Evidence:
             "parent_section": self.parent_section,
             "function_name": self.function_name,
             "class_name": self.class_name,
+            "content_hash": self.content_hash,
         }
 
 
@@ -82,6 +84,7 @@ def retrieve(
             parent_section=metadata.get("parent_section") or None,
             function_name=metadata.get("function_name") or None,
             class_name=metadata.get("class_name") or None,
+            content_hash=metadata.get("content_hash"),
         )
         evidence_list.append(evidence)
 
