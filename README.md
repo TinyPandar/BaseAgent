@@ -4,6 +4,8 @@ A reusable, white-box agent framework built around a small single-task kernel, c
 
 The library includes strict deterministic recording/replay and OpenAI-compatible/Anthropic adapters with retry and rate-limit middleware. The current harness is the baseline for the next phase: a RAG-enabled Agent application with retrieval and answer evaluation. Corpus and application scope are still to be defined; RAG is not implemented yet. Runtime, concurrency admission, Redis/queues, and other framework extensions will follow demonstrated application needs. See [ARCHITECTURE.md](ARCHITECTURE.md) for current status, deferred milestones, and acceptance criteria.
 
+For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
+
 ## Single-task kernel
 
 `iter_agent(model, state, *, tools, hooks=(), cancellation=None)` advances a prepared task and yields `AgentEvent` values. Consume the iterator to completion; the supplied state contains the result. Existing `run_agent(...)` calls consume this kernel through the synchronous harness adapter and still return `State`.
