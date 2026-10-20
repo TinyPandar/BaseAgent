@@ -26,9 +26,9 @@ mean the requested fact is not established by this checkout. These are manual
 labels, not proof that such facts do not exist elsewhere.
 
 The corpus is **exactly `collect_corpus(repository_root)` with its default
-Markdown/Python includes and exclusions**. It includes visible tests, scripts,
-and evaluation Python/Markdown files, as the existing indexer does. Evaluation
-JSON, including the dataset and reports, is not included. The dataset binds to
+Markdown/Python includes and exclusions**. It excludes `tests/` and
+`applications/project_assistant/evaluation/` by default, including evaluation
+questions and reports. Application source and scripts remain included. The dataset binds to
 `compute_corpus_version(chunks)`: sort chunks by path/start line, serialize their
 `doc_id` values, SHA256, then take the first 16 hexadecimal characters. This
 captures uncommitted source edits and line shifts, unlike git HEAD alone.

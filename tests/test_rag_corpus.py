@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from applications.project_assistant.config import RAGConfig
 from applications.project_assistant.corpus import (
     collect_corpus,
     compute_corpus_version,
@@ -43,6 +44,22 @@ class TestCorpusCollection(unittest.TestCase):
 
         # Should not include files from .git
         self.assertFalse(any(".git" in path for path in file_paths))
+
+    def test_default_exclusions_keep_source_only(self):
+        for relative in ("tests/foo.py", "applications/project_assistant/evaluation/x.py",
+                         "applications/project_assistant/rag/ok.py"):
+            path = self.temp_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("def example(): pass")
+
+        defaults = collect_corpus(self.temp_dir)
+        configured = collect_corpus(self.temp_dir, exclude_patterns=RAGConfig().exclude_patterns)
+        paths = {chunk.file_path for chunk in defaults}
+        self.assertEqual(paths, {chunk.file_path for chunk in configured})
+        self.assertIn("src/main.py", paths)
+        self.assertIn("applications/project_assistant/rag/ok.py", paths)
+        excluded = ("tests/", "applications/project_assistant/evaluation/")
+        self.assertFalse(any(path.startswith(excluded) for path in paths))
 
     def test_corpus_version_deterministic(self):
         """Corpus version should be deterministic for the same content."""

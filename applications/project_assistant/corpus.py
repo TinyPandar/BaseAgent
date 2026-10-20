@@ -39,7 +39,8 @@ def collect_corpus(
             ".venv",
             "venv",
             ".pytest_cache",
-            "tests/cassettes_local",
+            "tests",
+            "applications/project_assistant/evaluation",
             "*.egg-info",
         ]
 

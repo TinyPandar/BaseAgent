@@ -147,70 +147,69 @@ def chunk_python_code(
     content: str,
     file_path: str,
     include_module_level: bool = True,
+    max_lines: int = 200,
+    overlap_lines: int = 5,
 ) -> List[Chunk]:
-    """
-    Chunk Python source code by function and class definitions.
+    """Chunk top-level definitions without nested duplicates.
 
-    Args:
-        content: Python source code
-        file_path: Source file path for metadata
-        include_module_level: If True, include module-level code and docstrings
-
-    Returns:
-        List of Chunk objects, one per function/class/module-level block
+    Definitions exceeding max_lines use overlapping source-line windows, keeping
+    their function/class metadata. Classes fitting max_lines stay whole; larger
+    classes split into a preamble and methods. Module statements are included
+    when include_module_level.
     """
+    if max_lines <= 0 or not 0 <= overlap_lines < max_lines:
+        raise ValueError("require max_lines > 0 and 0 <= overlap_lines < max_lines")
     lines = content.splitlines(keepends=False)
     chunks = []
 
     try:
         tree = ast.parse(content)
     except SyntaxError:
-        # Fallback to text chunking if parse fails
-        return _chunk_text_fixed_size(content, file_path, max_lines=100, overlap_lines=10)
+        return _chunk_text_fixed_size(content, file_path, max_lines, overlap_lines)
 
-    # Extract module-level docstring
-    module_docstring = ast.get_docstring(tree)
-    if include_module_level and module_docstring:
-        # Find docstring location (usually at the top)
-        for i, line in enumerate(lines[:10]):
-            if '"""' in line or "'''" in line:
-                # Simple heuristic: docstring ends at first closing quotes
-                end_line = i + 1
-                for j in range(i + 1, min(i + 50, len(lines))):
-                    if '"""' in lines[j] or "'''" in lines[j]:
-                        end_line = j + 1
-                        break
-
-                chunks.append(Chunk(
-                    content='\n'.join(lines[i:end_line]),
-                    file_path=file_path,
-                    line_start=i + 1,
-                    line_end=end_line,
-                    chunk_type='python_module',
-                ))
+    def append_block(start, end, chunk_type, function_name=None, class_name=None):
+        blocks = _chunk_text_fixed_size(
+            '\n'.join(lines[start - 1:end]), file_path, max_lines,
+            overlap_lines, base_line=start,
+        )
+        for chunk in blocks:
+            chunk.chunk_type = chunk_type
+            chunk.function_name = function_name
+            chunk.class_name = class_name
+            chunks.append(chunk)
+            if chunk.line_end == end:
                 break
 
-    # Extract functions and classes
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            start_line = node.lineno
-            # Find actual end line (ast gives first line only)
-            end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line + 10
+    def definition_start(node):
+        return min([node.lineno] + [d.lineno for d in node.decorator_list])
 
-            # Extract source lines
-            chunk_lines = lines[start_line - 1:end_line]
-            chunk_content = '\n'.join(chunk_lines)
+    if include_module_level:
+        module_nodes = []
+        for node in [*tree.body, None]:
+            if node is None or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if module_nodes:
+                    append_block(module_nodes[0].lineno, module_nodes[-1].end_lineno,
+                                 'python_module')
+                    module_nodes = []
+            else:
+                module_nodes.append(node)
 
-            chunk_type = 'python_class' if isinstance(node, ast.ClassDef) else 'python_function'
-
-            chunks.append(Chunk(
-                content=chunk_content,
-                file_path=file_path,
-                line_start=start_line,
-                line_end=end_line,
-                chunk_type=chunk_type,
-                function_name=node.name if chunk_type == 'python_function' else None,
-                class_name=node.name if chunk_type == 'python_class' else None,
-            ))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            append_block(definition_start(node), node.end_lineno,
+                         'python_function', function_name=node.name)
+        elif isinstance(node, ast.ClassDef):
+            start = definition_start(node)
+            if node.end_lineno - start + 1 <= max_lines:
+                append_block(start, node.end_lineno, 'python_class', class_name=node.name)
+                continue
+            methods = [child for child in node.body
+                       if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            header_end = definition_start(methods[0]) - 1 if methods else node.end_lineno
+            append_block(start, header_end,
+                         'python_class', class_name=node.name)
+            for method in methods:
+                append_block(definition_start(method), method.end_lineno,
+                             'python_function', function_name=method.name, class_name=node.name)
 
     return chunks
