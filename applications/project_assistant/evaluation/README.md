@@ -112,3 +112,109 @@ reported tokens vs. a 973k chars/2 estimate). No-answer questions are excluded
 from Recall/MRR; their top-1 distances (tune 0.76-1.01, test 0.89-1.11) overlap
 answerable ones, so a distance threshold alone cannot reject them yet.
 The tune split was not used for any tuning before this first run.
+
+## Candidate retrieval experiments (Phase 3 P0 step 5)
+
+`run_retrieval_experiments.py` reads an **existing** Chroma collection; it never
+builds an index or embeds corpus chunks. Use `--corpus-root` pointing to the frozen
+checkout bound by `questions.json`, plus its existing `--index-dir` and optional
+`--collection-name`. Changes to this working checkout intentionally invalidate
+the old corpus binding: retain the old checkout for comparisons rather than
+rebinding the gold set. The script validates evidence and corpus version, chunk
+count, IDs, text and metadata before creating an embedding client. Old indexes
+without version metadata are accepted only when every chunk equals the snapshot.
+
+```bash
+# Offline plumbing baseline; the existing index must also use mock embeddings.
+python scripts/run_retrieval_experiments.py --split tune --mock-embedding \
+  --corpus-root /tmp/frozen-corpus --index-dir /tmp/frozen-index \
+  --query-cache .baseagent/mock-query-embeddings.json
+```
+
+Omit `--mock-embedding` to use `RAGConfig`'s configured embedding provider. Query
+vectors for all 35 questions are cached once as JSON under `.baseagent/` by
+default, or at `--query-cache` (gitignored or outside both checkouts). Matching
+cache hits do not construct an embedding client and cost no query embedding
+calls. Caches bind to provider, model, dimensions and an endpoint fingerprint;
+use separate caches for different embedding configurations. Query vectors must
+use the same model/dimensions as the existing index; mock rankings do not measure
+semantic quality. No live experiment was run as part of this implementation.
+
+Tune runs vector, BM25, 18 hybrid combinations (`rrf_k=10/30/60`, vector:BM25
+weights `1:1/1:2/2:1`, depth `20/50`), and heuristic reranking of the best hybrid.
+The winner maximizes MRR, then Recall@5 (remaining ties use grid order). Only tune
+questions are scored. Each config records answerable/no-answer top-1 score
+samples, the threshold maximizing tune balanced accuracy, balanced accuracy and
+ordinary accuracy. Missing candidates always abstain. All experiment scores are
+higher-is-better: vector distances are negated; other scores retain relevance.
+Threshold ties use the smallest threshold. Tune accuracy is an in-sample result.
+
+The tune report and stdout provide `best_hybrid_params` and `final_thresholds`.
+Pass those JSON objects explicitly for the held-out run; do not adjust them on
+test. `--final` evaluates each named config once and writes one new report using
+`write_report`; no grid or threshold selection runs on test.
+
+```bash
+python scripts/run_retrieval_experiments.py --final --mock-embedding \
+  --corpus-root /tmp/frozen-corpus --index-dir /tmp/frozen-index \
+  --query-cache .baseagent/mock-query-embeddings.json \
+  --hybrid-params '{"rrf_k":30,"vector_weight":1,"bm25_weight":2,"candidate_depth":50}' \
+  --thresholds '{"vector":-0.8,"bm25":2.5,"hybrid":0.05,"hybrid+heuristic":0.4}'
+```
+
+The values above illustrate the format; substitute actual tune output. Optionally
+select final configs with `--configs vector bm25 hybrid hybrid+heuristic`.
+Reports under `evaluation/reports/` are append-only and record parameters,
+per-question results, corpus/question hashes, API attempts, actual tokens and
+estimates. Keep BM25 (`RAG_BM25_K1/B`) and embedding settings fixed between runs.
+
+Qwen reranking is excluded unless `--allow-rerank-api --max-rerank-tokens N` is
+supplied. It uses `qwen3-rerank` at `POST {base}/reranks`, truncates documents to
+6000 characters, and checks a cumulative conservative chars/2 estimate before
+every request (including repeated queries per document). Response usage is
+counted when supplied; otherwise tokens are marked estimated. Actual usage above
+the estimate reduces the remaining budget; estimates cannot guarantee exact
+provider billing. `RAG_RERANK_BASE_URL` overrides the embedding base, otherwise a
+trailing `/compatible-mode/v1` becomes `/compatible-api/v1`.
+`RAG_RERANK_API_KEY` falls back to `RAG_EMBEDDING_API_KEY`. Neither endpoint nor
+key is included in reports or transport errors. Rerank API calls themselves
+are not cached; omit the flag for repeat runs without rerank charges.
+
+Application retrieval defaults to vector with unchanged distance scores.
+`RAG_RETRIEVAL_MODE=vector|bm25|hybrid` or `retrieve(..., config=RAGConfig(...))`
+opts into alternatives. Fusion parameters use `RAG_RRF_K`, `RAG_VECTOR_WEIGHT`,
+`RAG_BM25_WEIGHT`, `RAG_CANDIDATE_DEPTH`; BM25 uses `RAG_BM25_K1/B`.
+Reranking requires explicitly passing a `Reranker` to `retrieve`; it is off by
+default. BM25/hybrid/reranked scores use a relevance floor for `min_score`, while
+vector uses the original distance ceiling. A reusable `lexical_index` can be
+passed to avoid rebuilding BM25 for each application request.
+
+```bash
+python -m unittest tests.test_retrieval_experiments
+ruff check applications/project_assistant/rag/lexical.py applications/project_assistant/rag/hybrid.py applications/project_assistant/rag/rerank.py applications/project_assistant/evaluation/experiments.py scripts/run_retrieval_experiments.py tests/test_retrieval_experiments.py
+```
+
+### Candidate experiments (2026-10-20, frozen corpus `c2b4c7b4b440ebe3`, reused Bailian index)
+
+Params were chosen on tune only (best hybrid: `rrf_k=30`, vector:BM25 = 1:2,
+depth 20); test was evaluated once with those fixed params and tune thresholds.
+
+| Config | tune R@1/3/5 | tune MRR | test R@1/3/5 | test MRR |
+|---|---|---:|---|---:|
+| vector | 0.156/0.281/0.281 | 0.260 | 0.222/0.500/0.562 | 0.486 |
+| BM25 | 0.302/0.365/0.427 | 0.434 | 0.326/0.354/0.604 | 0.562 |
+| hybrid (RRF) | 0.250/0.396/0.594 | 0.452 | 0.326/0.438/0.632 | 0.565 |
+| hybrid + heuristic rerank | 0.208/0.271/0.323 | 0.294 | 0.104/0.299/0.382 | 0.312 |
+| hybrid + qwen3-rerank | 0.344/0.458/0.615 | 0.558 | 0.465/0.562/0.674 | 0.646 |
+
+No-answer rejection (top-1 score threshold picked on tune, 4 no-answer vs 16
+answerable; test has only 3 no-answer, so treat as indicative): vector distance
+balanced accuracy tune 0.97 / test 0.88; hybrid RRF tune 0.75 / test 1.00;
+qwen3-rerank score tune 0.88 / test 0.96. No threshold is reliable at this
+sample size. The heuristic reranker hurts and should not be used.
+
+Defaults stay unchanged (`RAG_RETRIEVAL_MODE=vector`, no reranker): the gains
+are consistent but measured on 16/12 answerable questions. Recommended opt-in:
+hybrid (free); add qwen3-rerank (~11k tokens per query at depth 20) where
+latency/cost allow. Spend: 4 query-embedding calls (580 tokens, cached), 35
+rerank calls (410,621 tokens).

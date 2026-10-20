@@ -99,7 +99,7 @@ Kernel 的直接依赖只允许自身、标准库以及 `kernel/tools.py` 中的
 
 ### 评测与调优（Phase 3 P0 检索评测已落地）
 
-2026-10-20：新增 `applications/project_assistant/evaluation/`（35 题问题集，tune/test 分开并绑定 `corpus_version`；`scripts/evaluate_retrieval.py` 计算 Recall@1/3/5 与 MRR，报告只新增不覆盖，见 `evaluation/reports/`）。`OpenAIEmbedding` 维度改为可配置或按返回推断，支持 `RAG_EMBEDDING_BASE_URL`、`RAG_EMBEDDING_API_KEY`、`RAG_EMBEDDING_BATCH_SIZE`、`RAG_EMBEDDING_DIMENSIONS`（兼容百炼 OpenAI 兼容端点）。实测数值见 `evaluation/README.md`。
+2026-10-20：新增 `applications/project_assistant/evaluation/`（35 题问题集，tune/test 分开并绑定 `corpus_version`；`scripts/evaluate_retrieval.py` 计算 Recall@1/3/5 与 MRR，报告只新增不覆盖，见 `evaluation/reports/`）。`OpenAIEmbedding` 维度改为可配置或按返回推断，支持 `RAG_EMBEDDING_BASE_URL`、`RAG_EMBEDDING_API_KEY`、`RAG_EMBEDDING_BATCH_SIZE`、`RAG_EMBEDDING_DIMENSIONS`（兼容百炼 OpenAI 兼容端点）。实测数值见 `evaluation/README.md`。候选实验：stdlib BM25、RRF 混合检索（`RAG_RETRIEVAL_MODE`，默认 vector）、启发式与 qwen3-rerank 重排（默认关闭），`scripts/run_retrieval_experiments.py` 在冻结语料上只用 tune 调参、test 只跑一次。
 
 先固定语料版本、模型/提示词和一批带参考答案、证据位置的问题，区分调优集与最终测试集。可从约 30～50 个问题起步，覆盖精确标识符、概念解释、跨文件证据、无答案以及过期资料。
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "e00404457b007918",
+  "corpus_version": "5f6a966874b3fc13",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:15-72": "72ee9690e3a473eaf95dabf61dddf60a47cfd5dd9b4dd124e4f50b97e7305fab",
@@ -9,7 +9,6 @@
     "applications/project_assistant/access.py:49-62": "f59d14753ae7e3e7684931e1a9f32d04bed19043e840754276e442afd516b5ef",
     "applications/project_assistant/rag/chunking.py:40-112": "535eaa9188ffd6a3885f7524b16069a58ded1107291cbbb389c6d0ad501714d8",
     "applications/project_assistant/rag/embedding.py:138-156": "b7afa1b184baaf9bb8a59bde677b95ca471f03544f5c66396ccce4ee30c2118b",
-    "applications/project_assistant/rag/retrieval.py:48-91": "1f8e04dc8f0fbfe7e4d00ed3b05d1c1af5bf9fbc9e01be95f3d8fe592ee5c919",
     "applications/project_assistant/rag/chunking.py:12-37": "7caf2c88bc08cfdbdc064eb174e250fadd946999360da274d6b568fd71651253",
     "applications/project_assistant/access.py:18-27": "cabc78d4ce97b2dd61a5761d081474b92b5d4243c183196f586ebeaee883a34d",
     "applications/project_assistant/access.py:11-15": "f9dffef5b8dc4978de2b983b666871b98bdf0b70fe1179a7004dc324845da561",
@@ -18,7 +17,6 @@
     "applications/project_assistant/tools.py:63-82": "d6bb1f45d8d1bbbaa061e1341981f45f397a9d9713c42594788ae27f0efe1321",
     "applications/project_assistant/rag/chunking.py:115-143": "3bfaf64c133043a418b65c4d59a3c4f987654681060e8474618721d1094005cd",
     "applications/project_assistant/rag/embedding.py:132-164": "0b97fc933f8ed20d09e167585fdca127596275df6e48f61cb8442fbd083999c6",
-    "applications/project_assistant/config.py:60-72": "b567bb00eb5ea0be3507e7b2f3d8d239e7fc68d0300669dd225dd8ac4608e537",
     "scripts/build_knowledge_base.py:23-117": "e9021f5382aeb426b8079da1a9a803b7ef4f79c5df69138daf9a543026e9a766",
     "applications/project_assistant/rag/embedding.py:47-91": "331169263b19dae393cb566633bf87aeedd2409c3f2518fc7031a3201d41b5de",
     "applications/project_assistant/tools.py:63-71": "561cc6b3a8ed9b70a28cab6947b489fb53941fdbe2d1c50145e6fda666bdb299",
@@ -39,7 +37,9 @@
     "DEVELOPMENT_HANDOFF.md:84-88": "94f8b40aa6d9e605374432b7a564deebefbba0f3bd54bdaf031e1c245949b883",
     "DEVELOPMENT_HANDOFF.md:40-40": "40ec18e30df8d6773df82e3f8d74aaec76175add5446fda5df38f2d4b39fd367",
     "src/baseagent/main.py:71-439": "0d8f76e4bca27b383b32aa2b71606baf42887c95e6d2a0d789afb29fe9021d5f",
-    "applications/project_assistant/evaluation/retrieval.py:88-115": "2706b422178b8c71e7bedc1175e64c945ad8a49ed935eada4ac50709b54547c7"
+    "applications/project_assistant/evaluation/retrieval.py:88-115": "2706b422178b8c71e7bedc1175e64c945ad8a49ed935eada4ac50709b54547c7",
+    "applications/project_assistant/rag/retrieval.py:47-121": "427f2b1e9ac09040ebd4765e9c45d02b92106ac0f18b9303df8e9a8ce73d743d",
+    "applications/project_assistant/config.py:80-99": "7542ba3a760db9e75ac6261a8ea9fbb1315bae69bdff52d5235a8ecd5c6bf5af"
   },
   "questions": [
     {
@@ -107,9 +107,9 @@
       "split": "tune",
       "category": "exact_identifier",
       "question": "What does retrieve return and how does min_score filter results?",
-      "answer_summary": "Evidence objects; distances above the threshold are discarded.",
+      "answer_summary": "Evidence objects; in default vector mode distances above min_score are discarded (other modes treat it as a relevance floor).",
       "expected_evidence": [
-        "applications/project_assistant/rag/retrieval.py:48-91"
+        "applications/project_assistant/rag/retrieval.py:47-121"
       ]
     },
     {
@@ -162,7 +162,7 @@
       "question": "Are smaller or larger retrieval scores better in this RAG implementation?",
       "answer_summary": "Scores are Chroma distances, so lower is better.",
       "expected_evidence": [
-        "applications/project_assistant/rag/retrieval.py:48-91"
+        "applications/project_assistant/rag/retrieval.py:47-121"
       ]
     },
     {
@@ -192,7 +192,7 @@
       "question": "How do RAG_EMBEDDING_DIMENSION and RAG_EMBEDDING_BASE_URL reach the OpenAI client in the build script?",
       "answer_summary": "RAGConfig.from_env reads them; the build script forwards both; OpenAIEmbedding configures the client and request.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:60-72",
+        "applications/project_assistant/config.py:80-99",
         "scripts/build_knowledge_base.py:23-117",
         "applications/project_assistant/rag/embedding.py:47-91"
       ]
@@ -228,7 +228,7 @@
       "answer_summary": "VectorIndex.search formats results, retrieve creates Evidence objects, and the tool validates those sources.",
       "expected_evidence": [
         "applications/project_assistant/rag/indexing.py:97-136",
-        "applications/project_assistant/rag/retrieval.py:48-91",
+        "applications/project_assistant/rag/retrieval.py:47-121",
         "applications/project_assistant/tools.py:58-75"
       ]
     },
@@ -261,7 +261,7 @@
       "question": "How does the query script pass endpoint and dimension settings to the embedding provider?",
       "answer_summary": "It reads RAGConfig.from_env and forwards embedding_dimension and embedding_base_url.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:60-72",
+        "applications/project_assistant/config.py:80-99",
         "scripts/query_knowledge_base.py:22-126"
       ]
     },
@@ -297,7 +297,7 @@
       "answer_summary": "No. RAGConfig.from_env reads RAG_EMBEDDING_DIMENSIONS (with RAG_EMBEDDING_DIMENSION as an alias) and RAG_EMBEDDING_BASE_URL.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:72-75",
-        "applications/project_assistant/config.py:60-72"
+        "applications/project_assistant/config.py:80-99"
       ]
     },
     {
