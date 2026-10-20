@@ -1,5 +1,7 @@
 """Script to query the BaseAgent knowledge base."""
 
+# ruff: noqa: E402
+
 import argparse
 import sys
 from pathlib import Path
@@ -50,13 +52,16 @@ def main():
     config.index_persist_dir = args.index_dir
 
     # Initialize embedding provider
-    if args.mock_embedding:
+    if args.mock_embedding or config.embedding_provider == "mock":
         embedding = MockEmbedding()
     else:
         try:
             embedding = OpenAIEmbedding(
                 api_key=config.openai_api_key,
                 model=config.embedding_model,
+                dimension=config.embedding_dimension,
+                base_url=config.embedding_base_url,
+                batch_size=config.embedding_batch_size,
             )
         except ValueError as e:
             print(f"ERROR: {e}")
@@ -112,7 +117,7 @@ def main():
             print(f"Class: {evidence['class_name']}")
         if evidence["redacted"]:
             print("Sensitive text redacted")
-        print(f"\nContent preview (first 200 chars):")
+        print("\nContent preview (first 200 chars):")
         print(evidence["content"][:200])
         if len(evidence["content"]) > 200:
             print("...")

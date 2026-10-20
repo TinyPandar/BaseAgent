@@ -97,7 +97,9 @@ Kernel 的直接依赖只允许自身、标准库以及 `kernel/tools.py` 中的
 
 文档和检索文本作为不可信参考数据，不升级为系统指令；Phase 2 没有宣称解决语义层的提示词注入。`SourceAccess` 与 coding 的 `ToolPolicy` 相互独立，宿主需配置一致的范围。索引不是权威项目状态；笔记、历史会话与当前源码不能混为同一事实来源。重新入库后需要用新的语料版本重新构造工具包，禁止静默替换索引。
 
-### 评测与调优（方法仍有效，尚未执行）
+### 评测与调优（Phase 3 P0 检索评测已落地）
+
+2026-10-20：新增 `applications/project_assistant/evaluation/`（35 题问题集，tune/test 分开并绑定 `corpus_version`；`scripts/evaluate_retrieval.py` 计算 Recall@1/3/5 与 MRR，报告只新增不覆盖，见 `evaluation/reports/`）。`OpenAIEmbedding` 维度改为可配置或按返回推断，支持 `RAG_EMBEDDING_BASE_URL`、`RAG_EMBEDDING_API_KEY`、`RAG_EMBEDDING_BATCH_SIZE`、`RAG_EMBEDDING_DIMENSIONS`（兼容百炼 OpenAI 兼容端点）。实测数值见 `evaluation/README.md`。
 
 先固定语料版本、模型/提示词和一批带参考答案、证据位置的问题，区分调优集与最终测试集。可从约 30～50 个问题起步，覆盖精确标识符、概念解释、跨文件证据、无答案以及过期资料。
 

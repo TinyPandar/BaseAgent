@@ -157,14 +157,21 @@ $env:OPENAI_API_KEY = "sk-..."
 通过环境变量配置:
 
 ```bash
-# OpenAI Embedding
-OPENAI_API_KEY=sk-...
-RAG_EMBEDDING_MODEL=text-embedding-3-small
+# OpenAI-compatible Embedding（阿里云百炼示例）
+RAG_EMBEDDING_PROVIDER=openai
+RAG_EMBEDDING_API_KEY=sk-...
+RAG_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+RAG_EMBEDDING_MODEL=text-embedding-v4
+RAG_EMBEDDING_BATCH_SIZE=10
+# 可选：请求指定维度
+# RAG_EMBEDDING_DIMENSIONS=1024
 
 # 索引配置
 RAG_COLLECTION_NAME=baseagent_docs
 RAG_INDEX_DIR=.baseagent/rag_index
 ```
+
+`RAG_EMBEDDING_API_KEY` 优先于 `OPENAI_API_KEY`；批次大小默认为 100，百炼请设为 10（每次请求最多 10 个输入）。`RAG_EMBEDDING_DIMENSIONS` 可省略，兼容旧名 `RAG_EMBEDDING_DIMENSION`，两者同时设置时优先使用新名。构建、查询和评估脚本读取同一组配置，不自动加载 `.env`；更换模型或维度后须重建索引。
 
 脚本通过 `--corpus-root`、`--index-dir`、`--top-k` 等参数选择路径与数量；这些参数不自动读取同名的其他环境变量。
 

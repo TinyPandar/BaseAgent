@@ -1,8 +1,6 @@
 """Vector indexing with ChromaDB backend."""
 
-import json
 import os
-from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from .chunking import Chunk
@@ -49,8 +47,12 @@ class VectorIndex:
         # Get or create collection
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            metadata={"dimension": self.embedding_provider.dimension},
+            metadata=self._embedding_metadata(),
         )
+
+    def _embedding_metadata(self):
+        dimension = self.embedding_provider.dimension
+        return {"dimension": dimension} if dimension is not None else None
 
     def add_chunks(self, chunks: List[Chunk]) -> None:
         """
@@ -90,6 +92,7 @@ class VectorIndex:
             documents=documents,
             metadatas=metadatas,
         )
+        self.collection.modify(metadata=self._embedding_metadata())
 
     def search(
         self,
@@ -137,7 +140,7 @@ class VectorIndex:
         self.client.delete_collection(name=self.collection_name)
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
-            metadata={"dimension": self.embedding_provider.dimension},
+            metadata=self._embedding_metadata(),
         )
 
     def count(self) -> int:

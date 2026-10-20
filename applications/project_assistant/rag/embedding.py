@@ -42,20 +42,39 @@ class EmbeddingProvider(ABC):
 
 
 class OpenAIEmbedding(EmbeddingProvider):
-    """OpenAI text-embedding-3-small provider."""
+    """OpenAI-compatible embeddings with configurable or inferred dimensions."""
 
-    def __init__(self, api_key: str = None, model: str = "text-embedding-3-small"):
+    def __init__(self, api_key: str = None, model: str = "text-embedding-3-small",
+                 dimension: int = None, base_url: str = None, batch_size: int = None):
         """
         Initialize OpenAI embedding provider.
 
         Args:
-            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            api_key: RAG_EMBEDDING_API_KEY, falling back to OPENAI_API_KEY.
             model: OpenAI embedding model name
+            dimension: RAG_EMBEDDING_DIMENSIONS (alias RAG_EMBEDDING_DIMENSION).
+            base_url: Compatible endpoint (defaults to RAG_EMBEDDING_BASE_URL).
+            batch_size: Maximum inputs per request (RAG_EMBEDDING_BATCH_SIZE or 100).
         """
         self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if dimension is None:
+            configured = os.getenv("RAG_EMBEDDING_DIMENSIONS", os.getenv("RAG_EMBEDDING_DIMENSION"))
+            dimension = int(configured) if configured is not None else None
+        if dimension is not None and (type(dimension) is not int or dimension <= 0):
+            raise ValueError("embedding dimension must be a positive integer")
+        if batch_size is None:
+            batch_size = int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", "100"))
+        if type(batch_size) is not int or batch_size <= 0:
+            raise ValueError("embedding batch size must be a positive integer")
+        self.batch_size = batch_size
+        self._requested_dimension = dimension
+        self._dimension = dimension
+        self.api_calls = 0
+        self.total_tokens = 0
+        self.base_url = base_url or os.getenv("RAG_EMBEDDING_BASE_URL")
+        self.api_key = api_key or os.getenv("RAG_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY not provided and not found in environment")
+            raise ValueError("Set RAG_EMBEDDING_API_KEY or OPENAI_API_KEY, or provide api_key")
 
         # Lazy import to avoid dependency when not using OpenAI
         try:
@@ -66,28 +85,48 @@ class OpenAIEmbedding(EmbeddingProvider):
                 "Install it with: pip install openai"
             ) from e
 
-        self.client = OpenAI(api_key=self.api_key)
-        self._dimension = 1536  # text-embedding-3-small dimension
+        options = {"api_key": self.api_key}
+        if self.base_url:
+            options["base_url"] = self.base_url
+        self.client = OpenAI(**options)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         """Embed a batch of texts using OpenAI API."""
         if not texts:
             return []
 
-        response = self.client.embeddings.create(
-            input=texts,
-            model=self.model,
-        )
+        embeddings = []
+        for offset in range(0, len(texts), self.batch_size):
+            batch = texts[offset:offset + self.batch_size]
+            options = {"input": batch, "model": self.model}
+            if self._requested_dimension is not None:
+                options["dimensions"] = self._requested_dimension
+            self.api_calls += 1
+            response = self.client.embeddings.create(**options)
+            usage = getattr(response, "usage", None)
+            self.total_tokens += getattr(usage, "total_tokens", 0) or 0
 
-        return [item.embedding for item in response.data]
+            vectors = [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
+            if len(vectors) != len(batch) or not vectors or not vectors[0]:
+                raise ValueError("embedding response must contain one nonempty vector per input")
+            dimension = len(vectors[0])
+            if any(len(vector) != dimension for vector in vectors):
+                raise ValueError("embedding response contains inconsistent dimensions")
+            if self._dimension is not None and self._dimension != dimension:
+                raise ValueError("embedding response dimension changed or differs from configuration")
+            self._dimension = dimension
+            embeddings.extend(vectors)
+        return embeddings
 
     def embed_query(self, query: str) -> List[float]:
         """Embed a single query text."""
         return self.embed([query])[0]
 
     @property
-    def dimension(self) -> int:
-        return self._dimension
+    def dimension(self) -> int | None:
+        """Known default before embedding; the first response is authoritative."""
+        defaults = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072}
+        return self._dimension if self._dimension is not None else defaults.get(self.model)
 
 
 class MockEmbedding(EmbeddingProvider):

@@ -1,0 +1,1211 @@
+{
+  "splits": {
+    "tune": {
+      "answerable_count": 16,
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "mrr": 0.0,
+      "no_answer": {
+        "count": 4,
+        "top_scores": [
+          {
+            "id": "no_answer-01",
+            "score": 9.00164794921875
+          },
+          {
+            "id": "no_answer-03",
+            "score": 8.94110107421875
+          },
+          {
+            "id": "no_answer-05",
+            "score": 10.2384033203125
+          },
+          {
+            "id": "no_answer-07",
+            "score": 8.8756103515625
+          }
+        ]
+      }
+    },
+    "test": {
+      "answerable_count": 12,
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "mrr": 0.0,
+      "no_answer": {
+        "count": 3,
+        "top_scores": [
+          {
+            "id": "no_answer-02",
+            "score": 8.46923828125
+          },
+          {
+            "id": "no_answer-04",
+            "score": 8.963623046875
+          },
+          {
+            "id": "no_answer-06",
+            "score": 8.1485595703125
+          }
+        ]
+      }
+    }
+  },
+  "questions": [
+    {
+      "id": "exact_identifier-01",
+      "split": "tune",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_provider_bounds.py:59-68",
+          "score": 7.3089599609375
+        },
+        {
+          "citation": "tests/test_context.py:122-124",
+          "score": 8.11834716796875
+        },
+        {
+          "citation": "src/baseagent/session/store.py:20-21",
+          "score": 8.42669677734375
+        },
+        {
+          "citation": "tests/test_real_cassettes.py:23-29",
+          "score": 8.935302734375
+        },
+        {
+          "citation": "README.md:440-441",
+          "score": 9.04449462890625
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-02",
+      "split": "test",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/session/memory.py:84-85",
+          "score": 8.86676025390625
+        },
+        {
+          "citation": "src/baseagent/kernel/hooks.py:24-30",
+          "score": 9.28643798828125
+        },
+        {
+          "citation": "src/baseagent/backends/local.py:11-83",
+          "score": 9.641845703125
+        },
+        {
+          "citation": "tests/test_reservation.py:61-63",
+          "score": 10.0780029296875
+        },
+        {
+          "citation": "tests/test_rag_tools.py:51-53",
+          "score": 10.352783203125
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-03",
+      "split": "tune",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_memory.py:154-157",
+          "score": 9.61102294921875
+        },
+        {
+          "citation": "src/baseagent/middleware/retry.py:13-64",
+          "score": 10.0595703125
+        },
+        {
+          "citation": "tests/test_harness.py:142-143",
+          "score": 10.4327392578125
+        },
+        {
+          "citation": "tests/test_tasks.py:264-295",
+          "score": 10.45037841796875
+        },
+        {
+          "citation": "tests/test_retry.py:67-69",
+          "score": 10.60992431640625
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-04",
+      "split": "test",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/kernel/errors.py:6-14",
+          "score": 8.75750732421875
+        },
+        {
+          "citation": "README.md:667-709",
+          "score": 9.79388427734375
+        },
+        {
+          "citation": "src/baseagent/backends/local.py:43-51",
+          "score": 10.22540283203125
+        },
+        {
+          "citation": "src/baseagent/middleware/waiting.py:1-7",
+          "score": 10.44580078125
+        },
+        {
+          "citation": "src/baseagent/kernel/cancellation.py:11-33",
+          "score": 11.19317626953125
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-05",
+      "split": "tune",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_evaluation.py:29-30",
+          "score": 8.25299072265625
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:88-89",
+          "score": 9.4281005859375
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:20-25",
+          "score": 9.45721435546875
+        },
+        {
+          "citation": "tests/fixtures/sync_agent_v0_1_baseline.py:39-44",
+          "score": 9.45721435546875
+        },
+        {
+          "citation": "tests/test_reservation.py:104-112",
+          "score": 10.13543701171875
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-06",
+      "split": "test",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/agent/agent.py:220-544",
+          "score": 8.5830078125
+        },
+        {
+          "citation": "README.md:72-74",
+          "score": 8.8551025390625
+        },
+        {
+          "citation": "tests/test_kernel_execution.py:241-245",
+          "score": 9.247314453125
+        },
+        {
+          "citation": "src/baseagent/evaluation.py:87-90",
+          "score": 9.78326416015625
+        },
+        {
+          "citation": "src/baseagent/testing/__init__.py:1-1",
+          "score": 10.13238525390625
+        }
+      ]
+    },
+    {
+      "id": "exact_identifier-07",
+      "split": "tune",
+      "category": "exact_identifier",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_execution_guidance.py:15-22",
+          "score": 6.72113037109375
+        },
+        {
+          "citation": "tests/test_maintenance.py:229-244",
+          "score": 8.41326904296875
+        },
+        {
+          "citation": "src/baseagent/llm/estimation.py:42-51",
+          "score": 9.19342041015625
+        },
+        {
+          "citation": "tests/test_cancellation.py:136-147",
+          "score": 9.20025634765625
+        },
+        {
+          "citation": "src/baseagent/session/compatibility.py:19-25",
+          "score": 9.2578125
+        }
+      ]
+    },
+    {
+      "id": "concept-01",
+      "split": "tune",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/middleware/retry.py:14-23",
+          "score": 6.56103515625
+        },
+        {
+          "citation": "tests/test_rag_chunking.py:16-47",
+          "score": 8.01007080078125
+        },
+        {
+          "citation": "src/baseagent/backends/local.py:37-38",
+          "score": 8.14752197265625
+        },
+        {
+          "citation": "tests/test_cassette.py:116-126",
+          "score": 8.54345703125
+        },
+        {
+          "citation": "tests/test_rag_corpus.py:38-45",
+          "score": 8.68511962890625
+        }
+      ]
+    },
+    {
+      "id": "concept-02",
+      "split": "test",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_policy.py:202-234",
+          "score": 9.57208251953125
+        },
+        {
+          "citation": "tests/test_completion.py:22-24",
+          "score": 10.062255859375
+        },
+        {
+          "citation": "tests/test_memory.py:22-24",
+          "score": 10.062255859375
+        },
+        {
+          "citation": "src/baseagent/llm/adapters.py:1-1",
+          "score": 10.4344482421875
+        },
+        {
+          "citation": "tests/test_harness.py:136-137",
+          "score": 10.44598388671875
+        }
+      ]
+    },
+    {
+      "id": "concept-03",
+      "split": "tune",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_command_deadline.py:17-22",
+          "score": 8.16949462890625
+        },
+        {
+          "citation": "tests/test_shared_memory.py:18-23",
+          "score": 8.16949462890625
+        },
+        {
+          "citation": "README.md:667-709",
+          "score": 8.49542236328125
+        },
+        {
+          "citation": "tests/test_reservation.py:27-28",
+          "score": 9.2413330078125
+        },
+        {
+          "citation": "tests/test_cancellation.py:162-164",
+          "score": 9.41290283203125
+        }
+      ]
+    },
+    {
+      "id": "concept-04",
+      "split": "test",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "PERFORMANCE.md:11-20",
+          "score": 7.651611328125
+        },
+        {
+          "citation": "tests/test_backends.py:47-49",
+          "score": 8.57623291015625
+        },
+        {
+          "citation": "src/baseagent/ui/app.py:144-148",
+          "score": 8.70220947265625
+        },
+        {
+          "citation": "src/baseagent/kernel/cancellation.py:11-33",
+          "score": 8.89727783203125
+        },
+        {
+          "citation": "src/baseagent/session/memory.py:71-78",
+          "score": 8.93060302734375
+        }
+      ]
+    },
+    {
+      "id": "concept-05",
+      "split": "tune",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_coding.py:253-255",
+          "score": 9.97235107421875
+        },
+        {
+          "citation": "tests/test_completion.py:60-66",
+          "score": 10.54595947265625
+        },
+        {
+          "citation": "src/baseagent/kernel/hooks.py:129-130",
+          "score": 11.41253662109375
+        },
+        {
+          "citation": "README.md:489-538",
+          "score": 11.72833251953125
+        },
+        {
+          "citation": "tests/test_scoped_policy.py:19-24",
+          "score": 11.87384033203125
+        }
+      ]
+    },
+    {
+      "id": "concept-06",
+      "split": "test",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/session/memory.py:54-69",
+          "score": 9.36932373046875
+        },
+        {
+          "citation": "src/baseagent/tools/editing.py:14-19",
+          "score": 9.87945556640625
+        },
+        {
+          "citation": "tests/test_jsondata.py:17-60",
+          "score": 9.88494873046875
+        },
+        {
+          "citation": "tests/test_cassette.py:116-126",
+          "score": 9.88873291015625
+        },
+        {
+          "citation": "src/baseagent/middleware/repository.py:18-39",
+          "score": 9.904052734375
+        }
+      ]
+    },
+    {
+      "id": "concept-07",
+      "split": "tune",
+      "category": "concept",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/backends/local.py:33-35",
+          "score": 9.62646484375
+        },
+        {
+          "citation": "src/baseagent/llm/reservation.py:8-9",
+          "score": 9.65899658203125
+        },
+        {
+          "citation": "tests/test_completion.py:17-24",
+          "score": 9.75640869140625
+        },
+        {
+          "citation": "tests/test_memory.py:17-24",
+          "score": 9.75640869140625
+        },
+        {
+          "citation": "tests/test_usage_events.py:244-252",
+          "score": 10.4554443359375
+        }
+      ]
+    },
+    {
+      "id": "cross_file-01",
+      "split": "tune",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_eventlog.py:22-164",
+          "score": 9.525634765625
+        },
+        {
+          "citation": "src/baseagent/kernel/hooks.py:159-160",
+          "score": 9.723876953125
+        },
+        {
+          "citation": "src/baseagent/kernel/result.py:29-57",
+          "score": 9.72515869140625
+        },
+        {
+          "citation": "src/baseagent/agent/subtasks.py:38-57",
+          "score": 10.40374755859375
+        },
+        {
+          "citation": "tests/test_cancellation.py:32-34",
+          "score": 10.612060546875
+        }
+      ]
+    },
+    {
+      "id": "cross_file-02",
+      "split": "test",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_reservation.py:22-25",
+          "score": 8.5126953125
+        },
+        {
+          "citation": "tests/test_sessions.py:46-47",
+          "score": 10.15283203125
+        },
+        {
+          "citation": "tests/test_tasks.py:25-33",
+          "score": 10.4110107421875
+        },
+        {
+          "citation": "tests/test_subtasks.py:91-95",
+          "score": 10.645751953125
+        },
+        {
+          "citation": "src/baseagent/agent/subtasks.py:92-216",
+          "score": 11.02001953125
+        }
+      ]
+    },
+    {
+      "id": "cross_file-03",
+      "split": "tune",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "HARNESS_AUDIT.md:89-112",
+          "score": 8.5689697265625
+        },
+        {
+          "citation": "tests/test_estimation.py:131-139",
+          "score": 9.03472900390625
+        },
+        {
+          "citation": "tests/test_rag_embedding_offline.py:108-118",
+          "score": 10.3531494140625
+        },
+        {
+          "citation": "tests/test_model_middleware.py:54-66",
+          "score": 10.87481689453125
+        },
+        {
+          "citation": "src/baseagent/session/tasks.py:36-50",
+          "score": 10.97772216796875
+        }
+      ]
+    },
+    {
+      "id": "cross_file-04",
+      "split": "test",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_estimation.py:141-148",
+          "score": 8.50360107421875
+        },
+        {
+          "citation": "tests/test_kernel_compatibility.py:60-62",
+          "score": 8.7313232421875
+        },
+        {
+          "citation": "tests/test_provider_bounds.py:122-124",
+          "score": 8.956298828125
+        },
+        {
+          "citation": "tests/test_completion.py:80-84",
+          "score": 9.02935791015625
+        },
+        {
+          "citation": "tests/test_completion.py:48-49",
+          "score": 9.345703125
+        }
+      ]
+    },
+    {
+      "id": "cross_file-05",
+      "split": "tune",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/agent/subtasks.py:92-216",
+          "score": 9.3111572265625
+        },
+        {
+          "citation": "tests/test_jsondata.py:71-76",
+          "score": 10.34893798828125
+        },
+        {
+          "citation": "tests/test_cancellation.py:85-96",
+          "score": 10.55133056640625
+        },
+        {
+          "citation": "tests/test_maintenance.py:234-238",
+          "score": 10.6217041015625
+        },
+        {
+          "citation": "tests/test_cassette.py:105-114",
+          "score": 10.9840087890625
+        }
+      ]
+    },
+    {
+      "id": "cross_file-06",
+      "split": "test",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/kernel/hooks.py:165-166",
+          "score": 8.3734130859375
+        },
+        {
+          "citation": "README.md:13-20",
+          "score": 8.43865966796875
+        },
+        {
+          "citation": "tests/test_completion.py:117-118",
+          "score": 9.2078857421875
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:91-93",
+          "score": 9.48211669921875
+        },
+        {
+          "citation": "examples/download_tokenizer.py:1-1",
+          "score": 9.6170654296875
+        }
+      ]
+    },
+    {
+      "id": "cross_file-07",
+      "split": "tune",
+      "category": "cross_file",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/agent/errors.py:5-8",
+          "score": 9.364501953125
+        },
+        {
+          "citation": "src/baseagent/kernel/hooks.py:159-160",
+          "score": 9.983642578125
+        },
+        {
+          "citation": "src/baseagent/llm/model.py:39-42",
+          "score": 10.07989501953125
+        },
+        {
+          "citation": "src/baseagent/agent/subtasks.py:107-120",
+          "score": 10.31201171875
+        },
+        {
+          "citation": "DEVELOPMENT_HANDOFF.md:136-158",
+          "score": 10.37506103515625
+        }
+      ]
+    },
+    {
+      "id": "stale-01",
+      "split": "tune",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "README.md:393-396",
+          "score": 11.37664794921875
+        },
+        {
+          "citation": "tests/test_policy.py:196-200",
+          "score": 11.673828125
+        },
+        {
+          "citation": "tests/test_kernel_compatibility.py:205-209",
+          "score": 12.09588623046875
+        },
+        {
+          "citation": "PHASE3_PLAN.md:136-144",
+          "score": 12.482666015625
+        },
+        {
+          "citation": "tests/test_harness.py:159-160",
+          "score": 12.92779541015625
+        }
+      ]
+    },
+    {
+      "id": "stale-02",
+      "split": "test",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/llm/adapters.py:101-131",
+          "score": 7.4613037109375
+        },
+        {
+          "citation": "tests/test_config.py:81-105",
+          "score": 8.32354736328125
+        },
+        {
+          "citation": "tests/test_rag_indexing.py:149-171",
+          "score": 8.614013671875
+        },
+        {
+          "citation": "tests/test_context.py:114-119",
+          "score": 8.72918701171875
+        },
+        {
+          "citation": "src/baseagent/session/store.py:307-309",
+          "score": 8.904296875
+        }
+      ]
+    },
+    {
+      "id": "stale-03",
+      "split": "tune",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/session/memory.py:84-85",
+          "score": 9.67437744140625
+        },
+        {
+          "citation": "tests/test_cancellation.py:88-90",
+          "score": 9.9183349609375
+        },
+        {
+          "citation": "tests/test_model_adapters.py:25-232",
+          "score": 9.991455078125
+        },
+        {
+          "citation": "src/baseagent/backends/protocol.py:24-24",
+          "score": 10.1087646484375
+        },
+        {
+          "citation": "README.md:397-400",
+          "score": 10.149169921875
+        }
+      ]
+    },
+    {
+      "id": "stale-04",
+      "split": "test",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/tools/policy.py:142-143",
+          "score": 8.79620361328125
+        },
+        {
+          "citation": "tests/test_memory.py:74-84",
+          "score": 9.47332763671875
+        },
+        {
+          "citation": "tests/test_kernel_execution.py:115-122",
+          "score": 9.47674560546875
+        },
+        {
+          "citation": "applications/project_assistant/evaluation/retrieval.py:76-79",
+          "score": 11.01025390625
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:126-132",
+          "score": 11.285400390625
+        }
+      ]
+    },
+    {
+      "id": "stale-05",
+      "split": "tune",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/session/store.py:179-181",
+          "score": 8.13262939453125
+        },
+        {
+          "citation": "src/baseagent/session/tasks.py:126-142",
+          "score": 10.0736083984375
+        },
+        {
+          "citation": "src/baseagent/session/maintenance.py:179-208",
+          "score": 10.102294921875
+        },
+        {
+          "citation": "tests/test_rag_chunking.py:108-114",
+          "score": 10.188720703125
+        },
+        {
+          "citation": "applications/project_assistant/rag/embedding.py:44-129",
+          "score": 10.52227783203125
+        }
+      ]
+    },
+    {
+      "id": "stale-06",
+      "split": "test",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/evaluation.py:175-178",
+          "score": 7.72491455078125
+        },
+        {
+          "citation": "tests/test_maintenance.py:54-80",
+          "score": 9.7454833984375
+        },
+        {
+          "citation": "tests/test_sessions.py:63-79",
+          "score": 9.95440673828125
+        },
+        {
+          "citation": "DEVELOPMENT_HANDOFF.md:7-16",
+          "score": 10.1162109375
+        },
+        {
+          "citation": "src/baseagent/middleware/execution_guidance.py:65-80",
+          "score": 10.27020263671875
+        }
+      ]
+    },
+    {
+      "id": "stale-07",
+      "split": "tune",
+      "category": "stale",
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0
+      },
+      "reciprocal_rank": 0.0,
+      "retrieved": [
+        {
+          "citation": "tests/test_kernel_execution.py:25-32",
+          "score": 11.76910400390625
+        },
+        {
+          "citation": "src/baseagent/session/knowledge.py:95-137",
+          "score": 11.8192138671875
+        },
+        {
+          "citation": "tests/test_estimation.py:75-84",
+          "score": 11.8409423828125
+        },
+        {
+          "citation": "tests/test_model_middleware.py:97-109",
+          "score": 11.964111328125
+        },
+        {
+          "citation": "src/baseagent/kernel/state.py:31-55",
+          "score": 12.00726318359375
+        }
+      ]
+    },
+    {
+      "id": "no_answer-01",
+      "split": "tune",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 9.00164794921875,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/kernel/state.py:9-27",
+          "score": 9.00164794921875
+        },
+        {
+          "citation": "tests/test_coding.py:106-118",
+          "score": 9.1253662109375
+        },
+        {
+          "citation": "src/baseagent/session/task_recovery.py:46-61",
+          "score": 9.511474609375
+        },
+        {
+          "citation": "README.md:537-562",
+          "score": 9.55291748046875
+        },
+        {
+          "citation": "tests/test_execution.py:131-145",
+          "score": 9.677001953125
+        }
+      ]
+    },
+    {
+      "id": "no_answer-02",
+      "split": "test",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 8.46923828125,
+      "retrieved": [
+        {
+          "citation": "tests/test_estimation.py:32-34",
+          "score": 8.46923828125
+        },
+        {
+          "citation": "tests/test_usage_events.py:254-263",
+          "score": 9.1309814453125
+        },
+        {
+          "citation": "src/baseagent/kernel/cancellation.py:1-8",
+          "score": 9.5987548828125
+        },
+        {
+          "citation": "src/baseagent/middleware/waiting.py:1-7",
+          "score": 10.15911865234375
+        },
+        {
+          "citation": "tests/test_command_deadline.py:26-30",
+          "score": 10.18817138671875
+        }
+      ]
+    },
+    {
+      "id": "no_answer-03",
+      "split": "tune",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 8.94110107421875,
+      "retrieved": [
+        {
+          "citation": "tests/test_memory_store.py:67-71",
+          "score": 8.94110107421875
+        },
+        {
+          "citation": "scripts/benchmark_harness.py:27-34",
+          "score": 9.26544189453125
+        },
+        {
+          "citation": "tests/test_memory.py:98-103",
+          "score": 9.43304443359375
+        },
+        {
+          "citation": "src/baseagent/agent/subtasks.py:103-104",
+          "score": 9.6048583984375
+        },
+        {
+          "citation": "tests/test_cassette.py:225-245",
+          "score": 9.61126708984375
+        }
+      ]
+    },
+    {
+      "id": "no_answer-04",
+      "split": "test",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 8.963623046875,
+      "retrieved": [
+        {
+          "citation": "tests/test_harness.py:61-71",
+          "score": 8.963623046875
+        },
+        {
+          "citation": "src/baseagent/middleware/retry.py:13-64",
+          "score": 10.0478515625
+        },
+        {
+          "citation": "src/baseagent/agent/agent.py:445-451",
+          "score": 10.1304931640625
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:28-44",
+          "score": 10.1839599609375
+        },
+        {
+          "citation": "tests/fixtures/sync_agent_v0_1_baseline.py:47-63",
+          "score": 10.1839599609375
+        }
+      ]
+    },
+    {
+      "id": "no_answer-05",
+      "split": "tune",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 10.2384033203125,
+      "retrieved": [
+        {
+          "citation": "tests/test_execution.py:99-104",
+          "score": 10.2384033203125
+        },
+        {
+          "citation": "tests/test_tasks.py:147-151",
+          "score": 10.32598876953125
+        },
+        {
+          "citation": "src/baseagent/agent/agent.py:220-544",
+          "score": 10.6387939453125
+        },
+        {
+          "citation": "tests/test_sessions.py:63-79",
+          "score": 10.65771484375
+        },
+        {
+          "citation": "src/baseagent/kernel/cancellation.py:22-24",
+          "score": 10.76080322265625
+        }
+      ]
+    },
+    {
+      "id": "no_answer-06",
+      "split": "test",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 8.1485595703125,
+      "retrieved": [
+        {
+          "citation": "tests/test_kernel_execution.py:241-245",
+          "score": 8.1485595703125
+        },
+        {
+          "citation": "src/baseagent/kernel/agent.py:180-182",
+          "score": 8.3519287109375
+        },
+        {
+          "citation": "src/baseagent/tools/process.py:37-123",
+          "score": 9.7239990234375
+        },
+        {
+          "citation": "src/baseagent/agent/agent.py:83-217",
+          "score": 10.24395751953125
+        },
+        {
+          "citation": "tests/fixtures/sync_agent_v0_1_baseline.py:120-254",
+          "score": 10.24395751953125
+        }
+      ]
+    },
+    {
+      "id": "no_answer-07",
+      "split": "tune",
+      "category": "no_answer",
+      "recall": null,
+      "reciprocal_rank": null,
+      "top_score": 8.8756103515625,
+      "retrieved": [
+        {
+          "citation": "src/baseagent/llm/model.py:10-34",
+          "score": 8.8756103515625
+        },
+        {
+          "citation": "tests/test_memory.py:52-53",
+          "score": 10.6160888671875
+        },
+        {
+          "citation": "src/baseagent/agent/agent.py:405-411",
+          "score": 10.77667236328125
+        },
+        {
+          "citation": "examples/download_tokenizer.py:11-33",
+          "score": 11.013916015625
+        },
+        {
+          "citation": "README.md:95-99",
+          "score": 11.83233642578125
+        }
+      ]
+    }
+  ],
+  "top_k": 5,
+  "mrr_cutoff": 5,
+  "score_kind": "distance_lower_is_better",
+  "corpus_version": "c2b4c7b4b440ebe3",
+  "question_set_sha256": "6a9fab8f391a30caf29efd3b4390f7e7b42aa5aa746407f15e337814bfe2d271",
+  "embedding_provider": "MockEmbedding",
+  "embedding_model": "mock-sha256",
+  "embedding_dimension": 1536,
+  "chunk_count": 2004,
+  "api_calls": 0,
+  "estimated_tokens": 973251,
+  "total_tokens": 0,
+  "embedding_total_tokens": 0,
+  "cost_usd": 0,
+  "timestamp": "2026-10-20T06:43:23.381207+00:00"
+}

@@ -1,5 +1,7 @@
 """Script to build the BaseAgent knowledge base index."""
 
+# ruff: noqa: E402
+
 import argparse
 import sys
 from pathlib import Path
@@ -69,7 +71,7 @@ def main():
     print(f"Saved corpus metadata to: {metadata_path}")
 
     # Initialize embedding provider
-    if args.mock_embedding:
+    if args.mock_embedding or config.embedding_provider == "mock":
         print("Using mock embedding provider (no API calls)")
         embedding = MockEmbedding()
     else:
@@ -78,10 +80,13 @@ def main():
             embedding = OpenAIEmbedding(
                 api_key=config.openai_api_key,
                 model=config.embedding_model,
+                dimension=config.embedding_dimension,
+                base_url=config.embedding_base_url,
+                batch_size=config.embedding_batch_size,
             )
         except ValueError as e:
             print(f"ERROR: {e}")
-            print("Use --mock-embedding to build without API calls, or set OPENAI_API_KEY")
+            print("Use --mock-embedding to build without API calls, or set RAG_EMBEDDING_API_KEY / OPENAI_API_KEY")
             return 1
 
     # Build index
@@ -105,7 +110,7 @@ def main():
         print(f"  Indexed {min(i+batch_size, len(chunks))}/{len(chunks)} chunks")
 
     final_count = index.count()
-    print(f"\nIndex built successfully!")
+    print("\nIndex built successfully!")
     print(f"  Total chunks indexed: {final_count}")
     print(f"  Persist directory: {args.output_dir}")
 
