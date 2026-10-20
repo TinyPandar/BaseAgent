@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "c2b4c7b4b440ebe3",
+  "corpus_version": "e00404457b007918",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:15-72": "72ee9690e3a473eaf95dabf61dddf60a47cfd5dd9b4dd124e4f50b97e7305fab",

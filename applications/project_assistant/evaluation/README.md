@@ -102,6 +102,13 @@ the token budget. No network or paid evaluation is needed for the unit tests.
 |-----|-------|---------:|---------:|---------:|----:|----------:|-------:|
 | Mock (`mock-sha256`, 2026-10-20) | tune (16) | 0.000 | 0.000 | 0.000 | 0.000 | 0 | 0 |
 | Mock (`mock-sha256`, 2026-10-20) | test (12) | 0.000 | 0.000 | 0.000 | 0.000 | 0 | 0 |
+| Bailian `text-embedding-v4` (1024-d, 2026-10-20) | tune (16) | 0.156 | 0.281 | 0.281 | 0.260 | 236 (both splits) | 461,308 (both splits) |
+| Bailian `text-embedding-v4` (1024-d, 2026-10-20) | test (12) | 0.222 | 0.521 | 0.563 | 0.493 | — | — |
 
 The Mock hash embedding has no semantics; it only proves the pipeline runs
-offline. Real-embedding numbers are added after an authorized run.
+offline. Both runs used corpus_version `c2b4c7b4b440ebe3`, top_k 5, 2004 chunks.
+The real run used batch size 10 (236 requests incl. 35 queries, 461,308
+reported tokens vs. a 973k chars/2 estimate). No-answer questions are excluded
+from Recall/MRR; their top-1 distances (tune 0.76-1.01, test 0.89-1.11) overlap
+answerable ones, so a distance threshold alone cannot reject them yet.
+The tune split was not used for any tuning before this first run.
