@@ -2,6 +2,61 @@
 
 个人开发者的知识与项目助理,支持项目资料检索、带引用回答、一次受控 coding 任务。
 
+## CLI 入口（Phase 3 / P1）
+
+仅从仓库 checkout 运行，不改变发行包或默认 `baseagent` CLI。入口复用
+`baseagent.main` 的配置、DEEPSEEK 模型初始化、`SessionStore` 和 `run_agent`。
+
+```bash
+# 离线入库；参数及相对路径语义与 scripts/build_knowledge_base.py 一致
+.venv/bin/python -m applications.project_assistant index --corpus-root . \
+  --output-dir .baseagent/rag_index --metadata-file .baseagent/corpus_metadata.json \
+  --mock-embedding
+
+# 无模型、无 embedding API 的索引状态检查
+.venv/bin/python -m applications.project_assistant status --corpus-root . \
+  --index-dir .baseagent/rag_index
+
+# 问答示例：需要另行授权的真实 DEEPSEEK 调用；此示例未作为离线验证执行
+.venv/bin/python -m applications.project_assistant ask "解释 knowledge_search 的来源校验" \
+  --root . --index-dir .baseagent/rag_index --mock-embedding --session project-demo
+
+# 追加同一会话的新问题 / 检查持久化状态及工具账本
+.venv/bin/python -m applications.project_assistant ask "引用对应代码行" \
+  --root . --mock-embedding --session project-demo
+.venv/bin/python -m applications.project_assistant ask --session project-demo --inspect-session
+.venv/bin/python -m applications.project_assistant ask --help
+```
+
+`index` 支持 `--corpus-root`、`--output-dir`、`--metadata-file`、`--mock-embedding`，
+显式重建索引并在成功后把 `corpus_version` 保存到 Chroma 集合。
+`status` 输出索引版本、索引 chunk 数、当前语料版本/文件数/chunk 数及
+`matches_current_corpus`；索引不存在时仍可检查，返回空版本和 false，不创建索引。
+`ask` 的 `--index-dir`（及 `status`）默认使用 `RAG_INDEX_DIR` 或
+`.baseagent/rag_index`；路径相对当前进程目录，语料根目录由 `--root`、配置或已有会话决定。
+索引缺失、空索引、未绑定版本的旧索引或版本不一致时，`ask` 非零退出并提示运行
+`index`，不会自动重建。语料修改后必须重新入库。
+
+问答默认 hybrid，沿用 `RAG_RETRIEVAL_MODE` 等现有配置。`--mock-embedding`
+仅替换 embedding，不替换问答模型；生产问答沿用 `.env` 中的
+`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`，涉及真实调用时需另行授权。
+`ask --config`、`--db`、`--session`、`--resume`、`--inspect-session`、预算、
+能力包及权限开关与原 CLI 一致；检查会话不需要索引、模型或密钥。
+默认不开启写入或命令权限。
+
+来源可见性使用 `SourceAccess` 的 Markdown/Python 包含规则及入库排除规则，
+并额外服从同一 `ToolPolicy` 的 `read_file` 路径规则。deny 或 ask 的来源不会作为
+检索证据返回；一次 read_file 批准不授权批量检索。无法表示为路径规则的
+read_file 策略（例如行号条件）显式拒绝装配。`knowledge_search` 自身也受工具策略控制。
+
+离线端到端测试使用 `main(argv, model_factory=lambda args: ScriptedModel(...))`
+注入假模型，在临时目录执行 index → status → ask，并验证引用、会话、权限及版本拒绝。
+这个工厂仅影响显式注入的调用；生产入口不注入模型。
+
+```bash
+.venv/bin/python -m pytest -q tests/test_project_assistant_cli.py
+```
+
 ## 架构概览
 
 ```

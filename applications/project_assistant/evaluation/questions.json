@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "389c3acdf7939cad",
+  "corpus_version": "c5aeb0cee36b491f",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
@@ -22,7 +22,7 @@
     "applications/project_assistant/rag/chunking.py:115-143": "3bfaf64c133043a418b65c4d59a3c4f987654681060e8474618721d1094005cd",
     "applications/project_assistant/rag/embedding.py:128-160": "8250c1cbecb3e3d9f5fb1cc6d99fcd666a4e06970eb58007de6c4aca328caac9",
     "applications/project_assistant/config.py:83-102": "99a13742beee4946f72ea82acc7b62a42bb0b8ccaee28f513e186540571fb9f6",
-    "scripts/build_knowledge_base.py:80-86": "d19197f58c59fd1753acc4bfac5b9bbb4aaa4b180e530a5faebf5f1f69e031de",
+    "scripts/build_knowledge_base.py:88-94": "d19197f58c59fd1753acc4bfac5b9bbb4aaa4b180e530a5faebf5f1f69e031de",
     "applications/project_assistant/rag/embedding.py:55-73": "9c6fba54e0a872685f1992c5c21612c53a7fb2693bc4c78f422352c4ada6855d",
     "applications/project_assistant/rag/embedding.py:84-87": "b721ca58ea502f38226fb8db49af5b32898412621185e1579423ec85bd113880",
     "applications/project_assistant/rag/embedding.py:94-101": "d5a56464f4677794d3f6f66b9d42608ef9286166ee22cd5b1c9523294a94585b",
@@ -40,10 +40,10 @@
     "DEVELOPMENT_HANDOFF.md:72-75": "8e36aa3e36a441a022e36268ce2935e106eeafbd9e57272b65d975daa8c64c57",
     "DEVELOPMENT_HANDOFF.md:90-90": "051167b10b797838ccdf5625f3ee96d1a615f1e61c9d35596c987c36d2a2dcf4",
     "scripts/evaluate_retrieval.py:94-112": "02eb79a4f6eb1aa77ccd5feccbc14053f5b24912c19e4766c1a57365f5af53b6",
-    "applications/project_assistant/README.md:201-206": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
+    "applications/project_assistant/README.md:256-261": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
     "DEVELOPMENT_HANDOFF.md:84-88": "94f8b40aa6d9e605374432b7a564deebefbba0f3bd54bdaf031e1c245949b883",
     "DEVELOPMENT_HANDOFF.md:40-40": "40ec18e30df8d6773df82e3f8d74aaec76175add5446fda5df38f2d4b39fd367",
-    "src/baseagent/main.py:144-145": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4",
+    "src/baseagent/main.py:145-146": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4",
     "applications/project_assistant/config.py:35-41": "431f42eeb330961c4d2ae3f07d9218517ba54c88882a214eaab51ceabafb8a79",
     "applications/project_assistant/rag/chunking.py:146-161": "48bb5991bf184474969d4a393de77f0462e474bc3f392b5f4c27d35dd542653a",
     "applications/project_assistant/rag/lexical.py:69-70": "f7eed170e1af25a2635a066534c0a1fd8c9fcf806e9c4afbbe25993a7f88adc1",
@@ -80,7 +80,7 @@
     "scripts/query_knowledge_base.py:43-45": "a9ce06aa42eef237bae5536002924acc6073613cd304679b1fa8f548a9985459",
     "scripts/query_knowledge_base.py:91-96": "b3bd0e1004c304e56c78ecaae6d4e7139225c21a92217901172df5723f9d8ba1",
     "applications/project_assistant/access.py:53-57": "803fd0cbc9343f4609f8e9551e1e0b6f1fcf4eabdb7ac91a9438c2a8a1eb910c",
-    "scripts/build_knowledge_base.py:65-71": "7898ae5da7a067c6368d4c8bafdb471d0d10b806e542b05f01424d500a9813db",
+    "scripts/build_knowledge_base.py:122-125": "730d6d014932ef8b57fe35ba17033e62f46cc04dd1919bab1663ff38d3f5994e",
     "applications/project_assistant/corpus.py:117-134": "39cf9f19cef1c73a1a80bbef0883997a160f9dd8ab2835aa76a000afff52cf3d",
     "applications/project_assistant/rag/indexing.py:72-76": "0432915987818e4b4a5a0935f2cfd9ff1044f421d1ba8830566fa7c570268f81",
     "applications/project_assistant/rag/retrieval.py:149-155": "e5ae9ed3e25a7339c3c64d6bdf8f1924bed16f6e71698ad65b98f5bac1ee9c64",
@@ -97,9 +97,9 @@
     "DEVELOPMENT_HANDOFF.md:71-71": "f6401af3ffb163ccfdd3d12fecd3b6114186f33ed474e85058a31289a40395f3",
     "applications/project_assistant/rag/chunking.py:170-181": "a7a986e670104acbb0c6dcf13ded72bd1ad90de7d0f58fc7004700770c7970f8",
     "applications/project_assistant/rag/chunking.py:201-213": "42439d1f47b07539cdddad095fcce5c69549d2885b2efcd4158562a4f906c38a",
-    "applications/project_assistant/README.md:211-211": "c8daee0bf1ba20c4b6d91cedc45dce9cd1af7ac1601a9462c9843407c06cf40b",
+    "applications/project_assistant/README.md:266-266": "c8daee0bf1ba20c4b6d91cedc45dce9cd1af7ac1601a9462c9843407c06cf40b",
     "applications/project_assistant/rag/chunking.py:29-32": "cbaec869e5dedd0983bc1d55ac0160b30b846d4f6eac171987cdcd26b22c3971",
-    "applications/project_assistant/README.md:203-203": "ac842b232df675e74598c1488bd035ec61d53b6c7f2266d4ad485ec861244657",
+    "applications/project_assistant/README.md:258-258": "ac842b232df675e74598c1488bd035ec61d53b6c7f2266d4ad485ec861244657",
     "DEVELOPMENT_HANDOFF.md:75-75": "39e90f452fe0d3e1781e1214d73f7d0cf00e1d5db574d805cf5bf244ec745977",
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
@@ -259,7 +259,7 @@
       "answer_summary": "RAGConfig.from_env reads them; the build script forwards both; OpenAIEmbedding configures the client and request.",
       "expected_evidence": [
         "applications/project_assistant/config.py:83-102",
-        "scripts/build_knowledge_base.py:80-86",
+        "scripts/build_knowledge_base.py:88-94",
         "applications/project_assistant/rag/embedding.py:55-73",
         "applications/project_assistant/rag/embedding.py:84-87",
         "applications/project_assistant/rag/embedding.py:94-101"
@@ -389,7 +389,7 @@
       "question": "The application README describes Mock embedding as hash plus random projection. Does the code use a random projection?",
       "answer_summary": "No. It maps SHA256 bytes directly to floats and pads zeros.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:201-206",
+        "applications/project_assistant/README.md:256-261",
         "applications/project_assistant/rag/embedding.py:134-152"
       ]
     },
@@ -413,7 +413,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:144-145",
+        "src/baseagent/main.py:145-146",
         "applications/project_assistant/tools.py:104-116"
       ]
     },
@@ -730,9 +730,9 @@
       "split": "tune",
       "category": "cross_file",
       "question": "How does the build script persist corpus version and chunk metadata?",
-      "answer_summary": "It computes the version then calls save_corpus_metadata, which writes version, counts and per-file ranges.",
+      "answer_summary": "After successful ingestion it binds corpus_version to the Chroma collection and calls save_corpus_metadata, which writes version, counts and per-file ranges.",
       "expected_evidence": [
-        "scripts/build_knowledge_base.py:65-71",
+        "scripts/build_knowledge_base.py:122-125",
         "applications/project_assistant/corpus.py:117-134"
       ]
     },
@@ -826,7 +826,7 @@
       "question": "Does the README claim that corpus versions hash only file content fully describe compute_corpus_version?",
       "answer_summary": "No; it hashes ordered chunk doc_id values, which include path and line ranges.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:211-211",
+        "applications/project_assistant/README.md:266-266",
         "applications/project_assistant/corpus.py:91-97",
         "applications/project_assistant/rag/chunking.py:29-32"
       ]
@@ -838,7 +838,7 @@
       "question": "The README selection table lists 1536 embedding dimensions. Must text-embedding-3-large use that size?",
       "answer_summary": "No; its fallback is 3072 and a configured or inferred dimension takes precedence.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:203-203",
+        "applications/project_assistant/README.md:258-258",
         "applications/project_assistant/rag/embedding.py:122-125"
       ]
     },

@@ -1,7 +1,5 @@
 """Script to build the BaseAgent knowledge base index."""
 
-# ruff: noqa: E402
-
 import argparse
 import sys
 from pathlib import Path
@@ -16,12 +14,12 @@ from applications.project_assistant.corpus import (
     compute_corpus_version,
     save_corpus_metadata,
 )
-from applications.project_assistant.rag.embedding import OpenAIEmbedding, MockEmbedding
+from applications.project_assistant.rag.embedding import MockEmbedding, OpenAIEmbedding
 from applications.project_assistant.rag.indexing import VectorIndex
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Build the BaseAgent knowledge base index")
+def add_index_arguments(parser):
+    """Shared repository CLI options for explicit ingestion."""
     parser.add_argument(
         "--corpus-root",
         default=".",
@@ -43,7 +41,19 @@ def main():
         help="Path to save corpus metadata",
     )
 
-    args = parser.parse_args()
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Build the BaseAgent knowledge base index")
+    add_index_arguments(parser)
+    args = parser.parse_args(argv)
+    return build_index(args)
+
+
+def build_index(args):
+    """Explicitly rebuild an index and bind its version after successful ingestion."""
+    import os
+
+    os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
     # Load configuration
     config = RAGConfig.from_env()
@@ -60,15 +70,13 @@ def main():
         print("ERROR: No chunks collected. Check the corpus root directory.")
         return 1
 
-    print(f"Collected {len(chunks)} chunks from {len(set(c.file_path for c in chunks))} files")
+    print(f"Collected {len(chunks)} chunks from {len({c.file_path for c in chunks})} files")
 
-    # Compute and save metadata
+    # Compute metadata
     corpus_version = compute_corpus_version(chunks)
     print(f"Corpus version: {corpus_version}")
 
     metadata_path = Path(args.metadata_file)
-    save_corpus_metadata(chunks, metadata_path, corpus_version)
-    print(f"Saved corpus metadata to: {metadata_path}")
 
     # Initialize embedding provider
     if args.mock_embedding or config.embedding_provider == "mock":
@@ -102,6 +110,8 @@ def main():
 
     # Add all chunks
     print("Indexing chunks...")
+    # Chroma requires unique IDs even when Markdown hierarchy repeats a chunk.
+    chunks = list({chunk.doc_id: chunk for chunk in chunks}.values())
     # Process in batches to show progress
     batch_size = 50
     for i in range(0, len(chunks), batch_size):
@@ -109,6 +119,10 @@ def main():
         index.add_chunks(batch)
         print(f"  Indexed {min(i+batch_size, len(chunks))}/{len(chunks)} chunks")
 
+    index.collection.modify(metadata={**(index.collection.metadata or {}),
+                                      "corpus_version": corpus_version})
+    save_corpus_metadata(chunks, metadata_path, corpus_version)
+    print(f"Saved corpus metadata to: {metadata_path}")
     final_count = index.count()
     print("\nIndex built successfully!")
     print(f"  Total chunks indexed: {final_count}")

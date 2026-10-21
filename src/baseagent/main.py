@@ -6,32 +6,31 @@ import math
 import os
 import sqlite3
 import sys
+from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from baseagent.agent import run_agent
-from baseagent.jsondata import read_json_object
-from baseagent.config import load_harness_config
-from baseagent.llm import Model
-from baseagent.middleware import AgentMiddleware
-from baseagent.middleware.retry import RetryMiddleware
-from baseagent.middleware.repository import RepositoryMiddleware
-from baseagent.middleware.execution_guidance import ExecutionGuidanceMiddleware
-from baseagent.session import SessionBusy, SessionStore
-from baseagent.session.compatibility import digest
-from hashlib import sha256
-from importlib.metadata import version
-from baseagent.tools.result import ToolResult
-from baseagent.llm.response import TokenUsage
-from baseagent.tools.workspace import Workspace
-from baseagent.tools.policy import ToolPolicy
-from baseagent.capabilities import assemble_capabilities, SkillCatalog, SkillMiddleware
 from baseagent.agent.completion import CompletionPolicy
-from baseagent.llm.reservation import ReservationUnavailable
+from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
+from baseagent.config import load_harness_config
+from baseagent.jsondata import read_json_object
+from baseagent.llm import Model
 from baseagent.llm.bounds import request_bound_profile
 from baseagent.llm.estimation import TokenizerEstimator
-
+from baseagent.llm.reservation import ReservationUnavailable
+from baseagent.llm.response import TokenUsage
+from baseagent.middleware import AgentMiddleware
+from baseagent.middleware.execution_guidance import ExecutionGuidanceMiddleware
+from baseagent.middleware.repository import RepositoryMiddleware
+from baseagent.middleware.retry import RetryMiddleware
+from baseagent.session import SessionBusy, SessionStore
+from baseagent.session.compatibility import digest
+from baseagent.tools.policy import ToolPolicy
+from baseagent.tools.result import ToolResult
+from baseagent.tools.workspace import Workspace
 
 SYSTEM_PROMPT = """You are a helpful assistant with optional coding tools inside a workspace.
 Answer general questions directly. Only inspect files, plan coding work or create
@@ -68,7 +67,9 @@ class TraceMiddleware(AgentMiddleware):
         return result
 
 
-def main() -> int:
+def main(argv=None, *, configure_parser=None, capability_factory=None,
+         model_factory=None, system_prompt=SYSTEM_PROMPT) -> int:
+    """Run the shared CLI; applications may extend parsing and composition only."""
     parser = argparse.ArgumentParser(description="Workspace coding agent", allow_abbrev=False)
     parser.add_argument("--config", type=Path, help="Versioned JSON harness configuration; explicit CLI options override it")
     parser.add_argument("prompt", nargs="?", help="Task or next conversation turn")
@@ -143,9 +144,11 @@ def main() -> int:
     parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
     parser.add_argument("--tool-package", action="append", choices=["coding", "memory", "shared-memory"], help="Select built-in tool packages; repeat to combine (default: all)")
     parser.add_argument("--skills-dir", action="append", type=Path, help="Explicit local skill package directory; repeat to combine")
+    if configure_parser is not None:
+        configure_parser(parser)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument("--config", type=Path)
-    initial, _ = bootstrap.parse_known_args()
+    initial, _ = bootstrap.parse_known_args(argv)
     defaults = {}
     if initial.config is not None:
         try:
@@ -156,7 +159,7 @@ def main() -> int:
     packages_default = defaults.pop("tool_package", None)
     skills_default = defaults.pop("skills_dir", [])
     parser.set_defaults(**defaults)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.tool_package is None:
         args.tool_package = packages_default
     if args.skills_dir is None:
@@ -399,7 +402,8 @@ def main() -> int:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
         skills = SkillCatalog(args.skills_dir) if args.skills_dir else None
-        tools = assemble_capabilities(workspace, packages=args.tool_package, skills=skills)
+        tools = (capability_factory(workspace, args, skills, policy) if capability_factory is not None
+                 else assemble_capabilities(workspace, packages=args.tool_package, skills=skills))
         if skills is not None:
             layers.append(SkillMiddleware(skills))
         if args.trace:
@@ -407,9 +411,9 @@ def main() -> int:
         if args.model_retries or args.tool_retries:
             layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
         state = run_agent(
-            LazyModel(), args.prompt, tools=tools,
+            model_factory(args) if model_factory is not None else LazyModel(), args.prompt, tools=tools,
             middleware=layers,
-            system_prompt=SYSTEM_PROMPT, max_steps=args.max_steps,
+            system_prompt=system_prompt, max_steps=args.max_steps,
             max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
             store=store, session_id=args.session, workspace_root=workspace.root,
             max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
