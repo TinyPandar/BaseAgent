@@ -22,7 +22,7 @@ from baseagent.agent.completion import CompletionPolicy
 from baseagent.evaluation import ScriptedModel, _call
 from baseagent.middleware.repository import RepositoryMiddleware
 from baseagent.session import SessionStore
-from baseagent.tools.policy import ToolPolicy
+from baseagent.tools.policy import ToolPolicy, _strict_arguments
 from baseagent.tools.workspace import Workspace
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -70,20 +70,39 @@ def searched_convention(state):
 
 
 class ScenarioPolicy(ToolPolicy):
-    def __init__(self, workspace):
+    def __init__(self, workspace, *, version=2):
+        if version not in {1, 2}:
+            raise ValueError("unsupported scenario policy version")
+        self.version = version
         def exact(values):
             return {"default": "deny", "rules": [{"action": "allow", "match": {"equals": values}}]}
         super().__init__({
             "knowledge_search": "allow", "read_file": "allow", "get_instructions": "allow",
             "update_plan": "allow", "get_task_state": "allow",
-            "edit_file": exact({"path": "sample.py", "edits": PATCH}),
+            "edit_file": exact({"path": "sample.py", **({"edits": PATCH} if version == 1 else {})}),
             "write_file": exact({"path": "REPORT.md"}),
             "verify_command": exact({"argv": ARGV, "paths": PATHS}),
+            **({"run_command": exact({"argv": ARGV})} if version == 2 else {}),
         }, default="deny", workspace=workspace)
 
     def action(self, state, call_id, name, arguments):
         if name in {"edit_file", "write_file"} and not searched_convention(state):
             return "deny"
+        if name == "edit_file" and self.version == 2:
+            try:
+                args = _strict_arguments(arguments)
+                edits = args.get("edits")
+                if (not isinstance(edits, list) or len(edits) != 1
+                        or not isinstance(edits[0], dict)
+                        or set(edits[0]) != {"old_text", "new_text"}):
+                    return "deny"
+                old, new = edits[0]["old_text"], edits[0]["new_text"]
+                if (not isinstance(old, str) or not isinstance(new, str)
+                        or old.strip() != "return a - b" or new.strip() != "return a + b"
+                        or old[:len(old) - len(old.lstrip())] != new[:len(new) - len(new.lstrip())]):
+                    return "deny"
+            except (ValueError, TypeError, RecursionError):
+                return "deny"
         return super().action(state, call_id, name, arguments)
 
 
@@ -136,7 +155,8 @@ def scripted_model(*, repair=True, verify=True, plan=True, artifact=True, search
     return ScriptedModel(messages), len(messages)
 
 
-def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model_calls=20):
+def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model_calls=20,
+                 policy_version=2):
     root = Path(root).resolve()
     assert root.is_relative_to(Path(tempfile.gettempdir()).resolve())
     assert not root.is_relative_to(REPOSITORY) and not REPOSITORY.is_relative_to(root)
@@ -146,7 +166,7 @@ def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model
     assert all(not (root / name).is_symlink() and (root / name).read_bytes() == content
                for name, content in fixtures.items()), "fixture files must be unmodified copies"
     workspace = Workspace(root, allow_write=allow_write, allow_command=allow_command)
-    policy = ScenarioPolicy(workspace)
+    policy = ScenarioPolicy(workspace, version=policy_version)
     index = root / ".baseagent" / "index"
     with redirect_stdout(io.StringIO()):
         assert main(["index", "--corpus-root", str(root), "--output-dir", str(index),

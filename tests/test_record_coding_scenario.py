@@ -125,7 +125,13 @@ def test_three_runs_and_replay_with_fake_client(tmp_path, monkeypatch, capsys):
             if self.calls % 7 == 0:
                 self.script, _ = scripted_model()
             self.calls += 1
-            return self.script.complete(messages, tools)
+            response = self.script.complete(messages, tools)
+            for call in response.message.get("tool_calls", []):
+                if call["function"]["name"] == "edit_file":
+                    args = json.loads(call["function"]["arguments"])
+                    args["edits"] = [{"old_text": "    return a - b", "new_text": "    return a + b"}]
+                    call["function"]["arguments"] = json.dumps(args)
+            return response
 
         def __enter__(self):
             return self
@@ -142,6 +148,7 @@ def test_three_runs_and_replay_with_fake_client(tmp_path, monkeypatch, capsys):
     assert main(["--runs", "3", "--output-dir", str(out), "--report-dir", str(reports)]) == 0
     assert client.calls == 21
     assert len(list(out.glob("run_[0-9].json"))) == 3
+    assert json.loads((out / "run_1.json").read_text().splitlines()[0])["scenario_policy_version"] == 2
     report = json.loads(next(reports.glob("*.json")).read_text())
     assert all(r["external_acceptance_passed"] and r["replay_consistent"] for r in report["runs"])
     assert main(["--replay", "--output-dir", str(out)]) == 0
@@ -242,3 +249,62 @@ def test_smoke_cli_one_call_no_recording(tmp_path, monkeypatch, capsys):
     assert client.complete.call_count == 1
     assert not list(tmp_path.iterdir())
     assert '"compliant_tool_calls": true' in capsys.readouterr().out
+
+
+def test_all_real_recordings_replay_offline(capsys):
+    from scripts.record_coding_scenario import disconnected
+
+    with disconnected():
+        assert main(["--replay"]) == 0
+    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["run"] for r in reports] == [f"run_{i}" for i in range(1, 6)]
+    assert all(r["replay_consistent"] and all(r["checks"].values()) for r in reports)
+
+
+def test_replay_error_reports_original_mismatch(tmp_path, capsys):
+    path = tmp_path / "run_1.json"
+    with CassetteModel(path, FakeClient(), mode="record") as model:
+        model.complete([{"role": "user", "content": "different request"}], [])
+    path.with_suffix(".result.json").write_text(json.dumps({"outcome": {}}))
+    assert main(["--replay-dir", str(tmp_path)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["checks"] == {"replay_completed": False}
+    assert "CassetteMismatch: operation 0:" in report["error"]
+    assert "unconsumed" not in report["error"]
+
+
+def test_workspace_report_and_timing_normalize_across_recording_and_replay(tmp_path):
+    from applications.project_assistant.evaluation.coding import (
+        run_scenario,
+        scenario_workspace,
+        scripted_model,
+    )
+    from scripts.record_coding_scenario import outcome, replay
+
+    with scenario_workspace() as root:
+        script, _ = scripted_model()
+
+        class Client:
+            def complete(self, messages, tools):
+                response = script.complete(messages, tools)
+                for call in response.message.get("tool_calls", []):
+                    if call["function"]["name"] == "write_file":
+                        args = json.loads(call["function"]["arguments"])
+                        args["content"] = f'Report: {root}/check_addition.py\n'
+                        call["function"]["arguments"] = json.dumps(args)
+                return response
+
+        path = tmp_path / "run_1.json"
+        with CassetteModel(path, Client(), mode="record", redactor=cassette_redactor(root)) as model:
+            result, state, ledger = run_scenario(model, root)
+        expected = outcome(result, state, ledger, root)
+        text = path.read_text()
+        assert str(root) not in text and "<WORKSPACE>" in text
+    assert replay(path, details=True) == expected
+    redactor = cassette_redactor(tmp_path)
+    def tool(duration, root):
+        return {"role": "tool", "content": json.dumps({"data": {
+            "verifications": [{"duration_seconds": duration}], "stderr": f"{root}/check.py"}})}
+    assert redactor.value(tool(0.01, str(tmp_path))) == redactor.value(tool(0.02, "<SECRET>"))
+    # Normalization preserves command arguments and report text containing timings.
+    assert redactor.value({"duration_seconds": 4}) == {"duration_seconds": 4}

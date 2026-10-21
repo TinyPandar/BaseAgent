@@ -29,6 +29,7 @@ from applications.project_assistant.evaluation.coding import (
 from baseagent.kernel.errors import ModelError
 from baseagent.main import initialize_model, model_configuration
 from baseagent.testing import CassetteModel, Redactor
+from baseagent.testing.cassette import CassetteMismatch, _hash
 
 INPUT_CNY_PER_MILLION = Decimal("0.8")
 OUTPUT_CNY_PER_MILLION = Decimal(2)
@@ -103,13 +104,95 @@ class BoundedModel:
 
 class EndpointRedactor(Redactor):
     def __init__(self, root, key="", base_url=""):
-        super().__init__(patterns=(r"\b[0-9a-f]{32}\b",), secrets=(str(root), *([key] if key else [])))
+        super().__init__(patterns=(r"\b[0-9a-f]{32}\b",), secrets=([key] if key else []))
+        self.root = str(root)
         self.base_url = base_url
+        self.artifact_hashes = {}
 
     def text(self, text):
+        # Accept the old path placeholder without conflating arbitrary secrets.
+        text = text.replace(self.root, "<WORKSPACE>").replace("<SECRET>/", "<WORKSPACE>/")
         if self.base_url:
             text = text.replace(self.base_url, "<redacted-endpoint>")
+        for original, normalized in self.artifact_hashes.items():
+            text = text.replace(original, normalized)
         return super().text(text)
+
+    def value(self, value):
+        if isinstance(value, list):
+            # A report can quote a traceback containing the temporary root. Its
+            # original bytes/hash are lost after redaction. Compare the known
+            # write content and its derived bytes/hash in the same path namespace.
+            reports = {}
+            for message in value:
+                if not isinstance(message, dict):
+                    continue
+                for call in message.get("tool_calls", []):
+                    function = call["function"]
+                    if function["name"] == "write_file":
+                        args = json.loads(function["arguments"])
+                        content = args.get("content", "")
+                        if args.get("path") == "REPORT.md" and any(
+                            root + "/" in content for root in (self.root, "<SECRET>", "<WORKSPACE>")
+                        ):
+                            reports[call["id"]] = self.text(content).encode("utf-8")
+            value = list(value)
+            for index, message in enumerate(value):
+                if not isinstance(message, dict) or message.get("role") != "tool":
+                    continue
+                content = reports.get(message.get("tool_call_id"))
+                if content is None:
+                    continue
+                result = json.loads(message["content"])
+                if result.get("ok") and result.get("data", {}).get("path") == "REPORT.md":
+                    data = result["data"]
+                    digest = sha256(content).hexdigest()
+                    self.artifact_hashes[data["sha256"]] = digest
+                    value[index] = {**message, "content": json.dumps(
+                        {**result, "data": {**data, "bytes": len(content), "sha256": digest}},
+                        ensure_ascii=False)}
+        if isinstance(value, dict) and value.get("role") == "tool" and isinstance(value.get("content"), str):
+            try:
+                content = json.loads(value["content"])
+            except ValueError:
+                pass
+            else:
+                # get_task_state exposes measured durations inside JSON strings.
+                # Normalize only telemetry in tool results, never model arguments.
+                def timing(item):
+                    if isinstance(item, dict):
+                        return {k: 0 if k == "duration_seconds" else timing(v) for k, v in item.items()}
+                    if isinstance(item, list):
+                        return [timing(v) for v in item]
+                    return item
+                value = {**value, "content": json.dumps(timing(content), ensure_ascii=False)}
+        return super().value(value)
+
+
+class ScenarioCassetteModel(CassetteModel):
+    """Normalize old recordings in memory after validating their original hashes."""
+
+    def _load(self):
+        super()._load()
+        for row in self._rows:
+            row["request"] = self.redactor.value(row["request"])
+            row["request_hash"] = _hash(row["request"])
+            if "response" in row:
+                row["response"] = self.redactor.value(row["response"])
+
+    def _invoke(self, *args, **kwargs):
+        try:
+            return super()._invoke(*args, **kwargs)
+        except CassetteMismatch as exc:
+            # run_agent converts model errors to state.error. Preserve the first
+            # mismatch so close() cannot hide it behind an unconsumed-row error.
+            self.replay_error = getattr(self, "replay_error", None) or exc
+            raise
+
+    def assert_all_consumed(self):
+        if getattr(self, "replay_error", None) is not None:
+            raise self.replay_error
+        super().assert_all_consumed()
 
 
 def cassette_redactor(root, key="", base_url=""):
@@ -144,9 +227,10 @@ def signature(result):
 
 def outcome(result, state, ledger, root):
     """Compare final observable state and ordered tool requests, excluding UUIDs."""
-    files = {name: sha256((root / name).read_bytes()).hexdigest()
+    redactor = cassette_redactor(root)
+    files = {name: sha256(redactor.text((root / name).read_text()).encode("utf-8")).hexdigest()
              for name in ("sample.py", "REPORT.md") if (root / name).is_file()}
-    return cassette_redactor(root).value({
+    return redactor.value({
         "result": signature(result),
         "final_state": {"status": state.status, "answer": state.final_answer,
                         "error": state.error, "plan": state.plan, "files": files},
@@ -156,8 +240,10 @@ def outcome(result, state, ledger, root):
 
 def replay(path, *, details=False):
     with (disconnected(), scenario_workspace() as root,
-          CassetteModel(path, mode="replay", redactor=cassette_redactor(root)) as model):
-        result, state, ledger = run_scenario(model, root)
+          ScenarioCassetteModel(path, mode="replay", redactor=cassette_redactor(root)) as model):
+        # Unversioned cassettes were recorded under the original exact-patch policy.
+        result, state, ledger = run_scenario(model, root,
+                                           policy_version=model._header.get("scenario_policy_version", 1))
         actual = outcome(result, state, ledger, root)
     return actual if details else result
 
@@ -205,17 +291,23 @@ def main(argv=None):
                        if re.fullmatch(r"run_[0-9]+\.json", path.name))
         passed = bool(paths)
         for path in paths:
+            error = None
             try:
-                expected = json.loads(path.with_suffix(".result.json").read_text())["outcome"]
+                normalizer = cassette_redactor("<WORKSPACE>")
+                ScenarioCassetteModel(path, mode="replay", redactor=normalizer)
+                expected = normalizer.value(
+                    json.loads(path.with_suffix(".result.json").read_text())["outcome"])
                 actual = replay(path, details=True)
                 checks = {name: actual[name] == expected[name]
                           for name in ("final_state", "tool_sequence", "result")}
                 same = all(checks.values())
-            except Exception:  # noqa: BLE001 -- sanitized replay diagnostics
-                checks = {}
+            except Exception as exc:  # noqa: BLE001 -- sanitized replay diagnostics
+                checks = {"replay_completed": False}
+                error = cassette_redactor("<WORKSPACE>").text(f"{type(exc).__name__}: {exc}")[:1000]
                 same = False
             passed &= same
-            print(json.dumps({"run": path.stem, "replay_consistent": same, "checks": checks}))
+            print(json.dumps({"run": path.stem, "replay_consistent": same, "checks": checks,
+                              **({"error": error} if error else {})}))
         return 0 if passed else 1
     try:
         configuration = model_configuration(generic_only=True)
@@ -262,6 +354,7 @@ def main(argv=None):
                     lines = path.read_text().splitlines()
                     header = json.loads(lines[0])
                     header["base_url"] = "<redacted-endpoint>"
+                    header["scenario_policy_version"] = 2
                     if "extra_body" in configuration:
                         header["extra_body"] = configuration["extra_body"]
                     lines[0] = json.dumps(header, ensure_ascii=False)

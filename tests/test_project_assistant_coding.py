@@ -109,3 +109,82 @@ def test_arbitrary_commands_and_real_repository_writes_denied():
 def test_real_repository_cannot_be_a_scenario_workspace():
     with pytest.raises(AssertionError):
         run_scenario(ScriptedModel([]), REPOSITORY)
+
+
+def recorded_edit():
+    rows = [json.loads(line) for line in
+            (REPOSITORY / "tests/cassettes/coding_scenario/run_1.json").read_text().splitlines()[1:]]
+    return next(json.loads(call["function"]["arguments"])
+                for row in rows for call in row["response"]["value"]["message"].get("tool_calls", [])
+                if call["function"]["name"] == "edit_file")
+
+
+def policy_state():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(messages=[
+        {"tool_calls": [_call("knowledge_search", {}, "search")]},
+        {"role": "tool", "tool_call_id": "search", "content": json.dumps(
+            {"ok": True, "data": {"evidence": [{"file_path": "CONVENTIONS.md"}]}})},
+    ])
+
+
+def test_real_indented_edit_with_concurrency_fields_allowed(tmp_path):
+    from applications.project_assistant.evaluation.coding import ScenarioPolicy
+
+    policy = ScenarioPolicy(Workspace(tmp_path))
+    args = recorded_edit()
+    assert args["edits"][0]["old_text"] == "    return a - b"
+    assert "expected_sha256" in args and "expected_instructions" in args
+    assert policy.action(policy_state(), "edit", "edit_file", json.dumps(args)) == "allow"
+    assert ScenarioPolicy(Workspace(tmp_path), version=1).action(
+        policy_state(), "edit", "edit_file", json.dumps(args)) == "deny"
+
+
+@pytest.mark.parametrize("change", [
+    {"path": "other.py"}, {"path": "./sample.py"}, {"path": "../sample.py"},
+    {"edits": []}, {"edits": [{"old_text": "return a - b", "new_text": "return a + b"}] * 2},
+    {"edits": [{"old_text": "    return a - b", "new_text": "return a + b"}]},
+    {"edits": [{"old_text": "\treturn a - b", "new_text": "    return a + b"}]},
+    {"edits": [{"old_text": "return a - b", "new_text": "return a * b"}]},
+    {"edits": [{"old_text": "return a + b", "new_text": "return a + b"}]},
+    {"edits": [{"old_text": "return a - b", "new_text": "return a + b\nprint('bad')"}]},
+    {"edits": [{"old_text": "return a - b", "new_text": "return a + b", "extra": True}]},
+    {"edits": [{"old_text": None, "new_text": "return a + b"}]},
+    {"edits": "return a + b"},
+])
+def test_other_edit_variants_denied(tmp_path, change):
+    from applications.project_assistant.evaluation.coding import ScenarioPolicy
+
+    args = {**recorded_edit(), **change}
+    assert ScenarioPolicy(Workspace(tmp_path)).action(
+        policy_state(), "edit", "edit_file", json.dumps(args)) == "deny"
+
+
+@pytest.mark.parametrize("name,args", [
+    ("write_file", {"path": "REPORT.md", "content": "result"}),
+    ("verify_command", {"argv": ARGV, "paths": ["sample.py", "check_addition.py"], "timeout": 30}),
+    ("run_command", {"argv": ARGV, "timeout": 30}),
+])
+def test_side_effect_policy_ignores_concurrency_and_timeout(tmp_path, name, args):
+    from applications.project_assistant.evaluation.coding import ScenarioPolicy
+
+    args = {**args, "expected_sha256": "missing", "expected_instructions": "0" * 64}
+    policy = ScenarioPolicy(Workspace(tmp_path))
+    assert policy.action(policy_state(), "call", name, json.dumps(args)) == "allow"
+    bad = {**args, **({"path": "sample.py"} if name == "write_file" else {"argv": [*ARGV, "extra"]})}
+    assert policy.action(policy_state(), "call", name, json.dumps(bad)) == "deny"
+    if name == "verify_command":
+        assert policy.action(policy_state(), "call", name, json.dumps({**args, "paths": []})) == "deny"
+
+
+def test_indented_real_edit_completes_without_unauthorized_effects():
+    from applications.project_assistant.evaluation import coding
+
+    # Exercise the real tools, ledger and external acceptance with real arguments.
+    args = recorded_edit()
+    model, _ = scripted_model()
+    with patch.object(coding, "PATCH", args["edits"]), scenario_workspace() as root:
+        result, _, _ = run_scenario(model, root)
+    assert result["external_acceptance_passed"]
+    assert not result["unauthorized_side_effects"]
