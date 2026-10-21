@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from hashlib import sha256
+from pathlib import Path
+
+from baseagent.backends import LocalBackend, WorkspaceBackend
 
 from .registry import ToolRegistry
 from .result import ErrorCode, ToolFailure, ToolResult
-from baseagent.backends import LocalBackend, WorkspaceBackend
+
+
+def apply_edits(content: str, edits: list[dict]) -> str:
+    """Apply the edit_file replacements in order without writing any bytes."""
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
+        raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "provide 1-20 edits")
+    for edit in edits:
+        if (not isinstance(edit, dict) or set(edit) != {"old_text", "new_text"}
+                or any(not isinstance(edit[key], str) or len(edit[key]) > 200_000
+                       for key in ("old_text", "new_text"))):
+            raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "invalid text replacement")
+        old = edit["old_text"]
+        if not old or content.count(old) != 1:
+            raise ToolFailure(ErrorCode.CONFLICT, "each old_text must match exactly once; no edit applied")
+        content = content.replace(old, edit["new_text"], 1)
+        if len(content.encode("utf-8")) > 200_000:
+            raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "edited content exceeds 200 KB")
+    return content
 
 
 class Workspace:
@@ -102,16 +121,7 @@ class Workspace:
         value = self.backend.read_bytes(path)
         if sha256(value).hexdigest() != expected_sha256:
             raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file")
-        content = value.decode("utf-8")
-        if not 1 <= len(edits) <= 20:
-            raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "provide 1-20 edits")
-        for edit in edits:
-            old = edit["old_text"]
-            if not old or content.count(old) != 1:
-                raise ToolFailure(ErrorCode.CONFLICT, "each old_text must match exactly once; no edit applied")
-            content = content.replace(old, edit["new_text"], 1)
-            if len(content.encode("utf-8")) > 200_000:
-                raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "edited content exceeds 200 KB")
+        content = apply_edits(value.decode("utf-8"), edits)
         return self.write_file(path, content, expected_sha256, expected_instructions, context=context)
 
     def refresh_observed(self, state):
@@ -167,9 +177,16 @@ class Workspace:
 
 def coding_tools(workspace: Workspace) -> ToolRegistry:
     from functools import partial
-    from .workflow import update_plan, get_task_state, verify_command
-    from .memory import remember, forget_memory, recall_memory, read_history, set_history_summary
+
+    from .memory import (
+        forget_memory,
+        read_history,
+        recall_memory,
+        remember,
+        set_history_summary,
+    )
     from .shared_memory import publish_memory, search_shared_memory, withdraw_memory
+    from .workflow import get_task_state, update_plan, verify_command
     registry = ToolRegistry()
     registry.capability_contract = {"allow_write": workspace.allow_write, "allow_command": workspace.allow_command,
                                     "allow_memory_publish": workspace.allow_memory_publish,

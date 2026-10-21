@@ -354,7 +354,7 @@ def main(argv=None):
                     lines = path.read_text().splitlines()
                     header = json.loads(lines[0])
                     header["base_url"] = "<redacted-endpoint>"
-                    header["scenario_policy_version"] = 2
+                    header["scenario_policy_version"] = 3
                     if "extra_body" in configuration:
                         header["extra_body"] = configuration["extra_body"]
                     lines[0] = json.dumps(header, ensure_ascii=False)

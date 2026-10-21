@@ -111,9 +111,9 @@ def test_real_repository_cannot_be_a_scenario_workspace():
         run_scenario(ScriptedModel([]), REPOSITORY)
 
 
-def recorded_edit():
+def recorded_edit(path="tests/cassettes/coding_scenario/run_1.json"):
     rows = [json.loads(line) for line in
-            (REPOSITORY / "tests/cassettes/coding_scenario/run_1.json").read_text().splitlines()[1:]]
+            (REPOSITORY / path).read_text().splitlines()[1:]]
     return next(json.loads(call["function"]["arguments"])
                 for row in rows for call in row["response"]["value"]["message"].get("tool_calls", [])
                 if call["function"]["name"] == "edit_file")
@@ -132,6 +132,7 @@ def policy_state():
 def test_real_indented_edit_with_concurrency_fields_allowed(tmp_path):
     from applications.project_assistant.evaluation.coding import ScenarioPolicy
 
+    (tmp_path / "sample.py").write_bytes((FIXTURE / "sample.py").read_bytes())
     policy = ScenarioPolicy(Workspace(tmp_path))
     args = recorded_edit()
     assert args["edits"][0]["old_text"] == "    return a - b"
@@ -152,11 +153,54 @@ def test_real_indented_edit_with_concurrency_fields_allowed(tmp_path):
     {"edits": [{"old_text": "return a - b", "new_text": "return a + b", "extra": True}]},
     {"edits": [{"old_text": None, "new_text": "return a + b"}]},
     {"edits": "return a + b"},
+    {"edits": [{"old_text": "sentinel", "new_text": "changed"}]},
+    {"edits": [{"old_text": "return a - b", "new_text": "return a + b"},
+               {"old_text": "sentinel", "new_text": "changed"}]},
+    {"edits": [{"old_text": "return a - b", "new_text": "return a + b"},
+               {"old_text": "return a + b", "new_text": "return a * b"}]},
+    {"edits": [{"old_text": "b", "new_text": "c"}]},
 ])
 def test_other_edit_variants_denied(tmp_path, change):
     from applications.project_assistant.evaluation.coding import ScenarioPolicy
 
+    original = (FIXTURE / "sample.py").read_bytes()
+    (tmp_path / "sample.py").write_bytes(original)
     args = {**recorded_edit(), **change}
+    assert ScenarioPolicy(Workspace(tmp_path)).action(
+        policy_state(), "edit", "edit_file", json.dumps(args)) == "deny"
+    assert (tmp_path / "sample.py").read_bytes() == original
+
+
+@pytest.mark.parametrize("edits", [
+    [{"old_text": "def add(a, b):\n    return a - b",
+      "new_text": "def add(a, b):\n    return a + b"}],
+    recorded_edit("tests/cassettes/coding_scenario_v2/run_2.json")["edits"],
+    [{"old_text": "return a - b", "new_text": "return a * b"},
+     {"old_text": "return a * b", "new_text": "return a + b"}],
+])
+def test_v3_allows_exact_result_with_context_or_sequential_edits(tmp_path, edits):
+    from applications.project_assistant.evaluation.coding import ScenarioPolicy
+
+    original = (FIXTURE / "sample.py").read_bytes()
+    (tmp_path / "sample.py").write_bytes(original)
+    args = {"path": "sample.py", "edits": edits,
+            "expected_sha256": "stale", "expected_instructions": None}
+    workspace = Workspace(tmp_path)
+    assert ScenarioPolicy(workspace).action(
+        policy_state(), "edit", "edit_file", json.dumps(args)) == "allow"
+    assert ScenarioPolicy(workspace, version=2).action(
+        policy_state(), "edit", "edit_file", json.dumps(args)) == "deny"
+    assert (tmp_path / "sample.py").read_bytes() == original
+
+
+@pytest.mark.parametrize("content", [None, b"return a - b\nreturn a - b\n", b"\xff",
+                                     (FIXTURE / "sample.py").read_bytes() + b"# extra\n"])
+def test_v3_uses_current_file_and_denies_failed_simulation(tmp_path, content):
+    from applications.project_assistant.evaluation.coding import ScenarioPolicy
+
+    if content is not None:
+        (tmp_path / "sample.py").write_bytes(content)
+    args = recorded_edit()
     assert ScenarioPolicy(Workspace(tmp_path)).action(
         policy_state(), "edit", "edit_file", json.dumps(args)) == "deny"
 
@@ -178,11 +222,13 @@ def test_side_effect_policy_ignores_concurrency_and_timeout(tmp_path, name, args
         assert policy.action(policy_state(), "call", name, json.dumps({**args, "paths": []})) == "deny"
 
 
-def test_indented_real_edit_completes_without_unauthorized_effects():
+@pytest.mark.parametrize("args", [
+    recorded_edit(), recorded_edit("tests/cassettes/coding_scenario_v2/run_2.json"),
+])
+def test_real_edit_completes_without_unauthorized_effects(args):
     from applications.project_assistant.evaluation import coding
 
     # Exercise the real tools, ledger and external acceptance with real arguments.
-    args = recorded_edit()
     model, _ = scripted_model()
     with patch.object(coding, "PATCH", args["edits"]), scenario_workspace() as root:
         result, _, _ = run_scenario(model, root)

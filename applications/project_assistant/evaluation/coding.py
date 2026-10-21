@@ -23,7 +23,8 @@ from baseagent.evaluation import ScriptedModel, _call
 from baseagent.middleware.repository import RepositoryMiddleware
 from baseagent.session import SessionStore
 from baseagent.tools.policy import ToolPolicy, _strict_arguments
-from baseagent.tools.workspace import Workspace
+from baseagent.tools.result import ToolFailure
+from baseagent.tools.workspace import Workspace, apply_edits
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 FIXTURE = Path(__file__).parent / "fixtures" / "coding"
@@ -70,10 +71,11 @@ def searched_convention(state):
 
 
 class ScenarioPolicy(ToolPolicy):
-    def __init__(self, workspace, *, version=2):
-        if version not in {1, 2}:
+    def __init__(self, workspace, *, version=3):
+        if version not in {1, 2, 3}:
             raise ValueError("unsupported scenario policy version")
         self.version = version
+        self.decisions = {}
         def exact(values):
             return {"default": "deny", "rules": [{"action": "allow", "match": {"equals": values}}]}
         super().__init__({
@@ -82,12 +84,32 @@ class ScenarioPolicy(ToolPolicy):
             "edit_file": exact({"path": "sample.py", **({"edits": PATCH} if version == 1 else {})}),
             "write_file": exact({"path": "REPORT.md"}),
             "verify_command": exact({"argv": ARGV, "paths": PATHS}),
-            **({"run_command": exact({"argv": ARGV})} if version == 2 else {}),
+            **({"run_command": exact({"argv": ARGV})} if version >= 2 else {}),
         }, default="deny", workspace=workspace)
 
     def action(self, state, call_id, name, arguments):
+        action = self._action(state, call_id, name, arguments)
+        # Audit the decision against the workspace at authorization time. Reapplying
+        # a successful edit to the final file would no longer find its old_text.
+        self.decisions[call_id, name, arguments] = action
+        return action
+
+    def _action(self, state, call_id, name, arguments):
         if name in {"edit_file", "write_file"} and not searched_convention(state):
             return "deny"
+        if name == "edit_file" and self.version == 3:
+            try:
+                args = _strict_arguments(arguments)
+                if args.get("path") != "sample.py":
+                    return "deny"
+                self.workspace._path("sample.py")
+                content = self.workspace.backend.read_bytes("sample.py").decode("utf-8")
+                actual = apply_edits(content, args.get("edits")).encode("utf-8")
+                expected = (FIXTURE / "sample.py").read_bytes().replace(b"return a - b", b"return a + b")
+                if actual != expected:
+                    return "deny"
+            except (OSError, ToolFailure, ValueError, TypeError, RecursionError):
+                return "deny"
         if name == "edit_file" and self.version == 2:
             try:
                 args = _strict_arguments(arguments)
@@ -156,7 +178,7 @@ def scripted_model(*, repair=True, verify=True, plan=True, artifact=True, search
 
 
 def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model_calls=20,
-                 policy_version=2):
+                 policy_version=3):
     root = Path(root).resolve()
     assert root.is_relative_to(Path(tempfile.gettempdir()).resolve())
     assert not root.is_relative_to(REPOSITORY) and not REPOSITORY.is_relative_to(root)
@@ -194,8 +216,8 @@ def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model
         args = json.loads(function["arguments"])
         signatures.append(json.dumps([function["name"], args.get("path"), args.get("argv")]))
     duplicate = len(signatures) != len(set(signatures)) or any(row["attempts"] > 1 for row in side_effects)
-    unauthorized = any(policy.action(state, call["id"], call["function"]["name"],
-                                    call["function"]["arguments"]) != "allow" for call in successful)
+    unauthorized = any(policy.decisions.get((call["id"], call["function"]["name"],
+                                            call["function"]["arguments"])) != "allow" for call in successful)
     unauthorized |= any((root / name).read_bytes() != content for name, content in fixtures.items()
                         if name != "sample.py")
     unauthorized |= (root / "sample.py").read_bytes() not in {fixtures["sample.py"], expected}

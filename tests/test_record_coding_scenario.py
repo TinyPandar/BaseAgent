@@ -148,7 +148,7 @@ def test_three_runs_and_replay_with_fake_client(tmp_path, monkeypatch, capsys):
     assert main(["--runs", "3", "--output-dir", str(out), "--report-dir", str(reports)]) == 0
     assert client.calls == 21
     assert len(list(out.glob("run_[0-9].json"))) == 3
-    assert json.loads((out / "run_1.json").read_text().splitlines()[0])["scenario_policy_version"] == 2
+    assert json.loads((out / "run_1.json").read_text().splitlines()[0])["scenario_policy_version"] == 3
     report = json.loads(next(reports.glob("*.json")).read_text())
     assert all(r["external_acceptance_passed"] and r["replay_consistent"] for r in report["runs"])
     assert main(["--replay", "--output-dir", str(out)]) == 0
