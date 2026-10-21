@@ -1,0 +1,5151 @@
+{
+  "experiment": "candidate_retrieval",
+  "split": "test",
+  "configs": {
+    "vector": {
+      "params": {},
+      "metrics": {
+        "mrr": 0.6779761904761905,
+        "recall": {
+          "1": 0.3779761904761905,
+          "3": 0.6148809523809523,
+          "5": 0.7101190476190476
+        }
+      },
+      "questions": [
+        {
+          "id": "exact_identifier-02",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.6461490988731384,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": -0.6461490988731384
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": -0.8791437149047852
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.9056147336959839
+            },
+            {
+              "citation": "applications/project_assistant/README.md:187-193",
+              "score": -0.9411546587944031
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:1-12",
+              "score": -0.950265109539032
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-04",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.8487996459007263,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": -0.8487996459007263
+            },
+            {
+              "citation": "src/baseagent/tools/editing.py:14-19",
+              "score": -0.9117996692657471
+            },
+            {
+              "citation": "src/baseagent/jsondata.py:45-56",
+              "score": -1.0730266571044922
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -1.091552734375
+            },
+            {
+              "citation": "src/baseagent/tools/editing.py:57-64",
+              "score": -1.0923311710357666
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-06",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.44294682145118713,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:128-160",
+              "score": -0.44294682145118713
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:22-23",
+              "score": -0.506108820438385
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": -0.5798874497413635
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": -0.606155276298523
+            },
+            {
+              "citation": "applications/project_assistant/README.md:178-186",
+              "score": -0.7117463946342468
+            }
+          ]
+        },
+        {
+          "id": "concept-02",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": -0.5422462821006775,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.5422462821006775
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:1-21",
+              "score": -0.5999093055725098
+            },
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": -0.620202898979187
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.6231932640075684
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": -0.6355835199356079
+            }
+          ]
+        },
+        {
+          "id": "concept-04",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": -0.5827057361602783,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.5827057361602783
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.6084588766098022
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.6953620314598083
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.6997135877609253
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:1-5",
+              "score": -0.7041942477226257
+            }
+          ]
+        },
+        {
+          "id": "concept-06",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.813480019569397,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:115-143",
+              "score": -0.813480019569397
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:40-112",
+              "score": -0.852904200553894
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:1-8",
+              "score": -0.9141517281532288
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": -0.9323314428329468
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": -0.9790989756584167
+            }
+          ]
+        },
+        {
+          "id": "cross_file-02",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.25,
+            "3": 0.25,
+            "5": 0.25
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.6697046756744385,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.6697046756744385
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.7513052821159363
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.7930760383605957
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": -0.8275757431983948
+            },
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": -0.8425464034080505
+            }
+          ]
+        },
+        {
+          "id": "cross_file-04",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.7242501378059387,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.7242501378059387
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": -0.7610418796539307
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.7644870281219482
+            },
+            {
+              "citation": "applications/project_assistant/README.md:28-39",
+              "score": -0.7754342555999756
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.7844420075416565
+            }
+          ]
+        },
+        {
+          "id": "cross_file-06",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.7417981624603271,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.7417981624603271
+            },
+            {
+              "citation": "src/baseagent/tools/instructions.py:10-12",
+              "score": -0.76642906665802
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": -0.7684485912322998
+            },
+            {
+              "citation": "src/baseagent/session/store.py:323-325",
+              "score": -0.7872926592826843
+            },
+            {
+              "citation": "src/baseagent/session/store.py:315-317",
+              "score": -0.7891793251037598
+            }
+          ]
+        },
+        {
+          "id": "stale-02",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.8,
+            "5": 0.8
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": -0.4758830666542053,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/cache.py:22-23",
+              "score": -0.4758830666542053
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": -0.48661214113235474
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": -0.5962596535682678
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:128-160",
+              "score": -0.6003860831260681
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": -0.6120290756225586
+            }
+          ]
+        },
+        {
+          "id": "stale-04",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.5
+          },
+          "reciprocal_rank": 0.2,
+          "top_score": -0.8084086179733276,
+          "retrieved": [
+            {
+              "citation": "DEVELOPMENT_HANDOFF.md:100-112",
+              "score": -0.8084086179733276
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.8354268074035645
+            },
+            {
+              "citation": "src/baseagent/evaluation.py:278-309",
+              "score": -0.8388224244117737
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": -0.8432331681251526
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": -0.8450466990470886
+            }
+          ]
+        },
+        {
+          "id": "stale-06",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 0.25,
+          "top_score": -0.5978575348854065,
+          "retrieved": [
+            {
+              "citation": "PHASE3_PLAN.md:110-139",
+              "score": -0.5978575348854065
+            },
+            {
+              "citation": "PHASE3_PLAN.md:91-140",
+              "score": -0.6698678731918335
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:1-11",
+              "score": -0.8310036659240723
+            },
+            {
+              "citation": "DEVELOPMENT_HANDOFF.md:82-112",
+              "score": -0.8452990651130676
+            },
+            {
+              "citation": "applications/project_assistant/README.md:187-193",
+              "score": -0.8601937890052795
+            }
+          ]
+        },
+        {
+          "id": "no_answer-02",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.9618067741394043,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/session/task_recovery.py:64-101",
+              "score": -0.9618067741394043
+            },
+            {
+              "citation": "src/baseagent/testing/cassette.py:249-250",
+              "score": -0.9642237424850464
+            },
+            {
+              "citation": "HARNESS_AUDIT.md:91-140",
+              "score": -0.9643019437789917
+            },
+            {
+              "citation": "src/baseagent/middleware/repository.py:13-61",
+              "score": -0.9704625010490417
+            },
+            {
+              "citation": "src/baseagent/llm/model.py:9-122",
+              "score": -0.9784889221191406
+            }
+          ]
+        },
+        {
+          "id": "no_answer-04",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.9292805790901184,
+          "retrieved": [
+            {
+              "citation": "ARCHITECTURE.md:105-112",
+              "score": -0.9292805790901184
+            },
+            {
+              "citation": "src/baseagent/tools/instructions.py:10-12",
+              "score": -0.9990561008453369
+            },
+            {
+              "citation": "src/baseagent/session/compatibility.py:1-4",
+              "score": -1.002941608428955
+            },
+            {
+              "citation": "src/baseagent/tools/workflow.py:35-49",
+              "score": -1.034565806388855
+            },
+            {
+              "citation": "src/baseagent/tools/memory.py:11-12",
+              "score": -1.1038627624511719
+            }
+          ]
+        },
+        {
+          "id": "no_answer-06",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -1.105971097946167,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/evaluation.py:258-258",
+              "score": -1.105971097946167
+            },
+            {
+              "citation": "DEVELOPMENT_HANDOFF.md:132-151",
+              "score": -1.162165641784668
+            },
+            {
+              "citation": "PHASE3_PLAN.md:7-17",
+              "score": -1.1849406957626343
+            },
+            {
+              "citation": "ARCHITECTURE.md:80-112",
+              "score": -1.2070155143737793
+            },
+            {
+              "citation": "HARNESS_PLAN.md:65-99",
+              "score": -1.2142367362976074
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-09",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.588529109954834,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": -0.588529109954834
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:1-8",
+              "score": -0.7719110250473022
+            },
+            {
+              "citation": "src/baseagent/tools/policy.py:19-35",
+              "score": -0.874944269657135
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:11-37",
+              "score": -0.9030956029891968
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:15-73",
+              "score": -0.9199384450912476
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-11",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": -0.6387705206871033,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/session/store.py:319-321",
+              "score": -0.6387705206871033
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.6750922203063965
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.721512496471405
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.7792821526527405
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": -0.7933178544044495
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-13",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": -0.6633661985397339,
+          "retrieved": [
+            {
+              "citation": "scripts/run_retrieval_experiments.py:110-142",
+              "score": -0.6633661985397339
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": -0.6883558034896851
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.709528923034668
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": -0.7126044631004333
+            },
+            {
+              "citation": "applications/project_assistant/README.md:167-168",
+              "score": -0.7361501455307007
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-15",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.5807973742485046,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.5807973742485046
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.635429322719574
+            },
+            {
+              "citation": "src/baseagent/session/store.py:319-321",
+              "score": -0.664905846118927
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": -0.6740942597389221
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": -0.6832646131515503
+            }
+          ]
+        },
+        {
+          "id": "concept-09",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.8568706512451172,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:12-28",
+              "score": -0.8568706512451172
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:1-9",
+              "score": -0.9226462841033936
+            },
+            {
+              "citation": "HARNESS_AUDIT.md:135-140",
+              "score": -1.1063005924224854
+            },
+            {
+              "citation": "src/baseagent/llm/estimation.py:16-51",
+              "score": -1.122057318687439
+            },
+            {
+              "citation": "HARNESS_AUDIT.md:127-140",
+              "score": -1.1440246105194092
+            }
+          ]
+        },
+        {
+          "id": "concept-11",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": -0.607117235660553,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/session/store.py:319-321",
+              "score": -0.607117235660553
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.6159533262252808
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.6186702251434326
+            },
+            {
+              "citation": "applications/project_assistant/README.md:28-39",
+              "score": -0.6752021312713623
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.6768439412117004
+            }
+          ]
+        },
+        {
+          "id": "concept-13",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.7423092126846313,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.7423092126846313
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.7465485334396362
+            },
+            {
+              "citation": "src/baseagent/session/store.py:319-321",
+              "score": -0.7812087535858154
+            },
+            {
+              "citation": "applications/project_assistant/README.md:187-193",
+              "score": -0.7898340821266174
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.8058708310127258
+            }
+          ]
+        },
+        {
+          "id": "concept-15",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": -0.5987207293510437,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/cache.py:22-23",
+              "score": -0.5987207293510437
+            },
+            {
+              "citation": "applications/project_assistant/README.md:178-186",
+              "score": -0.6112802028656006
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": -0.6230807900428772
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": -0.6442627906799316
+            },
+            {
+              "citation": "PHASE3_PLAN.md:18-49",
+              "score": -0.6870006322860718
+            }
+          ]
+        },
+        {
+          "id": "cross_file-09",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": -0.5692484974861145,
+          "retrieved": [
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.5692484974861145
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:51-135",
+              "score": -0.5770618915557861
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:13-23",
+              "score": -0.6136865615844727
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:110-142",
+              "score": -0.6473029255867004
+            },
+            {
+              "citation": "applications/project_assistant/rag/hybrid.py:6-25",
+              "score": -0.6693819761276245
+            }
+          ]
+        },
+        {
+          "id": "cross_file-11",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.5450682044029236,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.5450682044029236
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.5895524621009827
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.605642557144165
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": -0.6684345602989197
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": -0.7464795112609863
+            }
+          ]
+        },
+        {
+          "id": "cross_file-13",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 0.2,
+          "top_score": -0.6374695897102356,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.6374695897102356
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.6542143225669861
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": -0.7433756589889526
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -0.7525249719619751
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": -0.7723428606987
+            }
+          ]
+        },
+        {
+          "id": "cross_file-15",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.7711012363433838,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.7711012363433838
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:31-37",
+              "score": -0.7753605246543884
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:1-5",
+              "score": -0.8041591644287109
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:36-63",
+              "score": -0.8086907863616943
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": -0.8378978967666626
+            }
+          ]
+        },
+        {
+          "id": "stale-09",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.5
+          },
+          "reciprocal_rank": 0.25,
+          "top_score": -0.6347275972366333,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:51-135",
+              "score": -0.6347275972366333
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.6521795988082886
+            },
+            {
+              "citation": "applications/project_assistant/README.md:194-200",
+              "score": -0.6572219133377075
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.7054368257522583
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:1-10",
+              "score": -0.7245287895202637
+            }
+          ]
+        },
+        {
+          "id": "stale-11",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 0.25,
+          "top_score": -0.7243809700012207,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/README.md:194-200",
+              "score": -0.7243809700012207
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.7481324076652527
+            },
+            {
+              "citation": "DEVELOPMENT_HANDOFF.md:100-112",
+              "score": -0.8194424510002136
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": -0.84946209192276
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:51-135",
+              "score": -0.8532900810241699
+            }
+          ]
+        },
+        {
+          "id": "stale-13",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.4936109781265259,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": -0.4936109781265259
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": -0.6469688415527344
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:36-63",
+              "score": -0.7676517367362976
+            },
+            {
+              "citation": "applications/project_assistant/README.md:187-193",
+              "score": -0.8027589917182922
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": -0.8379216194152832
+            }
+          ]
+        },
+        {
+          "id": "stale-15",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": -0.4938693642616272,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": -0.4938693642616272
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:110-142",
+              "score": -0.5310468673706055
+            },
+            {
+              "citation": "applications/project_assistant/README.md:167-168",
+              "score": -0.5673070549964905
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": -0.5983716249465942
+            },
+            {
+              "citation": "applications/project_assistant/README.md:169-200",
+              "score": -0.6036235690116882
+            }
+          ]
+        },
+        {
+          "id": "no_answer-09",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.8470714092254639,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": -0.8470714092254639
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": -0.8649619817733765
+            },
+            {
+              "citation": "src/baseagent/tools/editing.py:1-11",
+              "score": -0.8795968890190125
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:36-63",
+              "score": -0.9446553587913513
+            },
+            {
+              "citation": "src/baseagent/testing/cassette.py:140-171",
+              "score": -0.9682968854904175
+            }
+          ]
+        },
+        {
+          "id": "no_answer-11",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.8437768220901489,
+          "retrieved": [
+            {
+              "citation": "PHASE3_PLAN.md:110-139",
+              "score": -0.8437768220901489
+            },
+            {
+              "citation": "src/baseagent/tools/memory.py:11-12",
+              "score": -0.9405813217163086
+            },
+            {
+              "citation": "PHASE3_PLAN.md:91-140",
+              "score": -0.9461948871612549
+            },
+            {
+              "citation": "src/baseagent/middleware/repository.py:13-61",
+              "score": -0.9554553031921387
+            },
+            {
+              "citation": "src/baseagent/tools/memory.py:58-65",
+              "score": -0.9585775136947632
+            }
+          ]
+        },
+        {
+          "id": "no_answer-13",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.8059539794921875,
+          "retrieved": [
+            {
+              "citation": "PHASE3_PLAN.md:1-50",
+              "score": -0.8059539794921875
+            },
+            {
+              "citation": "PHASE3_PLAN.md:50-79",
+              "score": -0.8371937870979309
+            },
+            {
+              "citation": "DEVELOPMENT_HANDOFF.md:132-151",
+              "score": -0.8408498764038086
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": -0.8477095365524292
+            },
+            {
+              "citation": "PHASE3_PLAN.md:91-140",
+              "score": -0.8497328758239746
+            }
+          ]
+        },
+        {
+          "id": "no_answer-15",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.8878591060638428,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/README.md:178-186",
+              "score": -0.8878591060638428
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:1-5",
+              "score": -0.8895999789237976
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:36-63",
+              "score": -0.8901383876800537
+            },
+            {
+              "citation": "scripts/seed_embedding_cache_from_chroma.py:37-62",
+              "score": -0.9159752726554871
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:1-11",
+              "score": -0.9238601326942444
+            }
+          ]
+        },
+        {
+          "id": "no_answer-16",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": -0.975148618221283,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": -0.975148618221283
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": -0.9830979704856873
+            },
+            {
+              "citation": "src/baseagent/tools/tools.py:25-65",
+              "score": -0.9884930849075317
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": -1.031169056892395
+            },
+            {
+              "citation": "applications/project_assistant/README.md:28-39",
+              "score": -1.039170503616333
+            }
+          ]
+        }
+      ],
+      "no_answer": {
+        "top1_score_distribution": {
+          "answerable": [
+            -0.6461490988731384,
+            -0.8487996459007263,
+            -0.44294682145118713,
+            -0.5422462821006775,
+            -0.5827057361602783,
+            -0.813480019569397,
+            -0.6697046756744385,
+            -0.7242501378059387,
+            -0.7417981624603271,
+            -0.4758830666542053,
+            -0.8084086179733276,
+            -0.5978575348854065,
+            -0.588529109954834,
+            -0.6387705206871033,
+            -0.6633661985397339,
+            -0.5807973742485046,
+            -0.8568706512451172,
+            -0.607117235660553,
+            -0.7423092126846313,
+            -0.5987207293510437,
+            -0.5692484974861145,
+            -0.5450682044029236,
+            -0.6374695897102356,
+            -0.7711012363433838,
+            -0.6347275972366333,
+            -0.7243809700012207,
+            -0.4936109781265259,
+            -0.4938693642616272
+          ],
+          "no_answer": [
+            -0.9618067741394043,
+            -0.9292805790901184,
+            -1.105971097946167,
+            -0.8470714092254639,
+            -0.8437768220901489,
+            -0.8059539794921875,
+            -0.8878591060638428,
+            -0.975148618221283
+          ]
+        },
+        "top1_score_summary": {
+          "answerable": {
+            "count": 28,
+            "missing_count": 0,
+            "min": -0.8568706512451172,
+            "p25": -0.7287352681159973,
+            "median": -0.6360985934734344,
+            "p75": -0.5779101550579071,
+            "max": -0.44294682145118713
+          },
+          "no_answer": {
+            "count": 8,
+            "missing_count": 0,
+            "min": -1.105971097946167,
+            "p25": -0.965142235159874,
+            "median": -0.9085698425769806,
+            "p75": -0.8462477624416351,
+            "max": -0.8059539794921875
+          }
+        },
+        "threshold": -0.7626743912696838,
+        "balanced_accuracy": 0.9107142857142857,
+        "accuracy": 0.8611111111111112
+      },
+      "score_kind": "relevance_higher_is_better",
+      "top_k": 5,
+      "mrr_cutoff": 5
+    },
+    "bm25": {
+      "params": {},
+      "metrics": {
+        "mrr": 0.7589285714285714,
+        "recall": {
+          "1": 0.40654761904761905,
+          "3": 0.6684523809523809,
+          "5": 0.7339285714285715
+        }
+      },
+      "questions": [
+        {
+          "id": "exact_identifier-02",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 32.873562146659324,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 32.873562146659324
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 26.063110071837357
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 25.151128424438156
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 23.86053702723136
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 23.470053151273092
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-04",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 22.726354098592715,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": 22.726354098592715
+            },
+            {
+              "citation": "README.md:537-562",
+              "score": 21.817284840895166
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 18.894043476956753
+            },
+            {
+              "citation": "src/baseagent/evaluation.py:56-82",
+              "score": 18.6447745560735
+            },
+            {
+              "citation": "README.md:534-583",
+              "score": 18.474386451194185
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-06",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 30.883282785237576,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:7-37",
+              "score": 30.883282785237576
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:128-160",
+              "score": 29.483123327740255
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": 25.281224741095606
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 22.455454792840108
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 22.0777111179928
+            }
+          ]
+        },
+        {
+          "id": "concept-02",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 17.353715304065467,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/capabilities/skills.py:14-97",
+              "score": 17.353715304065467
+            },
+            {
+              "citation": "src/baseagent/main.py:1-54",
+              "score": 16.61868312096151
+            },
+            {
+              "citation": "README.md:303-352",
+              "score": 16.21356750314346
+            },
+            {
+              "citation": "README.md:273-302",
+              "score": 15.717516909590575
+            },
+            {
+              "citation": "README.md:563-603",
+              "score": 15.114835569706306
+            }
+          ]
+        },
+        {
+          "id": "concept-04",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 25.652498162737523,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 25.652498162737523
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 22.9386785738028
+            },
+            {
+              "citation": "README.md:565-602",
+              "score": 17.326633079972535
+            },
+            {
+              "citation": "README.md:563-603",
+              "score": 17.281615814510506
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 16.97249354685714
+            }
+          ]
+        },
+        {
+          "id": "concept-06",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 54.34475192423459,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:40-112",
+              "score": 54.34475192423459
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:115-143",
+              "score": 37.3159843320849
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 31.261452700798305
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 24.095312018000275
+            },
+            {
+              "citation": "README.md:651-666",
+              "score": 22.56568686339875
+            }
+          ]
+        },
+        {
+          "id": "cross_file-02",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.25,
+            "3": 0.25,
+            "5": 0.25
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 23.996195070202027,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 23.996195070202027
+            },
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": 23.924744949209263
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 19.892935879281513
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 19.875620089426594
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 18.47410346124931
+            }
+          ]
+        },
+        {
+          "id": "cross_file-04",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 21.21891696553167,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 21.21891696553167
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 19.576479478001897
+            },
+            {
+              "citation": "README.md:774-823",
+              "score": 19.4238205145123
+            },
+            {
+              "citation": "README.md:742-761",
+              "score": 19.261487185626454
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 19.175051793439476
+            }
+          ]
+        },
+        {
+          "id": "cross_file-06",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 30.08258017236979,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 30.08258017236979
+            },
+            {
+              "citation": "README.md:303-352",
+              "score": 21.582956731459323
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 20.995135941396867
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 18.754746647750956
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 15.838002057179148
+            }
+          ]
+        },
+        {
+          "id": "stale-02",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.8,
+            "3": 0.8,
+            "5": 0.8
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 30.64071971349692,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 30.64071971349692
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 28.810701258705592
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 21.47871189154527
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:23-117",
+              "score": 20.453526307418123
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 20.291955033251046
+            }
+          ]
+        },
+        {
+          "id": "stale-04",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 24.57459878843227,
+          "retrieved": [
+            {
+              "citation": "README.md:1-20",
+              "score": 24.57459878843227
+            },
+            {
+              "citation": "README.md:273-302",
+              "score": 15.268505633696188
+            },
+            {
+              "citation": "src/baseagent/evaluation.py:278-309",
+              "score": 14.826701575511686
+            },
+            {
+              "citation": "README.md:774-823",
+              "score": 14.81311743863668
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 14.67144670919721
+            }
+          ]
+        },
+        {
+          "id": "stale-06",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 27.598802672600563,
+          "retrieved": [
+            {
+              "citation": "README.md:372-392",
+              "score": 27.598802672600563
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 24.680320056076486
+            },
+            {
+              "citation": "README.md:401-439",
+              "score": 22.522882333683558
+            },
+            {
+              "citation": "README.md:444-493",
+              "score": 20.734099114054516
+            },
+            {
+              "citation": "README.md:497-522",
+              "score": 20.16130052208697
+            }
+          ]
+        },
+        {
+          "id": "no_answer-02",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 15.970080985640497,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 15.970080985640497
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 15.969792141258786
+            },
+            {
+              "citation": "README.md:127-176",
+              "score": 14.026949529765542
+            },
+            {
+              "citation": "src/baseagent/llm/deepseek.py:1-11",
+              "score": 13.93662377198237
+            },
+            {
+              "citation": "scripts/record_cassettes.py:1-28",
+              "score": 13.54089877916385
+            }
+          ]
+        },
+        {
+          "id": "no_answer-04",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 20.326346641834412,
+          "retrieved": [
+            {
+              "citation": "README.md:774-823",
+              "score": 20.326346641834412
+            },
+            {
+              "citation": "README.md:774-788",
+              "score": 19.072603317563747
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 18.587029737803462
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 18.231658316273254
+            },
+            {
+              "citation": "README.md:226-270",
+              "score": 17.857804345499012
+            }
+          ]
+        },
+        {
+          "id": "no_answer-06",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 17.819172019150887,
+          "retrieved": [
+            {
+              "citation": "README.md:774-823",
+              "score": 17.819172019150887
+            },
+            {
+              "citation": "README.md:729-778",
+              "score": 16.69336054767779
+            },
+            {
+              "citation": "README.md:489-538",
+              "score": 16.29820375296981
+            },
+            {
+              "citation": "README.md:565-602",
+              "score": 15.800653963798776
+            },
+            {
+              "citation": "README.md:563-603",
+              "score": 15.772840713761166
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-09",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.25,
+          "top_score": 22.602139155904492,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 22.602139155904492
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:1-12",
+              "score": 19.27518398039231
+            },
+            {
+              "citation": "src/baseagent/kernel/tools.py:17-119",
+              "score": 17.299479454559286
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 15.353791125133078
+            },
+            {
+              "citation": "README.md:631-650",
+              "score": 14.768514587387553
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-11",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 22.38975034841313,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/middleware/execution_guidance.py:1-20",
+              "score": 22.38975034841313
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 19.722540240652624
+            },
+            {
+              "citation": "src/baseagent/main.py:1-54",
+              "score": 19.282334417932198
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 17.652579123114446
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 14.531190725380453
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-13",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 35.17279323128052,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 35.17279323128052
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 33.556603115238744
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 24.190370282983007
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 18.319671730853358
+            },
+            {
+              "citation": "src/baseagent/config.py:28-74",
+              "score": 18.288741409382606
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-15",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 39.739204144870534,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 39.739204144870534
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 39.214852207726366
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 32.73129295651405
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 32.54604412035865
+            },
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 26.38356593834168
+            }
+          ]
+        },
+        {
+          "id": "concept-09",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 12.79777773169589,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:12-28",
+              "score": 12.79777773169589
+            },
+            {
+              "citation": "README.md:372-392",
+              "score": 12.79417164079629
+            },
+            {
+              "citation": "README.md:762-773",
+              "score": 11.922869079125823
+            },
+            {
+              "citation": "README.md:489-538",
+              "score": 11.50341143113937
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 11.171239858153518
+            }
+          ]
+        },
+        {
+          "id": "concept-11",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 33.803637015032706,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 33.803637015032706
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 32.88430284813863
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 30.51547182516042
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 27.430987644398503
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 23.711351794255535
+            }
+          ]
+        },
+        {
+          "id": "concept-13",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 24.597839727896634,
+          "retrieved": [
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 24.597839727896634
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 20.228346162682715
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 19.635781251617534
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 18.65692320532574
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 16.239287397216692
+            }
+          ]
+        },
+        {
+          "id": "concept-15",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 24.853896658080277,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 24.853896658080277
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 24.094417074833725
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": 20.377808260682016
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 19.349720974070443
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:1-19",
+              "score": 18.992217987107587
+            }
+          ]
+        },
+        {
+          "id": "cross_file-09",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 28.253820949876577,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 28.253820949876577
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:13-23",
+              "score": 28.022884934425218
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 24.345370127876425
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 22.407922320772183
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 21.080215427993377
+            }
+          ]
+        },
+        {
+          "id": "cross_file-11",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 33.40891102762222,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 33.40891102762222
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 26.223377001195615
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 22.780494505432376
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 21.32958056366715
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 20.92062905696057
+            }
+          ]
+        },
+        {
+          "id": "cross_file-13",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.6666666666666666,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 34.41771483251244,
+          "retrieved": [
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 34.41771483251244
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:1-19",
+              "score": 32.22195013349107
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 26.929012824370048
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 24.631073481724457
+            },
+            {
+              "citation": "README.md:774-788",
+              "score": 20.854908459176958
+            }
+          ]
+        },
+        {
+          "id": "cross_file-15",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 36.61833580923695,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 36.61833580923695
+            },
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 31.22256285809218
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 25.93227161999507
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:8-44",
+              "score": 25.58407878729636
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:31-37",
+              "score": 24.78261699365546
+            }
+          ]
+        },
+        {
+          "id": "stale-09",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 17.98362952925104,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 17.98362952925104
+            },
+            {
+              "citation": "README.md:710-728",
+              "score": 16.82392352842265
+            },
+            {
+              "citation": "src/baseagent/ui/app.py:63-94",
+              "score": 16.326636196728348
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 15.545004740673274
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 15.432476319172242
+            }
+          ]
+        },
+        {
+          "id": "stale-11",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 40.25322173964573,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 40.25322173964573
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 34.32793368719552
+            },
+            {
+              "citation": "README.md:666-709",
+              "score": 31.255565575562347
+            },
+            {
+              "citation": "README.md:667-709",
+              "score": 31.255565575562347
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 27.428034708221492
+            }
+          ]
+        },
+        {
+          "id": "stale-13",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 32.796892655329245,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 32.796892655329245
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 29.365221978092762
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 27.566452484460726
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 24.958076823582
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 24.413052950328677
+            }
+          ]
+        },
+        {
+          "id": "stale-15",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 54.356672685757594,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 54.356672685757594
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 50.05727103763164
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 39.79267326513276
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 35.28816383036017
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:1-33",
+              "score": 29.002325631998758
+            }
+          ]
+        },
+        {
+          "id": "no_answer-09",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 27.800225222699204,
+          "retrieved": [
+            {
+              "citation": "README.md:463-474",
+              "score": 27.800225222699204
+            },
+            {
+              "citation": "README.md:401-439",
+              "score": 26.902368873729767
+            },
+            {
+              "citation": "README.md:424-439",
+              "score": 26.809567587891976
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 23.95888661000201
+            },
+            {
+              "citation": "README.md:520-569",
+              "score": 22.896585957095954
+            }
+          ]
+        },
+        {
+          "id": "no_answer-11",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 17.039102182977963,
+          "retrieved": [
+            {
+              "citation": "README.md:621-670",
+              "score": 17.039102182977963
+            },
+            {
+              "citation": "src/baseagent/main.py:1-54",
+              "score": 14.894035299683667
+            },
+            {
+              "citation": "README.md:729-778",
+              "score": 13.753166581873499
+            },
+            {
+              "citation": "README.md:303-352",
+              "score": 13.42082327018871
+            },
+            {
+              "citation": "src/baseagent/ui/app.py:142-148",
+              "score": 13.411297638859875
+            }
+          ]
+        },
+        {
+          "id": "no_answer-13",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 12.456571917918607,
+          "retrieved": [
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": 12.456571917918607
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 12.432752088983646
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 12.410177793547136
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:1-33",
+              "score": 12.380267782691858
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 11.6477947635579
+            }
+          ]
+        },
+        {
+          "id": "no_answer-15",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 14.116480878881237,
+          "retrieved": [
+            {
+              "citation": "README.md:401-439",
+              "score": 14.116480878881237
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 13.176385302979016
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 12.595293870261226
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 12.435665973604264
+            },
+            {
+              "citation": "README.md:424-439",
+              "score": 12.093723902931536
+            }
+          ]
+        },
+        {
+          "id": "no_answer-16",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 15.500263576592047,
+          "retrieved": [
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 15.500263576592047
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 14.936733612170816
+            },
+            {
+              "citation": "src/baseagent/tools/policy.py:48-159",
+              "score": 14.227994114270539
+            },
+            {
+              "citation": "src/baseagent/middleware/execution_guidance.py:1-20",
+              "score": 13.3381206947357
+            },
+            {
+              "citation": "README.md:742-761",
+              "score": 12.712976844229253
+            }
+          ]
+        }
+      ],
+      "no_answer": {
+        "top1_score_distribution": {
+          "answerable": [
+            32.873562146659324,
+            22.726354098592715,
+            30.883282785237576,
+            17.353715304065467,
+            25.652498162737523,
+            54.34475192423459,
+            23.996195070202027,
+            21.21891696553167,
+            30.08258017236979,
+            30.64071971349692,
+            24.57459878843227,
+            27.598802672600563,
+            22.602139155904492,
+            22.38975034841313,
+            35.17279323128052,
+            39.739204144870534,
+            12.79777773169589,
+            33.803637015032706,
+            24.597839727896634,
+            24.853896658080277,
+            28.253820949876577,
+            33.40891102762222,
+            34.41771483251244,
+            36.61833580923695,
+            17.98362952925104,
+            40.25322173964573,
+            32.796892655329245,
+            54.356672685757594
+          ],
+          "no_answer": [
+            15.970080985640497,
+            20.326346641834412,
+            17.819172019150887,
+            27.800225222699204,
+            17.039102182977963,
+            12.456571917918607,
+            14.116480878881237,
+            15.500263576592047
+          ]
+        },
+        "top1_score_summary": {
+          "answerable": {
+            "count": 28,
+            "missing_count": 0,
+            "min": 12.79777773169589,
+            "p25": 23.6787348272997,
+            "median": 29.168200561123186,
+            "p75": 33.95715646940264,
+            "max": 54.356672685757594
+          },
+          "no_answer": {
+            "count": 8,
+            "missing_count": 0,
+            "min": 12.456571917918607,
+            "p25": 15.154317902164344,
+            "median": 16.50459158430923,
+            "p75": 18.445965674821768,
+            "max": 27.800225222699204
+          }
+        },
+        "threshold": 20.17943596679649,
+        "balanced_accuracy": 0.8214285714285714,
+        "accuracy": 0.8611111111111112
+      },
+      "score_kind": "relevance_higher_is_better",
+      "top_k": 5,
+      "mrr_cutoff": 5
+    },
+    "hybrid": {
+      "params": {
+        "rrf_k": 30,
+        "vector_weight": 1,
+        "bm25_weight": 2,
+        "candidate_depth": 20
+      },
+      "metrics": {
+        "mrr": 0.8452380952380952,
+        "recall": {
+          "1": 0.5672619047619047,
+          "3": 0.7517857142857143,
+          "5": 0.781547619047619
+        }
+      },
+      "questions": [
+        {
+          "id": "exact_identifier-02",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.08744588744588744
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 0.08680555555555555
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08060606060606061
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.07759784075573549
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-04",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "src/baseagent/evaluation.py:56-82",
+              "score": 0.07882352941176471
+            },
+            {
+              "citation": "README.md:537-562",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:534-583",
+              "score": 0.05714285714285714
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-06",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09475806451612903,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:128-160",
+              "score": 0.09475806451612903
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": 0.09090909090909091
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:7-37",
+              "score": 0.09083191850594227
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.08823529411764705
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.08214285714285714
+            }
+          ]
+        },
+        {
+          "id": "concept-02",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 0.08777194298574643,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/capabilities/skills.py:14-97",
+              "score": 0.08777194298574643
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.08354011579818031
+            },
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": 0.07051961823966066
+            },
+            {
+              "citation": "src/baseagent/main.py:1-54",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:303-352",
+              "score": 0.06060606060606061
+            }
+          ]
+        },
+        {
+          "id": "concept-04",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09576612903225806,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.09576612903225806
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.09475806451612903
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.0865546218487395
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.08055555555555555
+            },
+            {
+              "citation": "README.md:565-602",
+              "score": 0.06060606060606061
+            }
+          ]
+        },
+        {
+          "id": "concept-06",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.09576612903225806,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:40-112",
+              "score": 0.09576612903225806
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:115-143",
+              "score": 0.09475806451612903
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 0.09001782531194297
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:11-37",
+              "score": 0.08333333333333333
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.07985347985347985
+            }
+          ]
+        },
+        {
+          "id": "cross_file-02",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.25,
+            "3": 0.25,
+            "5": 0.25
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": 0.09107142857142857
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08744588744588744
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.08119658119658119
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.08101422387136673
+            }
+          ]
+        },
+        {
+          "id": "cross_file-04",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0928030303030303,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0928030303030303
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.08781362007168458
+            },
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "README.md:774-823",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:742-761",
+              "score": 0.058823529411764705
+            }
+          ]
+        },
+        {
+          "id": "cross_file-06",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.09090909090909091
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.07580751483190508
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": 0.07033096926713947
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": 0.06631578947368422
+            }
+          ]
+        },
+        {
+          "id": "stale-02",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.8,
+            "3": 0.8,
+            "5": 0.8
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09576612903225806,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.09576612903225806
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.09107142857142857
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.08282828282828283
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": 0.07575757575757576
+            },
+            {
+              "citation": "PHASE3_PLAN.md:18-49",
+              "score": 0.07509157509157509
+            }
+          ]
+        },
+        {
+          "id": "stale-04",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": 0.09090909090909091,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/evaluation.py:278-309",
+              "score": 0.09090909090909091
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 0.0865546218487395
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.06938775510204082
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "README.md:273-302",
+              "score": 0.0625
+            }
+          ]
+        },
+        {
+          "id": "stale-06",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 0.06451612903225806,
+          "retrieved": [
+            {
+              "citation": "README.md:372-392",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.06382978723404255
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:401-439",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:444-493",
+              "score": 0.058823529411764705
+            }
+          ]
+        },
+        {
+          "id": "no_answer-02",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.08446455505279035,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/llm/deepseek.py:1-11",
+              "score": 0.08446455505279035
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.07302118171683389
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:127-176",
+              "score": 0.06060606060606061
+            }
+          ]
+        },
+        {
+          "id": "no_answer-04",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.06451612903225806,
+          "retrieved": [
+            {
+              "citation": "README.md:774-823",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "README.md:774-788",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.058823529411764705
+            },
+            {
+              "citation": "README.md:226-270",
+              "score": 0.05714285714285714
+            }
+          ]
+        },
+        {
+          "id": "no_answer-06",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.06451612903225806,
+          "retrieved": [
+            {
+              "citation": "README.md:774-823",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "README.md:729-778",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:489-538",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:565-602",
+              "score": 0.058823529411764705
+            },
+            {
+              "citation": "README.md:563-603",
+              "score": 0.05714285714285714
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-09",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09108159392789374,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 0.09108159392789374
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 0.09083191850594227
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:1-12",
+              "score": 0.08630952380952381
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:15-73",
+              "score": 0.08412698412698412
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:11-37",
+              "score": 0.0781922525107604
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-11",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0928030303030303,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0928030303030303
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.08412698412698412
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08388157894736842
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.08207934336525308
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.07500000000000001
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-13",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09576612903225806,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.09576612903225806
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.09027777777777778
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 0.08333333333333334
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.08293460925039872
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 0.08207934336525308
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-15",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.09191176470588236
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.08838383838383838
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.08382352941176471
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": 0.07464607464607464
+            }
+          ]
+        },
+        {
+          "id": "concept-09",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:12-28",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "README.md:372-392",
+              "score": 0.0625
+            },
+            {
+              "citation": "README.md:762-773",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:489-538",
+              "score": 0.058823529411764705
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 0.05714285714285714
+            }
+          ]
+        },
+        {
+          "id": "concept-11",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.09308755760368663,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.09308755760368663
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0928030303030303
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.08763308763308764
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.08660130718954248
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08530405405405406
+            }
+          ]
+        },
+        {
+          "id": "concept-13",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09475806451612903,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.09475806451612903
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08917748917748917
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.08839285714285713
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.08832565284178187
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.07882352941176471
+            }
+          ]
+        },
+        {
+          "id": "concept-15",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0928030303030303,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.0928030303030303
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 0.08777194298574643
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.08069381598793363
+            },
+            {
+              "citation": "PHASE3_PLAN.md:18-49",
+              "score": 0.07301587301587302
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.07083333333333333
+            }
+          ]
+        },
+        {
+          "id": "cross_file-09",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.0,
+            "3": 0.5,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.3333333333333333,
+          "top_score": 0.09286412512218964,
+          "retrieved": [
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.09286412512218964
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:13-23",
+              "score": 0.0928030303030303
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.08625525946704067
+            },
+            {
+              "citation": "applications/project_assistant/rag/hybrid.py:6-25",
+              "score": 0.08262548262548262
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.07841945288753799
+            }
+          ]
+        },
+        {
+          "id": "cross_file-11",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.08912655971479501
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.08571428571428572
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.08423913043478261
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.08143939393939394
+            }
+          ]
+        },
+        {
+          "id": "cross_file-13",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.6666666666666666,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09308755760368663,
+          "retrieved": [
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.09308755760368663
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.09286412512218964
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:1-19",
+              "score": 0.08522727272727273
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.07886904761904762
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.07196969696969696
+            }
+          ]
+        },
+        {
+          "id": "cross_file-15",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:31-37",
+              "score": 0.08839285714285713
+            },
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 0.08814102564102563
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:8-44",
+              "score": 0.08585055643879173
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.08187134502923976
+            }
+          ]
+        },
+        {
+          "id": "stale-09",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09392789373814042,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.09392789373814042
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:51-135",
+              "score": 0.07307439104674127
+            },
+            {
+              "citation": "README.md:710-728",
+              "score": 0.0625
+            },
+            {
+              "citation": "src/baseagent/ui/app.py:63-94",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.058823529411764705
+            }
+          ]
+        },
+        {
+          "id": "stale-11",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.09392789373814042,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.09392789373814042
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.08377659574468085
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.08039867109634552
+            },
+            {
+              "citation": "README.md:666-709",
+              "score": 0.06060606060606061
+            },
+            {
+              "citation": "README.md:667-709",
+              "score": 0.058823529411764705
+            }
+          ]
+        },
+        {
+          "id": "stale-13",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 0.09375
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.08624708624708624
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.08183183183183183
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 0.07735191637630662
+            }
+          ]
+        },
+        {
+          "id": "stale-15",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.0967741935483871,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.0967741935483871
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.08881578947368421
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.08823529411764705
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:110-142",
+              "score": 0.08680555555555555
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.07777777777777778
+            }
+          ]
+        },
+        {
+          "id": "no_answer-09",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.08832565284178187,
+          "retrieved": [
+            {
+              "citation": "README.md:463-474",
+              "score": 0.08832565284178187
+            },
+            {
+              "citation": "README.md:424-439",
+              "score": 0.08692185007974482
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 0.08321377331420374
+            },
+            {
+              "citation": "README.md:621-670",
+              "score": 0.07222222222222223
+            },
+            {
+              "citation": "README.md:401-439",
+              "score": 0.0625
+            }
+          ]
+        },
+        {
+          "id": "no_answer-11",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.09154315605928509,
+          "retrieved": [
+            {
+              "citation": "README.md:621-670",
+              "score": 0.09154315605928509
+            },
+            {
+              "citation": "src/baseagent/session/knowledge.py:1-11",
+              "score": 0.07894736842105263
+            },
+            {
+              "citation": "README.md:651-666",
+              "score": 0.07844429795649308
+            },
+            {
+              "citation": "PHASE3_PLAN.md:110-139",
+              "score": 0.07573632538569425
+            },
+            {
+              "citation": "src/baseagent/main.py:1-54",
+              "score": 0.0625
+            }
+          ]
+        },
+        {
+          "id": "no_answer-13",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.09392789373814042,
+          "retrieved": [
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": 0.09392789373814042
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 0.08692185007974482
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:1-33",
+              "score": 0.08585055643879173
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.07987012987012987
+            },
+            {
+              "citation": "applications/project_assistant/README.md:5-19",
+              "score": 0.07090187180941576
+            }
+          ]
+        },
+        {
+          "id": "no_answer-15",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.07346491228070175,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.07346491228070175
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:23-117",
+              "score": 0.06564102564102564
+            },
+            {
+              "citation": "README.md:401-439",
+              "score": 0.06451612903225806
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.0625
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.06060606060606061
+            }
+          ]
+        },
+        {
+          "id": "no_answer-16",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.09375,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.09375
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.07987711213517665
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.07905405405405405
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.07323232323232323
+            },
+            {
+              "citation": "src/baseagent/tools/tools.py:25-65",
+              "score": 0.07285622179239201
+            }
+          ]
+        }
+      ],
+      "no_answer": {
+        "top1_score_distribution": {
+          "answerable": [
+            0.0967741935483871,
+            0.0967741935483871,
+            0.09475806451612903,
+            0.08777194298574643,
+            0.09576612903225806,
+            0.09576612903225806,
+            0.0967741935483871,
+            0.0928030303030303,
+            0.0967741935483871,
+            0.09576612903225806,
+            0.09090909090909091,
+            0.06451612903225806,
+            0.09108159392789374,
+            0.0928030303030303,
+            0.09576612903225806,
+            0.0967741935483871,
+            0.0967741935483871,
+            0.09308755760368663,
+            0.09475806451612903,
+            0.0928030303030303,
+            0.09286412512218964,
+            0.0967741935483871,
+            0.09308755760368663,
+            0.0967741935483871,
+            0.09392789373814042,
+            0.09392789373814042,
+            0.0967741935483871,
+            0.0967741935483871
+          ],
+          "no_answer": [
+            0.08446455505279035,
+            0.06451612903225806,
+            0.06451612903225806,
+            0.08832565284178187,
+            0.09154315605928509,
+            0.09392789373814042,
+            0.07346491228070175,
+            0.09375
+          ]
+        },
+        "top1_score_summary": {
+          "answerable": {
+            "count": 28,
+            "missing_count": 0,
+            "min": 0.06451612903225806,
+            "p25": 0.0928488514173998,
+            "median": 0.09526209677419355,
+            "p75": 0.0967741935483871,
+            "max": 0.0967741935483871
+          },
+          "no_answer": {
+            "count": 8,
+            "missing_count": 0,
+            "min": 0.06451612903225806,
+            "p25": 0.07122771646859083,
+            "median": 0.08639510394728611,
+            "p75": 0.09209486704446382,
+            "max": 0.09392789373814042
+          }
+        },
+        "threshold": 0.09090909090909091,
+        "balanced_accuracy": 0.7767857142857143,
+        "accuracy": 0.8611111111111112
+      },
+      "score_kind": "relevance_higher_is_better",
+      "top_k": 5,
+      "mrr_cutoff": 5
+    },
+    "hybrid+qwen": {
+      "params": {
+        "rrf_k": 30,
+        "vector_weight": 1,
+        "bm25_weight": 2,
+        "candidate_depth": 20
+      },
+      "metrics": {
+        "mrr": 0.8571428571428571,
+        "recall": {
+          "1": 0.5833333333333333,
+          "3": 0.7577380952380952,
+          "5": 0.7696428571428572
+        }
+      },
+      "questions": [
+        {
+          "id": "exact_identifier-02",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.9732171808424412,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.9732171808424412
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.8030818124744602
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.7592568761425177
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 0.6706371078994411
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.6312237752771177
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-04",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.9526515467510563,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": 0.9526515467510563
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:15-73",
+              "score": 0.47927531141937524
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:1-21",
+              "score": 0.427103795360444
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.40661330164503195
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.37259147447525787
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-06",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.9670205805135093,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:128-160",
+              "score": 0.9670205805135093
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.7939119206816774
+            },
+            {
+              "citation": "applications/project_assistant/rag/cache.py:62-150",
+              "score": 0.5587110332872821
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:7-37",
+              "score": 0.5450404310778111
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.5434819091632109
+            }
+          ]
+        },
+        {
+          "id": "concept-02",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 0.4699331029977411,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.4699331029977411
+            },
+            {
+              "citation": "applications/project_assistant/access.py:30-67",
+              "score": 0.331113950752404
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.3275189831882099
+            },
+            {
+              "citation": "README.md:226-270",
+              "score": 0.1723451213453857
+            },
+            {
+              "citation": "README.md:273-302",
+              "score": 0.17220597455368292
+            }
+          ]
+        },
+        {
+          "id": "concept-04",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.6343309106122439,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.6343309106122439
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.461484972869852
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.460849318535228
+            },
+            {
+              "citation": "applications/project_assistant/README.md:5-19",
+              "score": 0.4555234293327443
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.4226602172068438
+            }
+          ]
+        },
+        {
+          "id": "concept-06",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 0.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.6981077510720778,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:40-112",
+              "score": 0.6981077510720778
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:115-143",
+              "score": 0.6912687657082286
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 0.47114964813229937
+            },
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:11-37",
+              "score": 0.3910631221741609
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 0.26779226513124316
+            }
+          ]
+        },
+        {
+          "id": "cross_file-02",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.0,
+            "3": 0.25,
+            "5": 0.25
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.9181801896130866,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": 0.9181801896130866
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.7417627373379361
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.5604654632253974
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.5492903822493759
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": 0.5044524236433167
+            }
+          ]
+        },
+        {
+          "id": "cross_file-04",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.6812605540464786,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.6812605540464786
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.3853457419926769
+            },
+            {
+              "citation": "applications/project_assistant/rag/indexing.py:10-148",
+              "score": 0.3652174853090975
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.29793420684415506
+            },
+            {
+              "citation": "src/baseagent/evaluation.py:168-255",
+              "score": 0.16466579502266415
+            }
+          ]
+        },
+        {
+          "id": "cross_file-06",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.9164922463788829,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.9164922463788829
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.6916680307865644
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.5716345095673009
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.48915528717992274
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 0.3778214842245585
+            }
+          ]
+        },
+        {
+          "id": "stale-02",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.8,
+            "5": 0.8
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.9206346846177491,
+          "retrieved": [
+            {
+              "citation": "PHASE3_PLAN.md:18-49",
+              "score": 0.9206346846177491
+            },
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.9154268707113304
+            },
+            {
+              "citation": "PHASE3_PLAN.md:1-50",
+              "score": 0.8281666306302284
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.8068492273844969
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.523461108671498
+            }
+          ]
+        },
+        {
+          "id": "stale-04",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 0.5,
+          "top_score": 0.4852902195651855,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/evaluation.py:278-309",
+              "score": 0.4852902195651855
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.46879563641017474
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.4176448648048958
+            },
+            {
+              "citation": "src/baseagent/middleware/execution_guidance.py:1-20",
+              "score": 0.3108890762570287
+            },
+            {
+              "citation": "README.md:789-811",
+              "score": 0.30528523508703076
+            }
+          ]
+        },
+        {
+          "id": "stale-06",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.0,
+            "3": 0.0,
+            "5": 0.0
+          },
+          "reciprocal_rank": 0.0,
+          "top_score": 0.2962515226660379,
+          "retrieved": [
+            {
+              "citation": "README.md:388-392",
+              "score": 0.2962515226660379
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.19797058330154482
+            },
+            {
+              "citation": "README.md:451-462",
+              "score": 0.17815088437630566
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:23-117",
+              "score": 0.17312446647624846
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.16197130147409022
+            }
+          ]
+        },
+        {
+          "id": "no_answer-02",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.34938555550609135,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/README.md:133-135",
+              "score": 0.34938555550609135
+            },
+            {
+              "citation": "applications/project_assistant/README.md:122-135",
+              "score": 0.34180752056306507
+            },
+            {
+              "citation": "src/baseagent/llm/deepseek.py:1-11",
+              "score": 0.3092808229038312
+            },
+            {
+              "citation": "README.md:172-180",
+              "score": 0.2774129555016525
+            },
+            {
+              "citation": "src/baseagent/llm/model.py:1-7",
+              "score": 0.25835850491392487
+            }
+          ]
+        },
+        {
+          "id": "no_answer-04",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.15034357766625112,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/middleware/execution_guidance.py:1-20",
+              "score": 0.15034357766625112
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.14716479151070289
+            },
+            {
+              "citation": "README.md:226-270",
+              "score": 0.14664825442366952
+            },
+            {
+              "citation": "README.md:372-392",
+              "score": 0.12235205904547314
+            },
+            {
+              "citation": "README.md:520-569",
+              "score": 0.11662516129823114
+            }
+          ]
+        },
+        {
+          "id": "no_answer-06",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.24273329454440273,
+          "retrieved": [
+            {
+              "citation": "README.md:812-841",
+              "score": 0.24273329454440273
+            },
+            {
+              "citation": "README.md:451-462",
+              "score": 0.20701136002491782
+            },
+            {
+              "citation": "README.md:497-522",
+              "score": 0.14870809200812923
+            },
+            {
+              "citation": "README.md:579-620",
+              "score": 0.13964059564416398
+            },
+            {
+              "citation": "README.md:565-602",
+              "score": 0.127926630546226
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-09",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8427589047860407,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/chunking.py:146-215",
+              "score": 0.8427589047860407
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 0.5995147312607412
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:1-12",
+              "score": 0.5097864320444001
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:15-73",
+              "score": 0.4424413047122312
+            },
+            {
+              "citation": "README.md:631-650",
+              "score": 0.2958832962120706
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-11",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8054389093854636,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.8054389093854636
+            },
+            {
+              "citation": "applications/project_assistant/README.md:5-19",
+              "score": 0.5179702059733859
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.5073463246313864
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.5016118006011451
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.4798122127245418
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-13",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.5986205244939893,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.5986205244939893
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 0.45459612783605724
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.403101293303728
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:1-33",
+              "score": 0.34793499919071763
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.32472955097209966
+            }
+          ]
+        },
+        {
+          "id": "exact_identifier-15",
+          "split": "test",
+          "category": "exact_identifier",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8506309146605873,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.8506309146605873
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.6400742661605172
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.6327592364779453
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": 0.6160473017294225
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": 0.5887349273086496
+            }
+          ]
+        },
+        {
+          "id": "concept-09",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.6653463916067017,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:12-28",
+              "score": 0.6653463916067017
+            },
+            {
+              "citation": "README.md:742-761",
+              "score": 0.13577075893141172
+            },
+            {
+              "citation": "README.md:497-522",
+              "score": 0.13499812215573287
+            },
+            {
+              "citation": "README.md:303-352",
+              "score": 0.12982720430562222
+            },
+            {
+              "citation": "src/baseagent/backends/protocol.py:1-13",
+              "score": 0.12417626326955061
+            }
+          ]
+        },
+        {
+          "id": "concept-11",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8702045803435834,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.8702045803435834
+            },
+            {
+              "citation": "applications/project_assistant/README.md:63-109",
+              "score": 0.7896302349532529
+            },
+            {
+              "citation": "applications/project_assistant/README.md:70-109",
+              "score": 0.7676054488326931
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.6581120069834197
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.6386937553252742
+            }
+          ]
+        },
+        {
+          "id": "concept-13",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8828882815947376,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.8828882815947376
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.5294776478105218
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.49886982357056486
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.49500242955907725
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.32339551680040857
+            }
+          ]
+        },
+        {
+          "id": "concept-15",
+          "split": "test",
+          "category": "concept",
+          "recall": {
+            "1": 1.0,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8976674327701749,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/embedding.py:40-125",
+              "score": 0.8976674327701749
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:78-96",
+              "score": 0.5221061493496626
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:1-19",
+              "score": 0.5091438663830405
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.5029760165307625
+            },
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": 0.48983432676560285
+            }
+          ]
+        },
+        {
+          "id": "cross_file-09",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 1.0,
+            "5": 1.0
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.6799364686651532,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.6799364686651532
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 0.6522297379686258
+            },
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.5863849761638943
+            },
+            {
+              "citation": "applications/project_assistant/rag/hybrid.py:6-25",
+              "score": 0.5694821044948463
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.5428663380963101
+            }
+          ]
+        },
+        {
+          "id": "cross_file-11",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.6958382659664217,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.6958382659664217
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.6249319768370271
+            },
+            {
+              "citation": "applications/project_assistant/access.py:1-15",
+              "score": 0.5877207613459413
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:1-12",
+              "score": 0.4978745247040731
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.472944388015767
+            }
+          ]
+        },
+        {
+          "id": "cross_file-13",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.6666666666666666,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.9208203109806714,
+          "retrieved": [
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.9208203109806714
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.7340184000061705
+            },
+            {
+              "citation": "applications/project_assistant/README.md:136-159",
+              "score": 0.6802369221395657
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.6145213783442722
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.6110695447555348
+            }
+          ]
+        },
+        {
+          "id": "cross_file-15",
+          "split": "test",
+          "category": "cross_file",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.7016794509585351,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.7016794509585351
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:1-5",
+              "score": 0.6667711381092404
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:31-37",
+              "score": 0.5535847061666888
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.5387914971045913
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:8-44",
+              "score": 0.5346783013317206
+            }
+          ]
+        },
+        {
+          "id": "stale-09",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.5,
+            "3": 0.5,
+            "5": 0.5
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8227811606847489,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.8227811606847489
+            },
+            {
+              "citation": "applications/project_assistant/rag/rerank.py:51-135",
+              "score": 0.38148239902294645
+            },
+            {
+              "citation": "src/baseagent/ui/app.py:63-94",
+              "score": 0.29072481891372304
+            },
+            {
+              "citation": "README.md:1-20",
+              "score": 0.27214230667896744
+            },
+            {
+              "citation": "src/baseagent/ui/__init__.py:1-1",
+              "score": 0.27137547377182336
+            }
+          ]
+        },
+        {
+          "id": "stale-11",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.4751275350068379,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.4751275350068379
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.36905585634607374
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:27-39",
+              "score": 0.3572252417346581
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.32190324849463636
+            },
+            {
+              "citation": "scripts/query_knowledge_base.py:22-126",
+              "score": 0.24873341261369758
+            }
+          ]
+        },
+        {
+          "id": "stale-13",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.3333333333333333,
+            "5": 0.3333333333333333
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8755054853145529,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/corpus.py:81-97",
+              "score": 0.8755054853145529
+            },
+            {
+              "citation": "applications/project_assistant/corpus.py:100-134",
+              "score": 0.6455101160183369
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:42-73",
+              "score": 0.6251891948168269
+            },
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.5932679387247992
+            },
+            {
+              "citation": "applications/project_assistant/tools.py:24-110",
+              "score": 0.49549694114116766
+            }
+          ]
+        },
+        {
+          "id": "stale-15",
+          "split": "test",
+          "category": "stale",
+          "recall": {
+            "1": 0.3333333333333333,
+            "3": 0.6666666666666666,
+            "5": 0.6666666666666666
+          },
+          "reciprocal_rank": 1.0,
+          "top_score": 0.8397057345452791,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/config.py:7-100",
+              "score": 0.8397057345452791
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:145-252",
+              "score": 0.747729621646509
+            },
+            {
+              "citation": "applications/project_assistant/rag/retrieval.py:47-121",
+              "score": 0.6810082549718398
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:99-107",
+              "score": 0.49668850561887473
+            },
+            {
+              "citation": "applications/project_assistant/rag/lexical.py:1-9",
+              "score": 0.48803475303397237
+            }
+          ]
+        },
+        {
+          "id": "no_answer-09",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.1867553819031978,
+          "retrieved": [
+            {
+              "citation": "README.md:401-439",
+              "score": 0.1867553819031978
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.18218537867875173
+            },
+            {
+              "citation": "README.md:520-569",
+              "score": 0.1778641446427775
+            },
+            {
+              "citation": "README.md:424-439",
+              "score": 0.1616012616053648
+            },
+            {
+              "citation": "README.md:372-392",
+              "score": 0.14106981012235598
+            }
+          ]
+        },
+        {
+          "id": "no_answer-11",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.27389924592745496,
+          "retrieved": [
+            {
+              "citation": "src/baseagent/session/knowledge.py:1-11",
+              "score": 0.27389924592745496
+            },
+            {
+              "citation": "src/baseagent/ui/app.py:142-148",
+              "score": 0.17051322208435477
+            },
+            {
+              "citation": "PHASE3_PLAN.md:110-139",
+              "score": 0.15678194981066002
+            },
+            {
+              "citation": "README.md:631-650",
+              "score": 0.15121586888576904
+            },
+            {
+              "citation": "README.md:463-474",
+              "score": 0.14850293926018354
+            }
+          ]
+        },
+        {
+          "id": "no_answer-13",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.44044354078601317,
+          "retrieved": [
+            {
+              "citation": "scripts/build_knowledge_base.py:1-20",
+              "score": 0.44044354078601317
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:1-29",
+              "score": 0.4048132657310877
+            },
+            {
+              "citation": "scripts/run_retrieval_experiments.py:1-33",
+              "score": 0.336800172107973
+            },
+            {
+              "citation": "applications/project_assistant/README.md:5-19",
+              "score": 0.30836306688869225
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.30787614293619536
+            }
+          ]
+        },
+        {
+          "id": "no_answer-15",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.2051893698645731,
+          "retrieved": [
+            {
+              "citation": "applications/project_assistant/README.md:86-109",
+              "score": 0.2051893698645731
+            },
+            {
+              "citation": "README.md:667-709",
+              "score": 0.19499688127316706
+            },
+            {
+              "citation": "README.md:666-709",
+              "score": 0.17417283439654208
+            },
+            {
+              "citation": "applications/project_assistant/rag/__init__.py:1-16",
+              "score": 0.14337665642223635
+            },
+            {
+              "citation": "scripts/evaluate_retrieval.py:32-112",
+              "score": 0.13265278011626425
+            }
+          ]
+        },
+        {
+          "id": "no_answer-16",
+          "split": "test",
+          "category": "no_answer",
+          "recall": null,
+          "reciprocal_rank": null,
+          "top_score": 0.38895176840963475,
+          "retrieved": [
+            {
+              "citation": "README.md:100-106",
+              "score": 0.38895176840963475
+            },
+            {
+              "citation": "applications/project_assistant/README.md:5-19",
+              "score": 0.31972661148233283
+            },
+            {
+              "citation": "scripts/demo_knowledge_search.py:1-24",
+              "score": 0.2961134606501974
+            },
+            {
+              "citation": "src/baseagent/session/store.py:319-321",
+              "score": 0.28753607016549965
+            },
+            {
+              "citation": "applications/project_assistant/README.md:144-154",
+              "score": 0.2784652902014258
+            }
+          ]
+        }
+      ],
+      "no_answer": {
+        "top1_score_distribution": {
+          "answerable": [
+            0.9732171808424412,
+            0.9526515467510563,
+            0.9670205805135093,
+            0.4699331029977411,
+            0.6343309106122439,
+            0.6981077510720778,
+            0.9181801896130866,
+            0.6812605540464786,
+            0.9164922463788829,
+            0.9206346846177491,
+            0.4852902195651855,
+            0.2962515226660379,
+            0.8427589047860407,
+            0.8054389093854636,
+            0.5986205244939893,
+            0.8506309146605873,
+            0.6653463916067017,
+            0.8702045803435834,
+            0.8828882815947376,
+            0.8976674327701749,
+            0.6799364686651532,
+            0.6958382659664217,
+            0.9208203109806714,
+            0.7016794509585351,
+            0.8227811606847489,
+            0.4751275350068379,
+            0.8755054853145529,
+            0.8397057345452791
+          ],
+          "no_answer": [
+            0.34938555550609135,
+            0.15034357766625112,
+            0.24273329454440273,
+            0.1867553819031978,
+            0.27389924592745496,
+            0.44044354078601317,
+            0.2051893698645731,
+            0.38895176840963475
+          ]
+        },
+        "top1_score_summary": {
+          "answerable": {
+            "count": 28,
+            "missing_count": 0,
+            "min": 0.2962515226660379,
+            "p25": 0.6762889494005404,
+            "median": 0.831243447615014,
+            "p75": 0.9023736361723519,
+            "max": 0.9732171808424412
+          },
+          "no_answer": {
+            "count": 8,
+            "missing_count": 0,
+            "min": 0.15034357766625112,
+            "p25": 0.20058087287422927,
+            "median": 0.25831627023592885,
+            "p75": 0.3592771087319772,
+            "max": 0.44044354078601317
+          }
+        },
+        "threshold": 0.6181696023610781,
+        "balanced_accuracy": 0.9107142857142857,
+        "accuracy": 0.8611111111111112
+      },
+      "score_kind": "relevance_higher_is_better",
+      "top_k": 5,
+      "mrr_cutoff": 5
+    }
+  },
+  "best_hybrid_params": {
+    "rrf_k": 30,
+    "vector_weight": 1,
+    "bm25_weight": 2,
+    "candidate_depth": 20
+  },
+  "corpus_version": "24748534e55942b1",
+  "question_set_sha256": "c0348ea356a8c83dbd39c7182a1f7ff53b71ad1cf5327198121002d9bdeb0b97",
+  "chunk_count": 633,
+  "embedding_usage": {
+    "cache_hits": 80,
+    "cache_misses": 0,
+    "cache_hit_rate": 1.0,
+    "api_calls": 0,
+    "estimated_tokens": 0,
+    "total_tokens": 0
+  },
+  "embedding_model": "text-embedding-v4",
+  "embedding_provider": "openai",
+  "rerank_usage": {
+    "cache_hits": 0,
+    "cache_misses": 36,
+    "cache_hit_rate": 0.0,
+    "api_calls": 36,
+    "estimated_tokens": 1129283,
+    "total_tokens": 516260,
+    "usage_estimated": false
+  },
+  "bm25_params": {
+    "k1": 1.5,
+    "b": 0.75
+  },
+  "api_calls": 36,
+  "total_tokens": 516260,
+  "timestamp": "2026-10-21T02:10:30.287432+00:00"
+}
