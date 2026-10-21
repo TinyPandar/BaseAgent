@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from applications.project_assistant.config import RAGConfig
 from applications.project_assistant.evaluation.experiments import (
     evaluate_ranking,
+    score_distribution,
     select_threshold,
     threshold_metrics,
 )
@@ -32,6 +33,14 @@ def document(text="hello", path="a.py"):
 
 
 class CandidateTests(unittest.TestCase):
+    def test_score_quartiles_include_zero_and_track_missing_results(self):
+        self.assertEqual(score_distribution([None, 30, 0, 10, 20]), {
+            "count": 4, "missing_count": 1, "min": 0, "p25": 7.5,
+            "median": 15, "p75": 22.5, "max": 30,
+        })
+        self.assertIsNone(score_distribution([None])["median"])
+        self.assertEqual(score_distribution([7])["p75"], 7)
+
     def test_tokenizer_full_identifiers_and_parts(self):
         tokens = tokenize("pkg/foo_bar.HTTPClient42 getHTTPResponse snake_case")
         self.assertTrue({"pkg/foo_bar.httpclient42", "pkg", "foo_bar", "foo", "bar", "http",

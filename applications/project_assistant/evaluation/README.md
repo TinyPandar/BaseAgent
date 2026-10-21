@@ -16,9 +16,10 @@ builds a fresh `VectorIndex` in batches (in-memory for Mock, persisted for real 
 ACL/redaction filters. There are no new dependencies. Existing indexes are not
 modified. `--openai-embedding` selects the configured OpenAI-compatible provider; no real embedding quality or cost has been measured in this work.
 
-`questions.json` contains 35 manually specified questions: seven each for
+`questions.json` contains 80 manually specified questions: sixteen each for
 exact identifiers, concepts, cross-file evidence, no-answer, and stale claims.
-Each category has four tune and three test questions. Tune is for iteration;
+There are 44 tune and 36 test questions. Each answerable category has nine tune
+and seven test questions; no-answer has eight in each split. Tune is for iteration;
 test is held out from tuning. Questions and answer summaries are JSON and are
 not ingested by the corpus collector. Stale questions distinguish historical
 statements in the handoff/README from current source evidence. No-answer labels
@@ -132,7 +133,7 @@ python scripts/run_retrieval_experiments.py --split tune --mock-embedding \
 ```
 
 Omit `--mock-embedding` to use `RAGConfig`'s configured embedding provider. Query
-vectors for all 35 questions are cached once as JSON under `.baseagent/` by
+vectors for all questions are cached once as JSON under `.baseagent/` by
 default, or at `--query-cache` (gitignored or outside both checkouts). Matching
 cache hits do not construct an embedding client and cost no query embedding
 calls. Caches bind to provider, model, dimensions and an endpoint fingerprint;
@@ -218,3 +219,37 @@ are consistent but measured on 16/12 answerable questions. Recommended opt-in:
 hybrid (free); add qwen3-rerank (~11k tokens per query at depth 20) where
 latency/cost allow. Spend: 4 query-embedding calls (580 tokens, cached), 35
 rerank calls (410,621 tokens).
+
+## Expanded offline set (2026-10-21)
+
+The 80-question set covers configuration, error handling, source location,
+architecture, cross-file flows and stale documentation using the existing five
+category names. There are 16 no-answer questions (nine newly added), requesting
+operational facts or details of unimplemented services absent from the default
+corpus. Original questions retain their IDs, wording, categories and splits.
+Reviewed corrections to answer/evidence are enumerated in
+[the expansion report](reports/offline-expanded-80-2026-10-21.md), with complete
+before/after records in its companion JSON. Earlier results above are historical
+and use different corpus/gold snapshots.
+
+Run the BM25-only evaluator without an embedding client or index:
+
+```bash
+PYTHONPATH=.:src .venv/bin/python -m applications.project_assistant.evaluation.offline \
+  --baseline-ref 87aea286ff106d05b3db37a06a1aeebb9cb69561 \
+  --output applications/project_assistant/evaluation/reports/offline-expanded-80-rerun.json
+```
+
+The runner blocks network connections, uses fixed BM25 defaults (k1=1.5,
+b=0.75), validates the corpus binding and evidence, and writes a new report
+exclusively. Both splits include answerable/no-answer top1 score samples and
+min/p25/median/p75/max summaries (linear interpolation). The threshold is chosen
+on tune only and applied unchanged to test. Scores are relevance, higher is
+better; retrieval metrics exclude no-answer questions and MRR is cut off at 5.
+
+Token estimates use ceil(Unicode characters/3) per text. All corpus chunks,
+query strings, and every query's BM25 top20 candidate documents are accounted
+for. Full-document totals and the existing reranker's 6000-character document
+cap are reported separately, along with repeated-query pairwise estimates.
+No embedding or reranking API is called. These are planning estimates, excluding
+request framing and provider tokenizer differences.

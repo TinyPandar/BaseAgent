@@ -8,6 +8,23 @@ from applications.project_assistant.rag.retrieval import Evidence
 from .retrieval import question_metrics
 
 
+def score_distribution(scores):
+    """Linear-interpolated quartiles of available scores; retain missing counts."""
+    values = sorted(score for score in scores if score is not None)
+
+    def percentile(fraction):
+        if not values:
+            return None
+        position = (len(values) - 1) * fraction
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+    return {"count": len(values), "missing_count": len(scores) - len(values),
+            **{label: percentile(fraction) for label, fraction in
+               (("min", 0), ("p25", 0.25), ("median", 0.5), ("p75", 0.75), ("max", 1))}}
+
+
 def threshold_metrics(rows, threshold):
     """Answerable iff top relevance >= threshold; missing results always abstain."""
     correct = {True: [], False: []}
@@ -58,6 +75,9 @@ def evaluate_ranking(questions, search, *, split, threshold=None, top_k=5):
         label: [row["top_score"] for row in rows
                 if (row["category"] == "no_answer") == (label == "no_answer")]
         for label in ("answerable", "no_answer")}}
+    analysis["top1_score_summary"] = {
+        label: score_distribution(scores)
+        for label, scores in analysis["top1_score_distribution"].items()}
     if split == "tune":
         analysis.update(select_threshold(rows))
     else:

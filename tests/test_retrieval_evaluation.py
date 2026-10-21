@@ -92,8 +92,11 @@ class EvidenceValidationTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         dataset = json.loads(QUESTION_SET.read_text(encoding="utf-8"))
         chunks = collect_corpus(root)
-        self.assertGreaterEqual(len(dataset["questions"]), 30)
-        self.assertLessEqual(len(dataset["questions"]), 50)
+        questions = dataset["questions"]
+        self.assertGreaterEqual(len(questions), 80)
+        self.assertGreaterEqual(sum(q["category"] == "no_answer" for q in questions), 15)
+        self.assertAlmostEqual(sum(q["split"] == "tune" for q in questions) / len(questions),
+                               0.55, delta=0.025)
         for split in ("tune", "test"):
             self.assertEqual({q["category"] for q in dataset["questions"] if q["split"] == split}, CATEGORIES)
         # Validation checks the corpus hash, line existence, source text digests,
