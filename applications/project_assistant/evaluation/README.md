@@ -272,3 +272,36 @@ error. Vector fallback retains distance scores; BM25 fallback retains relevance
 scores. Runtime tools and evaluation rows report the effective mode/score kind;
 a report with both score kinds is marked `mixed`. See the
 [application configuration](../README.md#配置) for settings and threshold semantics.
+
+## 受控 coding 离线验收（Phase 3 第 3 项）
+
+运行 `.venv/bin/python -m applications.project_assistant.evaluation.coding`。
+固定夹具位于 `fixtures/coding/`：复制约定文档、减法错误的加法实现、
+故意失败的独立测试到系统临时目录，使用 Mock embedding 和脚本模型。
+复用 `app.py` 装配、`run_agent`、工作流工具及 completion policy；不调用真实模型。
+先成功检索 `CONVENTIONS.md` 才允许修改；必须完成计划、以精确 argv
+运行 `check_addition.py` 且通过，并生成 `REPORT.md`。
+
+权限只在该场景打开。默认拒绝工具策略仅允许固定补丁、报告写入和固定测试命令，
+拒绝任意命令与夹具测试修改；测试脚本断言 cwd 位于系统 tmp。
+工作区必须是原始夹具副本且不包含软链接，结束时校验真实仓库普通文件哈希未变。
+LocalBackend 本身不是 OS 沙箱，所以此处刻意不开放任意代码替换。
+
+JSON 结果分别记录状态、外部验收、completion report、模型/工具尝试数、
+输入/输出/总 tokens、未知 usage、未授权/重复副作用、精确补丁和产物存在性。
+外部验收会独立运行只读固定测试，即使 agent 未获命令权限；它不能代替
+agent 自己的 `verify_command` 证据。离线测试覆盖失败路径及新临时目录断网回放。
+
+真实录制脚本仅预留，本次未运行：
+`python -m scripts.record_coding_scenario --runs 3 --budget-cny 2 --output-dir <新目录>`。
+无 `DEEPSEEK_API_KEY` 时打印 pending；`--runs` 仅接受 3–5。
+**整个脚本调用的所有 runs 合计最多 20 次模型请求**，包含失败的传输尝试，SDK 不重试。
+逐响应按 usage 累加费用，达到预算或 usage 缺失立即停止后续请求；最后一次响应
+可能使费用越过阈值，此阈值不是服务商预付费硬限额。单价为待核对的可配置常量，
+来源链接标在脚本中，本次没有联网核价。可用 `--input-cny-per-million` 和
+`--output-cny-per-million` 覆盖，真实授权运行前需核对官方价格。
+
+CassetteModel 在临时文件保存时脱敏，并在正式输出前再扫描凭据、逐次断网回放；
+所有 runs 校验后才发布，失败不发布部分录像。失败验收结果也如实保留在结果结构，
+不据单次成功推断可靠性。`--replay-dir <录像目录> --runs 3` 不需凭据，阻断网络，
+每次使用全新临时夹具。回放规范化临时根路径和验证 UUID，保留 argv、输出和文件哈希。
