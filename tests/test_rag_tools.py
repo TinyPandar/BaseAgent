@@ -1,28 +1,30 @@
 """Knowledge package boundaries and offline model/tool integration."""
 
-from copy import deepcopy
 import contextlib
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from copy import deepcopy
+from pathlib import Path
+from typing import ClassVar
+from unittest.mock import Mock, patch
 
 from applications.project_assistant.access import SourceAccess
 from applications.project_assistant.corpus import collect_corpus, compute_corpus_version
 from applications.project_assistant.rag.chunking import Chunk, chunk_document
 from applications.project_assistant.rag.embedding import MockEmbedding
 from applications.project_assistant.rag.indexing import VectorIndex
+from applications.project_assistant.rag.lexical import chunk_result
+from applications.project_assistant.rag.retrieval import _warn_fallback
 from applications.project_assistant.tools import knowledge_package
-from baseagent.agent import run_agent
-from baseagent.agent import CancellationToken
+from baseagent.agent import CancellationToken, run_agent
 from baseagent.capabilities import assemble_capabilities
 from baseagent.llm.response import ModelResponse, TokenUsage
 from baseagent.session import SessionStore
-from baseagent.testing import CassetteModel, CassetteMismatch, comparable_state
+from baseagent.testing import CassetteMismatch, CassetteModel, comparable_state
 from baseagent.tools.policy import ToolPolicy
 from baseagent.tools.workspace import Workspace
 
@@ -55,7 +57,7 @@ def search_call(query="kernel", top_k=5):
 
 class ScriptModel:
     model_name = "synthetic-knowledge"
-    generation_params = {"temperature": 0}
+    generation_params: ClassVar[dict] = {"temperature": 0}
 
     def __init__(self, calls=None):
         self.responses = iter(calls or [search_call(), {"content": "Kernel evidence [README.md:1-2]."}])
@@ -109,6 +111,38 @@ class KnowledgeTests(unittest.TestCase):
             with self.subTest(arguments=list(arguments)):
                 self.assertEqual(registry.execute("knowledge_search", arguments).error.code, "invalid_arguments")
         self.assertEqual(self.index.searches, 0)
+
+    def test_runtime_defaults_to_hybrid_and_reports_bm25_fallback(self):
+        self.index.collection = Mock()
+        self.index.collection.get.return_value = {
+            "documents": [self.chunk.content], "metadatas": [chunk_result(self.chunk)["metadata"]]}
+        with patch.dict(os.environ, {}, clear=True):
+            registry = self.registry()
+            result = self.search(registry)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.data["retrieval_mode"], "hybrid")
+            self.assertEqual(result.data["score_kind"], "relevance_higher_is_better")
+            self.assertAlmostEqual(result.data["evidence"][0]["score"], 3 / 31)
+            _warn_fallback.cache_clear()
+            with (
+                patch.object(self.index, "search", side_effect=RuntimeError("vector unavailable")),
+                self.assertLogs("applications.project_assistant.rag.retrieval", level="WARNING") as logs,
+            ):
+                for _ in range(2):
+                    fallback = self.search(registry)
+            self.assertEqual(len(logs.output), 1)
+            self.assertTrue(fallback.ok)
+            self.assertEqual(fallback.data["retrieval_mode"], "bm25")
+            self.assertEqual(fallback.data["score_kind"], "relevance_higher_is_better")
+            self.assertEqual(fallback.data["evidence"][0]["citation"], self.chunk.citation)
+        _warn_fallback.cache_clear()
+
+    def test_runtime_vector_fallback_reports_distance(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = self.search()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["retrieval_mode"], "vector")
+        self.assertEqual(result.data["score_kind"], "distance_lower_is_better")
 
     def test_host_visibility_filters_before_read_and_refills_from_candidates(self):
         private = self.write("private/notes.md", "private fixture")
@@ -196,7 +230,7 @@ class KnowledgeTests(unittest.TestCase):
         link = self.root / "alias"
         if os.name == "nt":
             result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                                    check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
             link.symlink_to(target, target_is_directory=True)

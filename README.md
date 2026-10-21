@@ -870,3 +870,9 @@ tools = coding_tools(workspace)
 backend 实现是可信扩展，负责字节读取限额、受保护路径/搜索过滤、指令范围及限额、原子文件版本/指令摘要检查、命令期限/取消/输出限额与后代清理。`write_file` 必须在目标环境内完成 CAS、锁和原子发布；不能先在宿主检查再向远端无条件写入。`execute` 接收 argv，不自行转成 shell 字符串。其 `contract()` 应返回不含凭据的实现版本、环境身份与配置，工具恢复契约会绑定此信息，环境变化时先拒绝恢复。新增 backend 的生命周期和远端环境连接管理将在接入实际执行环境时实现；本轮仅提供统一接口和本机实现。
 
 所有指令读取、漂移检查、verify_command 和完成门槛也通过同一 backend。旧会话的工具契约因此发生变化，需要检查后显式接受配置变化才能继续。测试 `test_backends.py` 用完全不落盘的 backend 验证这些操作，没有宿主目录仍可读写和验收，同时宿主文件/搜索/进程调用被断言禁止。
+
+## Project Assistant 默认检索
+
+`RAG_RETRIEVAL_MODE` 默认 `hybrid`（BM25 + 向量，RRF `rrf_k=30`、vector:bm25 权重 `1:2`、`candidate_depth=20`）；可显式设置 `vector` 或 `bm25`，非法值会报出配置项与允许值。`knowledge_search` 和查询脚本沿用此默认值。hybrid 无法构建 BM25（包括空语料）时回退 vector；向量索引为空、不可用或查询失败且 BM25 可用时回退 bm25。每个进程对每种回退方向只记录一次 warning；空索引返回空证据，两路均查询失败则报错。显式单路模式不自动切换。
+
+[80 题集评测报告](applications/project_assistant/evaluation/reports/bailian-80q-summary-2026-10-21.md)的 test 结果（R@1 / MRR）：vector `0.378 / 0.678`、bm25 `0.407 / 0.759`、hybrid `0.567 / 0.845`、hybrid+qwen `0.583 / 0.857`。因此默认 hybrid；qwen 收益小且每查询约 1.4 万 token，保持可选、默认关闭。这是既有报告的结果，本次修改仅运行离线 Mock 测试。完整参数与回退分数语义见[应用配置说明](applications/project_assistant/README.md#配置)。

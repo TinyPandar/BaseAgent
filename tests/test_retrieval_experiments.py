@@ -24,7 +24,7 @@ from applications.project_assistant.rag.rerank import (
     QwenRerank,
     derive_rerank_base_url,
 )
-from applications.project_assistant.rag.retrieval import retrieve
+from applications.project_assistant.rag.retrieval import _warn_fallback, retrieve
 from scripts import run_retrieval_experiments as cli
 
 
@@ -80,17 +80,17 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reciprocal_rank_fusion([[a]], weights=[-1])
 
-    def test_default_vector_behavior_and_distance_filter(self):
+    def test_explicit_vector_behavior_and_distance_filter(self):
         index = Mock()
         index.search.return_value = [document() | {"score": 0.2}, document(path="b") | {"score": 0.8}]
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"RAG_RETRIEVAL_MODE": "vector"}, clear=True):
             self.assertEqual(RAGConfig.from_env().retrieval_mode, "vector")
             result = retrieve("hello", index, top_k=2, min_score=0.5)
         index.search.assert_called_once_with("hello", top_k=2)
         index.collection.get.assert_not_called()
         self.assertEqual([row.score for row in result], [0.2])
 
-    def test_bm25_env_does_not_embed_and_hybrid_opt_in(self):
+    def test_bm25_env_does_not_embed_and_default_hybrid(self):
         chunk = Chunk("hello identifier", "a.py", 1, 2, "text_block")
         index = Mock()
         index.collection.get.return_value = {"documents": [chunk.content],
@@ -100,8 +100,76 @@ class CandidateTests(unittest.TestCase):
         with patch.dict(os.environ, {"RAG_RETRIEVAL_MODE": "bm25"}):
             self.assertEqual(retrieve("identifier", index)[0].doc_id, chunk.doc_id)
         index.search.assert_not_called()
-        result = retrieve("identifier", index, config=RAGConfig(retrieval_mode="hybrid"))
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "applications.project_assistant.rag.rerank.QwenRerank"
+        ) as qwen:
+            config = RAGConfig.from_env()
+            self.assertEqual(config.retrieval_mode, "hybrid")
+            self.assertEqual(RAGConfig().retrieval_mode, "hybrid")
+            self.assertEqual((config.rrf_k, config.vector_weight, config.bm25_weight,
+                              config.candidate_depth), (30, 1, 2, 20))
+            result = retrieve("identifier", index)
+        qwen.assert_not_called()
+        index.search.assert_called_once_with("identifier", top_k=1)
         self.assertAlmostEqual(result[0].score, 1 / 31 + 2 / 31)
+
+    def test_invalid_mode_names_setting_and_allowed_values(self):
+        for value in ("invalid", "", "HYBRID"):
+            with (
+                self.subTest(value=value), patch.dict(os.environ, {"RAG_RETRIEVAL_MODE": value}),
+                self.assertRaisesRegex(ValueError, "RAG_RETRIEVAL_MODE.*vector, bm25, or hybrid"),
+            ):
+                RAGConfig.from_env()
+
+    def test_hybrid_falls_back_to_vector_once_with_distance_filter(self):
+        index = Mock()
+        index.count.return_value = 2
+        index.search.return_value = [document() | {"score": 0.2}, document(path="b") | {"score": 0.8}]
+        failures = [None, RuntimeError("private source details"), ValueError("bad metadata")]
+        for failure in failures:
+            with self.subTest(failure=failure):
+                _warn_fallback.cache_clear()
+                index.collection.get.side_effect = failure
+                index.collection.get.return_value = {"documents": [], "metadatas": []}
+                diagnostics = {}
+                with self.assertLogs("applications.project_assistant.rag.retrieval", level="WARNING") as logs:
+                    for _ in range(2):
+                        result = retrieve("hello", index, top_k=2, min_score=0.5,
+                                          config=RAGConfig(), diagnostics=diagnostics)
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("falling back to vector", logs.output[0])
+                self.assertNotIn("private source details", logs.output[0])
+                self.assertEqual([row.score for row in result], [0.2])
+                self.assertEqual(diagnostics, {"retrieval_mode": "vector",
+                                               "score_kind": "distance_lower_is_better"})
+        _warn_fallback.cache_clear()
+
+    def test_hybrid_falls_back_to_bm25_once_without_vector_or_on_failure(self):
+        chunk = Chunk("hello identifier", "a.py", 1, 2, "text_block")
+        lexical = BM25Index([chunk])
+        empty, broken_count, broken_search = Mock(), Mock(), Mock()
+        empty.count.return_value = 0
+        broken_count.count.side_effect = RuntimeError("unavailable")
+        broken_search.count.return_value = 1
+        broken_search.search.side_effect = RuntimeError("embedding unavailable")
+        for index in (None, empty, broken_count, broken_search):
+            with self.subTest(index=index):
+                _warn_fallback.cache_clear()
+                diagnostics = {}
+                with self.assertLogs("applications.project_assistant.rag.retrieval", level="WARNING") as logs:
+                    for _ in range(2):
+                        result = retrieve("identifier", index, config=RAGConfig(),
+                                          lexical_index=lexical, diagnostics=diagnostics)
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("falling back to bm25", logs.output[0])
+                self.assertEqual(result[0].doc_id, chunk.doc_id)
+                self.assertEqual(result[0].score, lexical.search("identifier")[0]["score"])
+                self.assertEqual(diagnostics, {"retrieval_mode": "bm25",
+                                               "score_kind": "relevance_higher_is_better"})
+                self.assertEqual(retrieve("identifier", index, config=RAGConfig(),
+                                         lexical_index=lexical, min_score=result[0].score + 1), [])
+        empty.search.assert_not_called()
+        _warn_fallback.cache_clear()
 
     def test_heuristic_identifier_path_and_coverage(self):
         exact = document("def loadConfig(): pass", "pkg/retrieval.py")

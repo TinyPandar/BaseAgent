@@ -32,7 +32,7 @@ class RAGConfig:
     corpus_root: str = "."
     exclude_patterns: list = None
 
-    retrieval_mode: str = "vector"
+    retrieval_mode: str = "hybrid"
     bm25_k1: float = 1.5
     bm25_b: float = 0.75
     rrf_k: float = 30
@@ -44,7 +44,10 @@ class RAGConfig:
         import math
 
         if self.retrieval_mode not in {"vector", "bm25", "hybrid"}:
-            raise ValueError("retrieval_mode must be vector, bm25, or hybrid")
+            raise ValueError(
+                f"invalid RAG_RETRIEVAL_MODE/retrieval_mode {self.retrieval_mode!r}; "
+                "must be vector, bm25, or hybrid"
+            )
         if (not math.isfinite(self.bm25_k1) or self.bm25_k1 <= 0
                 or not 0 <= self.bm25_b <= 1
                 or type(self.candidate_depth) is not int or self.candidate_depth <= 0
@@ -82,7 +85,7 @@ class RAGConfig:
         """Create configuration from environment variables."""
         dimensions = os.getenv("RAG_EMBEDDING_DIMENSIONS", os.getenv("RAG_EMBEDDING_DIMENSION"))
         return cls(
-            retrieval_mode=os.getenv("RAG_RETRIEVAL_MODE", "vector"),
+            retrieval_mode=os.getenv("RAG_RETRIEVAL_MODE", "hybrid"),
             bm25_k1=float(os.getenv("RAG_BM25_K1", "1.5")),
             bm25_b=float(os.getenv("RAG_BM25_B", "0.75")),
             rrf_k=float(os.getenv("RAG_RRF_K", "30")),

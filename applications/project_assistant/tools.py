@@ -1,9 +1,9 @@
 """Read-only knowledge tool package for the existing synchronous harness."""
 
-from hashlib import sha256
 import json
 import math
 import os
+from hashlib import sha256
 from pathlib import Path
 
 from baseagent.capabilities import ToolPackage
@@ -11,8 +11,8 @@ from baseagent.testing import Redactor
 from baseagent.tools.result import ErrorCode, ToolFailure
 
 from .access import SourceAccess
+from .config import RAGConfig
 from .rag.retrieval import retrieve
-
 
 _SECRET_PATTERNS = (
     r"(?im)\b(?:[\w-]*(?:api[_-]?key|access[_-]?token|secret|password|credential)[\w-]*)\b[\"']?\s*[:=]\s*[^\r\n]+",
@@ -37,8 +37,12 @@ def knowledge_package(index, access: SourceAccess, *, corpus_version: str,
         part in name.upper() for part in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
     ))
     redactor = Redactor(patterns, secrets=sensitive)
+    config = RAGConfig.from_env()
     provider = index.embedding_provider
     binding = {"access": access.contract(), "corpus_version": corpus_version,
+               "retrieval": {name: getattr(config, name) for name in (
+                   "retrieval_mode", "bm25_k1", "bm25_b", "rrf_k", "vector_weight",
+                   "bm25_weight", "candidate_depth")},
                "collection": index.collection_name,
                "persist_directory": str(index.persist_directory) if index.persist_directory is not None else None,
                "embedding": {"provider": type(provider).__name__,
@@ -52,11 +56,13 @@ def knowledge_package(index, access: SourceAccess, *, corpus_version: str,
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "query must not be blank")
         if context is not None and context.cancellation is not None:
             context.cancellation.check()
-        count = index.count()
         evidence = []
         seen = set()
+        diagnostics = {"score_kind": "distance_lower_is_better" if config.retrieval_mode == "vector"
+                       else "relevance_higher_is_better", "retrieval_mode": config.retrieval_mode}
         # Fetch extra candidates so denied/stale hits do not immediately exhaust k.
-        candidates = retrieve(redactor.text(query), index, top_k=min(count, top_k * 4)) if count else []
+        candidates = retrieve(redactor.text(query), index, top_k=top_k * 4,
+                              config=config, diagnostics=diagnostics)
         for item in candidates:
             if context is not None and context.cancellation is not None:
                 context.cancellation.check()
@@ -93,7 +99,7 @@ def knowledge_package(index, access: SourceAccess, *, corpus_version: str,
             if len(evidence) == top_k:
                 break
         return {"evidence": evidence, "corpus_version": corpus_version,
-                "score_kind": "distance_lower_is_better", "reference_only": True}
+                **diagnostics, "reference_only": True}
 
     def install(registry):
         registry.register(

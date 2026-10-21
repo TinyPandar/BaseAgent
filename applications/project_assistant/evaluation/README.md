@@ -181,9 +181,9 @@ trailing `/compatible-mode/v1` becomes `/compatible-api/v1`.
 key is included in reports or transport errors. Rerank API calls themselves
 are not cached; omit the flag for repeat runs without rerank charges.
 
-Application retrieval defaults to vector with unchanged distance scores.
+Application retrieval defaults to hybrid (RRF k=30, vector:BM25=1:2, candidate depth 20).
 `RAG_RETRIEVAL_MODE=vector|bm25|hybrid` or `retrieve(..., config=RAGConfig(...))`
-opts into alternatives. Fusion parameters use `RAG_RRF_K`, `RAG_VECTOR_WEIGHT`,
+selects a mode explicitly. Fusion parameters use `RAG_RRF_K`, `RAG_VECTOR_WEIGHT`,
 `RAG_BM25_WEIGHT`, `RAG_CANDIDATE_DEPTH`; BM25 uses `RAG_BM25_K1/B`.
 Reranking requires explicitly passing a `Reranker` to `retrieve`; it is off by
 default. BM25/hybrid/reranked scores use a relevance floor for `min_score`, while
@@ -214,10 +214,9 @@ balanced accuracy tune 0.97 / test 0.88; hybrid RRF tune 0.75 / test 1.00;
 qwen3-rerank score tune 0.88 / test 0.96. No threshold is reliable at this
 sample size. The heuristic reranker hurts and should not be used.
 
-Defaults stay unchanged (`RAG_RETRIEVAL_MODE=vector`, no reranker): the gains
-are consistent but measured on 16/12 answerable questions. Recommended opt-in:
-hybrid (free); add qwen3-rerank (~11k tokens per query at depth 20) where
-latency/cost allow. Spend: 4 query-embedding calls (580 tokens, cached), 35
+These historical results used vector as the default on 16/12 answerable questions.
+The current default follows the expanded 80-question report below; reranking
+remains opt-in. Historical spend: 4 query-embedding calls (580 tokens, cached), 35
 rerank calls (410,621 tokens).
 
 ## Expanded offline set (2026-10-21)
@@ -253,3 +252,23 @@ for. Full-document totals and the existing reranker's 6000-character document
 cap are reported separately, along with repeated-query pairwise estimates.
 No embedding or reranking API is called. These are planning estimates, excluding
 request framing and provider tokenizer differences.
+
+## Current default (80-question test, 2026-10-21)
+
+The [retained Bailian report](reports/bailian-80q-summary-2026-10-21.md) measured
+vector R@1/MRR **0.378/0.678**, bm25 **0.407/0.759**, hybrid **0.567/0.845**,
+and hybrid+qwen **0.583/0.857**. Hybrid is now the application default, using
+existing tune-selected parameters: RRF k=30, vector:BM25=1:2, candidate depth 20.
+Qwen adds little and costs about 14K tokens per query, so it stays optional and
+disabled by default. These are existing measurements; this change uses only
+local Mock tests and does not repeat API evaluation.
+
+Hybrid falls back to vector if BM25 cannot be built/searched (including empty
+corpus), and to bm25 if vector count/search is unavailable or yields no
+candidates while BM25 is available. Each direction logs one warning per process.
+Explicit vector/bm25 modes do not switch. Empty indexes produce empty evidence;
+if BM25 is unavailable and vector operations also fail, retrieval raises an
+error. Vector fallback retains distance scores; BM25 fallback retains relevance
+scores. Runtime tools and evaluation rows report the effective mode/score kind;
+a report with both score kinds is marked `mixed`. See the
+[application configuration](../README.md#配置) for settings and threshold semantics.

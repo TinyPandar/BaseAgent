@@ -1,38 +1,38 @@
 {
   "schema_version": 1,
-  "corpus_version": "24748534e55942b1",
+  "corpus_version": "389c3acdf7939cad",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",
     "applications/project_assistant/corpus.py:91-97": "d55476947aa2e018fbb443bbe1ef4636d3c735ca16bca0160e3568405137089c",
-    "applications/project_assistant/tools.py:24-47": "6d1e26013c8eb6934f203066d5ddb47d8892e56dd79e5ea8af55743c0747c37f",
+    "applications/project_assistant/tools.py:24-51": "6c4d3fa1e8a353c9ff2a197ef5f065753e5233d3f333a94d0336459b248b507b",
     "applications/project_assistant/access.py:49-62": "f59d14753ae7e3e7684931e1a9f32d04bed19043e840754276e442afd516b5ef",
     "applications/project_assistant/rag/chunking.py:89-101": "da0c89d99cd601624e63600b899712e6f2521654152680f50f4329554c1aafbc",
     "applications/project_assistant/rag/embedding.py:134-152": "26c42eb8180b4dfe893597c51d954fa77e4658d61292858e53cd7022dd5a8a30",
-    "applications/project_assistant/rag/retrieval.py:99-121": "eebcb8d99fbbb9063aff6becde0dec2ceb9b98acd6b441eebc3374dc0ca12844",
+    "applications/project_assistant/rag/retrieval.py:141-163": "9b13423eeead9adae810b5331ca98aa93c34f96c297aec68bf4e1c3800a7649d",
     "applications/project_assistant/rag/chunking.py:12-37": "7caf2c88bc08cfdbdc064eb174e250fadd946999360da274d6b568fd71651253",
     "applications/project_assistant/access.py:18-27": "cabc78d4ce97b2dd61a5761d081474b92b5d4243c183196f586ebeaee883a34d",
     "applications/project_assistant/access.py:11-15": "f9dffef5b8dc4978de2b983b666871b98bdf0b70fe1179a7004dc324845da561",
     "src/baseagent/capabilities/assembly.py:1-7": "40df81f4ffcb0b35b8b4044af12ed420771d630aefda35c5ffb7c0c3c45a716e",
     "src/baseagent/capabilities/assembly.py:24-41": "0574b00f856298ed188ae41942e613ebf08e32f54b0fbd82f60b97e8fe099267",
-    "applications/project_assistant/tools.py:63-82": "d6bb1f45d8d1bbbaa061e1341981f45f397a9d9713c42594788ae27f0efe1321",
-    "applications/project_assistant/rag/retrieval.py:75-92": "5d0acdf762701290dce6456a73426670341c7c50e2247eadc99a0a4e7a2538d6",
-    "applications/project_assistant/rag/retrieval.py:99-105": "e561b3631121b0dfb02f14e227a3385a43685ec3bf51f165c46760b1f8395163",
+    "applications/project_assistant/tools.py:69-88": "d6bb1f45d8d1bbbaa061e1341981f45f397a9d9713c42594788ae27f0efe1321",
+    "applications/project_assistant/rag/retrieval.py:88-134": "a88964fadd961f28320c3b78cdfab0f83c4e840a6d961a5536ca13852af19f49",
+    "applications/project_assistant/rag/retrieval.py:141-147": "3e0b2d5e4b9073b988a0dc4d7b77785f91542a7b77487388f1ad96f569606057",
     "applications/project_assistant/rag/chunking.py:115-143": "3bfaf64c133043a418b65c4d59a3c4f987654681060e8474618721d1094005cd",
     "applications/project_assistant/rag/embedding.py:128-160": "8250c1cbecb3e3d9f5fb1cc6d99fcd666a4e06970eb58007de6c4aca328caac9",
-    "applications/project_assistant/config.py:80-99": "700098ac6a26e264f833fea6dc9abfa110f3d66a10df894978ff02a9770e0d41",
+    "applications/project_assistant/config.py:83-102": "99a13742beee4946f72ea82acc7b62a42bb0b8ccaee28f513e186540571fb9f6",
     "scripts/build_knowledge_base.py:80-86": "d19197f58c59fd1753acc4bfac5b9bbb4aaa4b180e530a5faebf5f1f69e031de",
     "applications/project_assistant/rag/embedding.py:55-73": "9c6fba54e0a872685f1992c5c21612c53a7fb2693bc4c78f422352c4ada6855d",
     "applications/project_assistant/rag/embedding.py:84-87": "b721ca58ea502f38226fb8db49af5b32898412621185e1579423ec85bd113880",
     "applications/project_assistant/rag/embedding.py:94-101": "d5a56464f4677794d3f6f66b9d42608ef9286166ee22cd5b1c9523294a94585b",
-    "applications/project_assistant/tools.py:63-71": "561cc6b3a8ed9b70a28cab6947b489fb53941fdbe2d1c50145e6fda666bdb299",
+    "applications/project_assistant/tools.py:69-77": "561cc6b3a8ed9b70a28cab6947b489fb53941fdbe2d1c50145e6fda666bdb299",
     "applications/project_assistant/rag/chunking.py:35-37": "a140e6db70dd395041b80789dd5f89c48c729620d730496b263835d6551d589a",
     "applications/project_assistant/rag/indexing.py:126-136": "935e9a4982d9f24758e3db46326c575091ae593188876f6c89960490f511d535",
-    "applications/project_assistant/tools.py:58-75": "d5a7a1eb58bfc3f65bbcae1ee9a8168ce47efe4d8a6f505efaf61bd6858628ff",
-    "applications/project_assistant/tools.py:98-110": "18f977825dc3a376782177b11caebd6761405179c7064f35020f99d12a2e22a2",
-    "applications/project_assistant/tools.py:24-48": "41e82c30d104d79d7421c1a121ac889580acfd764f6c600753b6c79f8a4d2b46",
-    "scripts/query_knowledge_base.py:50-65": "3f6183dce99e800d2d13aea3e52f14c30a7524550d542da91859c4175d85ba2e",
+    "applications/project_assistant/tools.py:63-81": "548e9dff898080f8c77feb891cf8765df6d94fb7b5908362c34050173fb8d231",
+    "applications/project_assistant/tools.py:104-116": "18f977825dc3a376782177b11caebd6761405179c7064f35020f99d12a2e22a2",
+    "applications/project_assistant/tools.py:24-52": "0f53200a37d0eeece4dd276939b3fb48aab52deab9b6cca0092a1d04dfce7500",
+    "scripts/query_knowledge_base.py:49-64": "3f6183dce99e800d2d13aea3e52f14c30a7524550d542da91859c4175d85ba2e",
     "DEVELOPMENT_HANDOFF.md:3-5": "8c88d4052cae35cb58b4fbee3b06c5d1b1e756a1b41775b597e9bf2499437119",
     "DEVELOPMENT_HANDOFF.md:71-75": "1e490b23ba7b983d112ab51ec6e8f7029e21ebc298f7d61399faa922e9ef1348",
     "applications/project_assistant/rag/embedding.py:89-115": "199717671c243b4bf1c1c9aa0062e82a8ed9a205830569dfa1ea022ad897830a",
@@ -40,69 +40,70 @@
     "DEVELOPMENT_HANDOFF.md:72-75": "8e36aa3e36a441a022e36268ce2935e106eeafbd9e57272b65d975daa8c64c57",
     "DEVELOPMENT_HANDOFF.md:90-90": "051167b10b797838ccdf5625f3ee96d1a615f1e61c9d35596c987c36d2a2dcf4",
     "scripts/evaluate_retrieval.py:94-112": "02eb79a4f6eb1aa77ccd5feccbc14053f5b24912c19e4766c1a57365f5af53b6",
-    "applications/project_assistant/README.md:180-185": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
+    "applications/project_assistant/README.md:201-206": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
     "DEVELOPMENT_HANDOFF.md:84-88": "94f8b40aa6d9e605374432b7a564deebefbba0f3bd54bdaf031e1c245949b883",
     "DEVELOPMENT_HANDOFF.md:40-40": "40ec18e30df8d6773df82e3f8d74aaec76175add5446fda5df38f2d4b39fd367",
     "src/baseagent/main.py:144-145": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4",
-    "applications/project_assistant/config.py:35-41": "0fc870741bb84fece6069612629bcacc178f3e37861c9b66066b2910c32cab59",
+    "applications/project_assistant/config.py:35-41": "431f42eeb330961c4d2ae3f07d9218517ba54c88882a214eaab51ceabafb8a79",
     "applications/project_assistant/rag/chunking.py:146-161": "48bb5991bf184474969d4a393de77f0462e474bc3f392b5f4c27d35dd542653a",
     "applications/project_assistant/rag/lexical.py:69-70": "f7eed170e1af25a2635a066534c0a1fd8c9fcf806e9c4afbbe25993a7f88adc1",
-    "applications/project_assistant/tools.py:50-54": "dd04ae88955763ee6295fe3d4e5dbdb633a255021a7d1b31a79670643127b1a3",
+    "applications/project_assistant/tools.py:54-58": "dd04ae88955763ee6295fe3d4e5dbdb633a255021a7d1b31a79670643127b1a3",
     "applications/project_assistant/rag/embedding.py:89-92": "c7b7d650fc44e30552082897b08facd1e4c1609b159b51d30748fe1fd4f7cc2d",
-    "applications/project_assistant/config.py:43-47": "15333f8d7dcf23752706b7ec755c91b2a694077ca4c0fbb343a6b5e957bb3d57",
+    "applications/project_assistant/config.py:43-50": "24736bd57c8ce00db80415cc414645f4124da89ac6a40aa9e3f7e810b8382b76",
     "applications/project_assistant/access.py:64-67": "e35ba50baa860b924dc17ac4561ce123c1934d9e491851cd0cbacaa7554ff349",
-    "applications/project_assistant/tools.py:98-107": "70a16c586ba4d1f46e2ce2ffc3103ab15c719e363708879a335f55fe22b7c9f8",
+    "applications/project_assistant/tools.py:104-113": "70a16c586ba4d1f46e2ce2ffc3103ab15c719e363708879a335f55fe22b7c9f8",
     "applications/project_assistant/rag/indexing.py:53-55": "c9a1c93b369d84ebccf67966dd398a5336c8d28d76063dd5cb8ed4be47b1ff14",
     "applications/project_assistant/rag/lexical.py:12-23": "14220a48cef51ba89aac678871fd6dd928ed7f518fde8a5cd3efcd34a9a16cdc",
     "applications/project_assistant/rag/lexical.py:24-28": "19c4419b09f80b1baa158c95b64d0f08bed8ddc7851c89f36719c1cc49e0708d",
     "applications/project_assistant/rag/hybrid.py:14-23": "3b3646a5982771c3ecc75273ec43cc4d6a20535290e84347a4dc426079e18a90",
-    "applications/project_assistant/tools.py:55-59": "e3856be0c0647e77224db243f7df978bf602844e0ee9e42302dcf56cbe7bb1cb",
-    "applications/project_assistant/tools.py:79-82": "68460d947b92f0d94d94d935fc56cf8c75f704aac3efb8cc89109b19295074e1",
-    "applications/project_assistant/tools.py:83-94": "f2310e5813a6ff01bbe3ce78793f30bf372ca27a41e297fbc36105f20628d70d",
+    "applications/project_assistant/tools.py:59-65": "a0ca4dc182ac09a013d54fe669f61038e264d46acd6f3821b60de0fb189c8cbc",
+    "applications/project_assistant/tools.py:85-88": "68460d947b92f0d94d94d935fc56cf8c75f704aac3efb8cc89109b19295074e1",
+    "applications/project_assistant/tools.py:89-100": "f2310e5813a6ff01bbe3ce78793f30bf372ca27a41e297fbc36105f20628d70d",
     "applications/project_assistant/rag/chunking.py:183-184": "d2837b399290b21b668928085dced83321a7cdd582805e2377c4e7b10d520d2a",
     "applications/project_assistant/rag/chunking.py:197-204": "5cf4866c77027c70558995de4b08b6a1fd0bf88fe22352f7dc006fc7673e77a9",
     "applications/project_assistant/rag/embedding.py:105-114": "18950a0a7428a1f072760d6820f48ba209a73f0713cfbf5d18b6e69a6a7e5c8f",
     "applications/project_assistant/tools.py:26-30": "e77e60a71a8953aaeac697e19c27022a29aad11d56b55273d241a8ea8afcde0d",
-    "applications/project_assistant/tools.py:41-48": "ca0ea661beb3cbd650d4b9d41df1666372e82d4aa9f4e4760cab358cb215e261",
-    "applications/project_assistant/config.py:85-87": "d46d52534e2e795605366b77f158a44f57740c933925a6d66e062a58dc6a5f56",
-    "applications/project_assistant/rag/retrieval.py:78-85": "292da8bcd2da7745aa695e24c0102de4a734577e442488780e59bc8075b6dbc7",
+    "applications/project_assistant/tools.py:42-52": "456b00527019305b8352ba0f2eba20484405cde16015c9da20704cabca7b2b53",
+    "applications/project_assistant/config.py:88-90": "141c95563f2c74040cedfeadb6d81dc484bb90b133e940b9fb019d3fbc8d5f8d",
+    "applications/project_assistant/rag/retrieval.py:91-101": "05216a327b917d4b38f882596d7a9e5494ae2fa94f917e4a8fd42114fe651347",
     "applications/project_assistant/rag/lexical.py:43-46": "c09cb799e2bab9692f179e43c636c0bc9580af290e9fe6fd96af18844b957bc7",
-    "applications/project_assistant/config.py:91-91": "160fdd098dfceece7d5700d12143f556917859e67b6a19d2113baafeca71fd52",
-    "applications/project_assistant/rag/retrieval.py:91-93": "44979a7ec35d2ed36998830719dcd8079c579e97855df00bdea40066a24afd2c",
-    "applications/project_assistant/config.py:88-90": "f753d76709ccf3e8e156bb243d9fc6b676ffbdd26b6b725ae500fd8ab745441f",
-    "applications/project_assistant/rag/retrieval.py:86-90": "8d2f9bd50bb876ac32667b0d68cc7a83a60e65c032307a2e39f93ba8f09b67f9",
+    "applications/project_assistant/config.py:94-94": "160fdd098dfceece7d5700d12143f556917859e67b6a19d2113baafeca71fd52",
+    "applications/project_assistant/rag/retrieval.py:133-135": "44979a7ec35d2ed36998830719dcd8079c579e97855df00bdea40066a24afd2c",
+    "applications/project_assistant/config.py:91-93": "f753d76709ccf3e8e156bb243d9fc6b676ffbdd26b6b725ae500fd8ab745441f",
+    "applications/project_assistant/rag/retrieval.py:124-128": "ca828d9cdf06e4e26e5e1bfdaeecac7ef740e5d9c4b040b3971995e96eefb606",
     "applications/project_assistant/rag/hybrid.py:17-23": "42f2258e21b2ac5e929e702404b7a3e2b52a1031ed6ea954d6a5a177dca313b5",
     "applications/project_assistant/corpus.py:64-71": "9b40d53cef3cfe46cd1e4e03de6f902d6f8a775880c2adc9ec2c9da24137826a",
-    "applications/project_assistant/tools.py:67-71": "a265d485acf521e5ecaa709b27ec6cac0b799b842669c50c49094843cb81a233",
+    "applications/project_assistant/tools.py:73-77": "a265d485acf521e5ecaa709b27ec6cac0b799b842669c50c49094843cb81a233",
     "applications/project_assistant/rag/chunking.py:25-32": "c52f276475af5c63e6bf94309b8f65a815cda41d199b5126ecb9bfec7752fb5b",
     "applications/project_assistant/rag/indexing.py:70-82": "9a2c40b75c49a3161ccf50aa9d18ecd53621c38b83ee6396ef132f17ff35543e",
-    "applications/project_assistant/tools.py:72-78": "eab17a9abed8cdeef0510971e2f6ef62cdb4c59bfa06aa0f66f070972ed8596c",
-    "scripts/query_knowledge_base.py:44-46": "a9ce06aa42eef237bae5536002924acc6073613cd304679b1fa8f548a9985459",
-    "scripts/query_knowledge_base.py:92-97": "b3bd0e1004c304e56c78ecaae6d4e7139225c21a92217901172df5723f9d8ba1",
+    "applications/project_assistant/tools.py:78-84": "eab17a9abed8cdeef0510971e2f6ef62cdb4c59bfa06aa0f66f070972ed8596c",
+    "scripts/query_knowledge_base.py:43-45": "a9ce06aa42eef237bae5536002924acc6073613cd304679b1fa8f548a9985459",
+    "scripts/query_knowledge_base.py:91-96": "b3bd0e1004c304e56c78ecaae6d4e7139225c21a92217901172df5723f9d8ba1",
     "applications/project_assistant/access.py:53-57": "803fd0cbc9343f4609f8e9551e1e0b6f1fcf4eabdb7ac91a9438c2a8a1eb910c",
     "scripts/build_knowledge_base.py:65-71": "7898ae5da7a067c6368d4c8bafdb471d0d10b806e542b05f01424d500a9813db",
     "applications/project_assistant/corpus.py:117-134": "39cf9f19cef1c73a1a80bbef0883997a160f9dd8ab2835aa76a000afff52cf3d",
     "applications/project_assistant/rag/indexing.py:72-76": "0432915987818e4b4a5a0935f2cfd9ff1044f421d1ba8830566fa7c570268f81",
-    "applications/project_assistant/rag/retrieval.py:107-113": "e5ae9ed3e25a7339c3c64d6bdf8f1924bed16f6e71698ad65b98f5bac1ee9c64",
-    "applications/project_assistant/rag/retrieval.py:23-27": "813991567d7cede35a5ca50a12f22708aabf27a749a5528cff4f17f9050a9c38",
-    "scripts/query_knowledge_base.py:84-87": "2671979fe40882cd64e4a151fb4055188a1ebc62d83b4058400c6930741ee6e8",
-    "applications/project_assistant/tools.py:95-96": "ffbe9c1c5d30fd3563846ae501db13ef47a5f61d529fe28334781ec0069a041c",
-    "applications/project_assistant/rag/retrieval.py:84-90": "d6ab24f2ff7f71546a753b1fa30a93617da5dfc68be56f4179ccf69f7a3750ce",
+    "applications/project_assistant/rag/retrieval.py:149-155": "e5ae9ed3e25a7339c3c64d6bdf8f1924bed16f6e71698ad65b98f5bac1ee9c64",
+    "applications/project_assistant/rag/retrieval.py:34-38": "813991567d7cede35a5ca50a12f22708aabf27a749a5528cff4f17f9050a9c38",
+    "scripts/query_knowledge_base.py:83-86": "2671979fe40882cd64e4a151fb4055188a1ebc62d83b4058400c6930741ee6e8",
+    "applications/project_assistant/tools.py:101-102": "c3244f59fb99b3d41b74931c99f5a2b6a5d2f370868a2e972f17a0da25b483d2",
+    "applications/project_assistant/rag/retrieval.py:99-110": "447bd5e1c57f02673becd7564c3887494db58aa1fce0addb3c0e6b726ab22876",
+    "applications/project_assistant/rag/retrieval.py:113-128": "627ef442908026990f4e5e700ba0608789c6e60eda0ce28bc9ecadbdcda6490d",
     "DEVELOPMENT_HANDOFF.md:96-96": "0ffa8093a8ae11a763326d3928af053f9baf8b56ed67724d7b65ecf45a34f586",
     "DEVELOPMENT_HANDOFF.md:128-128": "21e01a10e9147fea017a806fe40b4202a5186a9921fd0159ff50b8bd1f0f78cc",
     "applications/project_assistant/rag/embedding.py:70-71": "c9eeec9d03771fbd44fa3f490180e08a913831c81c64c21d4ca5b323ec2ffd15",
-    "applications/project_assistant/tools.py:58-59": "e2ef8f56b9555ed02a6992386fb1930c9e3e204032f34c227bc5f8ac2124efd5",
-    "applications/project_assistant/rag/retrieval.py:75-76": "f32dca460a48e4ffe4e128dabc6dc45a2e4042ddb2e9455bfce9cf173b3780f6",
+    "applications/project_assistant/tools.py:63-65": "687f95fa17d0a7dcc9045f6bd0ace839a51e6ac644e95c0396540473c7ea044e",
+    "applications/project_assistant/rag/retrieval.py:88-89": "2a631430634ac7a0b1f90b3774b3a3a409e29c02cc79f6b49b695a6da457e457",
     "DEVELOPMENT_HANDOFF.md:71-71": "f6401af3ffb163ccfdd3d12fecd3b6114186f33ed474e85058a31289a40395f3",
     "applications/project_assistant/rag/chunking.py:170-181": "a7a986e670104acbb0c6dcf13ded72bd1ad90de7d0f58fc7004700770c7970f8",
     "applications/project_assistant/rag/chunking.py:201-213": "42439d1f47b07539cdddad095fcce5c69549d2885b2efcd4158562a4f906c38a",
-    "applications/project_assistant/README.md:190-190": "c8daee0bf1ba20c4b6d91cedc45dce9cd1af7ac1601a9462c9843407c06cf40b",
+    "applications/project_assistant/README.md:211-211": "c8daee0bf1ba20c4b6d91cedc45dce9cd1af7ac1601a9462c9843407c06cf40b",
     "applications/project_assistant/rag/chunking.py:29-32": "cbaec869e5dedd0983bc1d55ac0160b30b846d4f6eac171987cdcd26b22c3971",
-    "applications/project_assistant/README.md:182-182": "ac842b232df675e74598c1488bd035ec61d53b6c7f2266d4ad485ec861244657",
+    "applications/project_assistant/README.md:203-203": "ac842b232df675e74598c1488bd035ec61d53b6c7f2266d4ad485ec861244657",
     "DEVELOPMENT_HANDOFF.md:75-75": "39e90f452fe0d3e1781e1214d73f7d0cf00e1d5db574d805cf5bf244ec745977",
-    "applications/project_assistant/rag/retrieval.py:75-85": "cb728a9c122f3b211dd733f0d9cfaac92dccc6664881941f75d52646c6dfe8ac",
+    "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
-    "applications/project_assistant/config.py:92-94": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89"
+    "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89"
   },
   "questions": [
     {
@@ -133,7 +134,7 @@
       "question": "Which function creates the knowledge_search tool package and what corpus version does it require?",
       "answer_summary": "knowledge_package requires a nonempty string corpus_version supplied by the host.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:24-47"
+        "applications/project_assistant/tools.py:24-51"
       ]
     },
     {
@@ -171,9 +172,9 @@
       "split": "tune",
       "category": "exact_identifier",
       "question": "What does retrieve return and how does min_score filter results?",
-      "answer_summary": "Evidence objects; in default vector mode distances above min_score are discarded (other modes treat it as a relevance floor).",
+      "answer_summary": "Evidence objects; default hybrid scores use a relevance floor. Explicit vector or vector fallback without reranking discards distances above min_score.",
       "expected_evidence": [
-        "applications/project_assistant/rag/retrieval.py:99-121"
+        "applications/project_assistant/rag/retrieval.py:141-163"
       ]
     },
     {
@@ -216,7 +217,7 @@
       "question": "How are stale or forged retrieval citations detected before knowledge_search returns evidence?",
       "answer_summary": "Read current bytes and compare exact lines, hash, doc_id and range; invalid results are skipped.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:63-82"
+        "applications/project_assistant/tools.py:69-88"
       ]
     },
     {
@@ -226,8 +227,8 @@
       "question": "Are smaller or larger retrieval scores better in this RAG implementation?",
       "answer_summary": "Vector scores without reranking are Chroma distances (lower is better); BM25, hybrid and reranked scores are relevance (higher is better).",
       "expected_evidence": [
-        "applications/project_assistant/rag/retrieval.py:75-92",
-        "applications/project_assistant/rag/retrieval.py:99-105"
+        "applications/project_assistant/rag/retrieval.py:88-134",
+        "applications/project_assistant/rag/retrieval.py:141-147"
       ]
     },
     {
@@ -257,7 +258,7 @@
       "question": "How do RAG_EMBEDDING_DIMENSION and RAG_EMBEDDING_BASE_URL reach the OpenAI client in the build script?",
       "answer_summary": "RAGConfig.from_env reads them; the build script forwards both; OpenAIEmbedding configures the client and request.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:80-99",
+        "applications/project_assistant/config.py:83-102",
         "scripts/build_knowledge_base.py:80-86",
         "applications/project_assistant/rag/embedding.py:55-73",
         "applications/project_assistant/rag/embedding.py:84-87",
@@ -274,7 +275,7 @@
         "applications/project_assistant/corpus.py:31-45",
         "applications/project_assistant/corpus.py:49-71",
         "applications/project_assistant/access.py:49-62",
-        "applications/project_assistant/tools.py:63-71"
+        "applications/project_assistant/tools.py:69-77"
       ]
     },
     {
@@ -285,7 +286,7 @@
       "answer_summary": "Chunk.citation uses path and inclusive lines; knowledge_search verifies current content, hash and identity.",
       "expected_evidence": [
         "applications/project_assistant/rag/chunking.py:35-37",
-        "applications/project_assistant/tools.py:63-82"
+        "applications/project_assistant/tools.py:69-88"
       ]
     },
     {
@@ -296,8 +297,8 @@
       "answer_summary": "VectorIndex.search formats results, retrieve creates Evidence objects, and the tool validates those sources.",
       "expected_evidence": [
         "applications/project_assistant/rag/indexing.py:126-136",
-        "applications/project_assistant/rag/retrieval.py:99-121",
-        "applications/project_assistant/tools.py:58-75"
+        "applications/project_assistant/rag/retrieval.py:141-163",
+        "applications/project_assistant/tools.py:63-81"
       ]
     },
     {
@@ -307,7 +308,7 @@
       "question": "How is the application knowledge tool registered as a harness capability extension?",
       "answer_summary": "knowledge_package returns ToolPackage with an install callback; assemble_capabilities invokes it and records the contract.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:98-110",
+        "applications/project_assistant/tools.py:104-116",
         "src/baseagent/capabilities/assembly.py:24-41"
       ]
     },
@@ -319,7 +320,7 @@
       "answer_summary": "compute_corpus_version hashes chunk identities; the host passes the version into the knowledge package binding.",
       "expected_evidence": [
         "applications/project_assistant/corpus.py:91-97",
-        "applications/project_assistant/tools.py:24-48"
+        "applications/project_assistant/tools.py:24-52"
       ]
     },
     {
@@ -329,8 +330,8 @@
       "question": "How does the query script pass endpoint and dimension settings to the embedding provider?",
       "answer_summary": "It reads RAGConfig.from_env and forwards embedding_dimension and embedding_base_url.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:80-99",
-        "scripts/query_knowledge_base.py:50-65"
+        "applications/project_assistant/config.py:83-102",
+        "scripts/query_knowledge_base.py:49-64"
       ]
     },
     {
@@ -367,7 +368,7 @@
       "answer_summary": "No. RAGConfig.from_env reads RAG_EMBEDDING_DIMENSIONS (with RAG_EMBEDDING_DIMENSION as an alias) and RAG_EMBEDDING_BASE_URL.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:72-75",
-        "applications/project_assistant/config.py:80-99"
+        "applications/project_assistant/config.py:83-102"
       ]
     },
     {
@@ -388,7 +389,7 @@
       "question": "The application README describes Mock embedding as hash plus random projection. Does the code use a random projection?",
       "answer_summary": "No. It maps SHA256 bytes directly to floats and pads zeros.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:180-185",
+        "applications/project_assistant/README.md:201-206",
         "applications/project_assistant/rag/embedding.py:134-152"
       ]
     },
@@ -413,7 +414,7 @@
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
         "src/baseagent/main.py:144-145",
-        "applications/project_assistant/tools.py:98-110"
+        "applications/project_assistant/tools.py:104-116"
       ]
     },
     {
@@ -509,7 +510,7 @@
       "question": "What happens when knowledge_search receives a whitespace-only query?",
       "answer_summary": "It raises ToolFailure with INVALID_ARGUMENTS and query must not be blank.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:50-54"
+        "applications/project_assistant/tools.py:54-58"
       ]
     },
     {
@@ -527,9 +528,9 @@
       "split": "test",
       "category": "exact_identifier",
       "question": "Which error does RAGConfig raise for an unknown retrieval_mode?",
-      "answer_summary": "ValueError: retrieval_mode must be vector, bm25, or hybrid.",
+      "answer_summary": "ValueError naming RAG_RETRIEVAL_MODE/retrieval_mode, the invalid value, and allowed modes vector, bm25, hybrid.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:43-47"
+        "applications/project_assistant/config.py:43-50"
       ]
     },
     {
@@ -549,7 +550,7 @@
       "question": "Where is the knowledge_search top_k argument limited to 1 through 20?",
       "answer_summary": "The tool registration JSON schema sets minimum 1 and maximum 20.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:98-107"
+        "applications/project_assistant/tools.py:104-113"
       ]
     },
     {
@@ -599,7 +600,7 @@
       "question": "Why does knowledge_search retrieve four times the requested top_k?",
       "answer_summary": "Extra candidates compensate for denied or stale hits removed during validation.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:55-59"
+        "applications/project_assistant/tools.py:59-65"
       ]
     },
     {
@@ -609,7 +610,7 @@
       "question": "Why can redaction cause knowledge_search to drop a candidate rather than rewrite its citation?",
       "answer_summary": "If a path or doc_id changes under redaction, it is skipped to avoid misleading source identity.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:79-82"
+        "applications/project_assistant/tools.py:85-88"
       ]
     },
     {
@@ -619,7 +620,7 @@
       "question": "How does knowledge_search bound the size of returned evidence?",
       "answer_summary": "Content is truncated to 6000 characters and the serialized evidence list is capped at 48000 bytes.",
       "expected_evidence": [
-        "applications/project_assistant/tools.py:83-94"
+        "applications/project_assistant/tools.py:89-100"
       ]
     },
     {
@@ -651,7 +652,7 @@
       "answer_summary": "Recovery binds the redaction configuration without including credentials verbatim.",
       "expected_evidence": [
         "applications/project_assistant/tools.py:26-30",
-        "applications/project_assistant/tools.py:41-48"
+        "applications/project_assistant/tools.py:42-52"
       ]
     },
     {
@@ -661,8 +662,8 @@
       "question": "How does RAG_BM25_K1 affect the lexical index built by retrieve?",
       "answer_summary": "RAGConfig.from_env parses it as float; retrieve passes config.bm25_k1 to BM25Index.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:85-87",
-        "applications/project_assistant/rag/retrieval.py:78-85",
+        "applications/project_assistant/config.py:88-90",
+        "applications/project_assistant/rag/retrieval.py:91-101",
         "applications/project_assistant/rag/lexical.py:43-46"
       ]
     },
@@ -673,8 +674,8 @@
       "question": "How does RAG_CANDIDATE_DEPTH control the candidates sent to an optional reranker?",
       "answer_summary": "Configuration reads the environment value and retrieve slices to candidate_depth before reranking.",
       "expected_evidence": [
-        "applications/project_assistant/config.py:91-91",
-        "applications/project_assistant/rag/retrieval.py:91-93"
+        "applications/project_assistant/config.py:94-94",
+        "applications/project_assistant/rag/retrieval.py:133-135"
       ]
     },
     {
@@ -684,8 +685,8 @@
       "question": "How is the RAG_RRF_K environment variable used during hybrid retrieval?",
       "answer_summary": "Configuration reads the float and retrieve forwards it to reciprocal_rank_fusion, which uses weight/(rrf_k+rank).",
       "expected_evidence": [
-        "applications/project_assistant/config.py:88-90",
-        "applications/project_assistant/rag/retrieval.py:86-90",
+        "applications/project_assistant/config.py:91-93",
+        "applications/project_assistant/rag/retrieval.py:124-128",
         "applications/project_assistant/rag/hybrid.py:17-23"
       ]
     },
@@ -697,7 +698,7 @@
       "answer_summary": "Both catch ToolFailure and skip the inaccessible file or evidence candidate.",
       "expected_evidence": [
         "applications/project_assistant/corpus.py:64-71",
-        "applications/project_assistant/tools.py:67-71"
+        "applications/project_assistant/tools.py:73-77"
       ]
     },
     {
@@ -709,7 +710,7 @@
       "expected_evidence": [
         "applications/project_assistant/rag/chunking.py:25-32",
         "applications/project_assistant/rag/indexing.py:70-82",
-        "applications/project_assistant/tools.py:72-78"
+        "applications/project_assistant/tools.py:78-84"
       ]
     },
     {
@@ -719,8 +720,8 @@
       "question": "How does the interactive query script expose source visibility configuration to knowledge_package?",
       "answer_summary": "It parses include/exclude globs and constructs SourceAccess; SourceAccess.read enforces them.",
       "expected_evidence": [
-        "scripts/query_knowledge_base.py:44-46",
-        "scripts/query_knowledge_base.py:92-97",
+        "scripts/query_knowledge_base.py:43-45",
+        "scripts/query_knowledge_base.py:91-96",
         "applications/project_assistant/access.py:53-57"
       ]
     },
@@ -743,8 +744,8 @@
       "answer_summary": "VectorIndex stores line_start/end, retrieve forms line_range, and Evidence.citation formats path:start-end.",
       "expected_evidence": [
         "applications/project_assistant/rag/indexing.py:72-76",
-        "applications/project_assistant/rag/retrieval.py:107-113",
-        "applications/project_assistant/rag/retrieval.py:23-27"
+        "applications/project_assistant/rag/retrieval.py:149-155",
+        "applications/project_assistant/rag/retrieval.py:34-38"
       ]
     },
     {
@@ -752,11 +753,12 @@
       "split": "tune",
       "category": "cross_file",
       "question": "How do the query script and knowledge_search handle an empty index?",
-      "answer_summary": "The script exits with an error; the tool avoids retrieval and returns empty evidence.",
+      "answer_summary": "The script exits with an error; the default hybrid tool delegates to retrieve, which returns empty evidence without embedding when BM25 and vector indexes are empty.",
       "expected_evidence": [
-        "scripts/query_knowledge_base.py:84-87",
-        "applications/project_assistant/tools.py:55-59",
-        "applications/project_assistant/tools.py:95-96"
+        "scripts/query_knowledge_base.py:83-86",
+        "applications/project_assistant/tools.py:59-65",
+        "applications/project_assistant/tools.py:101-102",
+        "applications/project_assistant/rag/retrieval.py:99-110"
       ]
     },
     {
@@ -767,7 +769,7 @@
       "answer_summary": "Yes, hybrid mode calls reciprocal_rank_fusion on vector and lexical rankings.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:90-90",
-        "applications/project_assistant/rag/retrieval.py:84-90"
+        "applications/project_assistant/rag/retrieval.py:113-128"
       ]
     },
     {
@@ -778,7 +780,7 @@
       "answer_summary": "Yes; it invokes the supplied reranker on candidate_depth results.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:96-96",
-        "applications/project_assistant/rag/retrieval.py:91-93"
+        "applications/project_assistant/rag/retrieval.py:133-135"
       ]
     },
     {
@@ -801,8 +803,8 @@
       "answer_summary": "The multiplier belongs to knowledge_search; direct vector retrieve uses top_k unless reranking is supplied.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:96-96",
-        "applications/project_assistant/tools.py:58-59",
-        "applications/project_assistant/rag/retrieval.py:75-76"
+        "applications/project_assistant/tools.py:63-65",
+        "applications/project_assistant/rag/retrieval.py:88-89"
       ]
     },
     {
@@ -824,7 +826,7 @@
       "question": "Does the README claim that corpus versions hash only file content fully describe compute_corpus_version?",
       "answer_summary": "No; it hashes ordered chunk doc_id values, which include path and line ranges.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:190-190",
+        "applications/project_assistant/README.md:211-211",
         "applications/project_assistant/corpus.py:91-97",
         "applications/project_assistant/rag/chunking.py:29-32"
       ]
@@ -836,7 +838,7 @@
       "question": "The README selection table lists 1536 embedding dimensions. Must text-embedding-3-large use that size?",
       "answer_summary": "No; its fallback is 3072 and a configured or inferred dimension takes precedence.",
       "expected_evidence": [
-        "applications/project_assistant/README.md:182-182",
+        "applications/project_assistant/README.md:203-203",
         "applications/project_assistant/rag/embedding.py:122-125"
       ]
     },
@@ -848,8 +850,8 @@
       "answer_summary": "Yes, RAG_RETRIEVAL_MODE is read, and bm25 mode uses the lexical index.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:75-75",
-        "applications/project_assistant/config.py:85-87",
-        "applications/project_assistant/rag/retrieval.py:75-85"
+        "applications/project_assistant/config.py:88-90",
+        "applications/project_assistant/rag/retrieval.py:88-101"
       ]
     },
     {
@@ -860,7 +862,7 @@
       "answer_summary": "No; RAG_EMBEDDING_API_KEY takes priority over OPENAI_API_KEY.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:72-72",
-        "applications/project_assistant/config.py:92-94"
+        "applications/project_assistant/config.py:95-97"
       ]
     },
     {

@@ -75,7 +75,7 @@ Phase 2 没有新增第三方依赖；当前没有使用 tiktoken。
 - [x] 返回前脱敏正文与章节等元数据，敏感内容不会先以原文进入工具消息、SQLite 检查点或模型录像。
 - [x] 确定性模型的录制/离线回放覆盖真实 Chroma 查询及工具执行，保留严格请求匹配。
 
-返回结构包含 `evidence`、`corpus_version`、距离分数语义及 `reference_only`。每条证据包含可定位引用、片段摘要和当前文件 SHA256，并标记脱敏/截断。检索文本是工具参考数据，不提升为系统指令；模型仍可能受提示词注入影响，本阶段没有宣称解决语义层注入问题。
+返回结构包含 `evidence`、`corpus_version`、实际 `retrieval_mode`、`score_kind` 分数语义及 `reference_only`。每条证据包含可定位引用、片段摘要和当前文件 SHA256，并标记脱敏/截断。检索文本是工具参考数据，不提升为系统指令；模型仍可能受提示词注入影响，本阶段没有宣称解决语义层注入问题。
 
 宿主通过 `SourceAccess(workspace, include_patterns, exclude_patterns)` 配置知识权限，默认允许当前工作区内的 `*.md`、`*.py`，同时强制排除私有路径。`include_patterns=()` 表示全部不可见。该 ACL 独立于 coding 的 `ToolPolicy`：宿主需为两者配置一致的文件范围；`ToolPolicy` 仍可对整个 `knowledge_search` 设置 allow/ask/deny，注册工具不会扩大写文件或命令权限。
 
@@ -166,6 +166,15 @@ RAG_EMBEDDING_BATCH_SIZE=10
 # 可选：请求指定维度
 # RAG_EMBEDDING_DIMENSIONS=1024
 
+# 检索配置（默认值；也支持 vector / bm25）
+RAG_RETRIEVAL_MODE=hybrid
+RAG_RRF_K=30
+RAG_VECTOR_WEIGHT=1
+RAG_BM25_WEIGHT=2
+RAG_CANDIDATE_DEPTH=20
+RAG_BM25_K1=1.5
+RAG_BM25_B=0.75
+
 # 索引配置
 RAG_COLLECTION_NAME=baseagent_docs
 RAG_INDEX_DIR=.baseagent/rag_index
@@ -174,6 +183,18 @@ RAG_INDEX_DIR=.baseagent/rag_index
 `RAG_EMBEDDING_API_KEY` 优先于 `OPENAI_API_KEY`；批次大小默认为 100，百炼请设为 10（每次请求最多 10 个输入）。`RAG_EMBEDDING_DIMENSIONS` 可省略，兼容旧名 `RAG_EMBEDDING_DIMENSION`，两者同时设置时优先使用新名。构建、查询和评估脚本读取同一组配置，不自动加载 `.env`；更换模型或维度后须重建索引。
 
 脚本通过 `--corpus-root`、`--index-dir`、`--top-k` 等参数选择路径与数量；这些参数不自动读取同名的其他环境变量。
+
+`RAGConfig()`、`RAGConfig.from_env()`、`retrieve`、`knowledge_search` 和查询脚本默认使用 hybrid。非法 `RAG_RETRIEVAL_MODE` 会抛出包含配置项、输入值和允许值的 `ValueError`。工具包创建时绑定检索配置；更改配置后应重新构造工具包。
+
+hybrid 使用 BM25 与向量候选的加权 RRF。BM25 默认从向量 collection 的正文和元数据构建，也可向 `retrieve` 传入可复用的 `lexical_index`。回退规则：
+
+- BM25 语料为空、读取/构建/查询失败：回退 vector，返回原始距离（越低越好），`min_score` 是距离上限。
+- 向量索引缺失（`retrieve(..., index=None, lexical_index=...)`）、为空、计数/查询失败或无候选，且 BM25 可用：回退 bm25，返回原始 BM25 相关性（越高越好），`min_score` 是相关性下限。
+- 每个进程对每种回退方向仅记录一次 warning，不输出语料或底层异常中的敏感信息。空索引没有可检索内容时返回空证据；BM25 不可用且向量操作也失败则报错。显式 vector/bm25 不切换模式，操作失败直接报错。
+
+正常 hybrid 的 RRF 分数越高越好，`min_score` 为相关性下限。`knowledge_search` 返回实际模式和对应的 `score_kind`，查询脚本按实际分数显示 distance/relevance。回退后应按实际分数语义解释结果，不混用阈值。
+
+默认值依据[80 题集评测报告](evaluation/reports/bailian-80q-summary-2026-10-21.md)：test 上 vector R@1/MRR 为 **0.378/0.678**，bm25 **0.407/0.759**，hybrid **0.567/0.845**，hybrid+qwen **0.583/0.857**。参数在 tune 上选择，test 使用固定参数。qwen 的收益小且每查询约 **1.4 万 token**，故保持可选、默认关闭；只有显式向 `retrieve` 传入 reranker 才会重排，评测 API 还需 `--allow-rerank-api --max-rerank-tokens N` 显式启用。普通 hybrid 不调用重排 API；向量分支沿用配置的 embedding provider，离线测试使用 Mock。本次没有重跑付费评测。
 
 ## 技术选型
 
@@ -193,7 +214,7 @@ RAG_INDEX_DIR=.baseagent/rag_index
 
 ## 后续优化方向
 
-- [ ] 混合检索 (BM25 + 向量,重排)
+- [x] 默认混合检索 (BM25 + 向量 RRF，可选重排)
 - [ ] Chunk 预算控制 (限制 top-k tokens ≤ N)
 - [ ] 增量索引更新 (基于 corpus version diff)
 - [ ] Cross-encoder 重排 (可选)

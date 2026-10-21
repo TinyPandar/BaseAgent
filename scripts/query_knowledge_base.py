@@ -1,6 +1,5 @@
 """Script to query the BaseAgent knowledge base."""
 
-# ruff: noqa: E402
 
 import argparse
 import sys
@@ -10,10 +9,10 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from applications.project_assistant.config import RAGConfig
-from applications.project_assistant.rag.embedding import OpenAIEmbedding, MockEmbedding
-from applications.project_assistant.rag.indexing import VectorIndex
 from applications.project_assistant.access import SourceAccess
+from applications.project_assistant.config import RAGConfig
+from applications.project_assistant.rag.embedding import MockEmbedding, OpenAIEmbedding
+from applications.project_assistant.rag.indexing import VectorIndex
 from applications.project_assistant.tools import knowledge_package
 from baseagent.kernel import ToolRegistry
 from baseagent.tools.workspace import Workspace
@@ -76,7 +75,7 @@ def main():
             persist_directory=args.index_dir,
             collection_name=config.collection_name,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - sanitize optional backend errors at the CLI boundary
         print(f"ERROR: Failed to load index ({type(e).__name__})")
         print("Run scripts/build_knowledge_base.py first to build the index")
         return 1
@@ -106,7 +105,8 @@ def main():
 
     # Display results
     for i, evidence in enumerate(evidence_list, 1):
-        print(f"--- Result {i} (distance: {evidence['score']:.4f}) ---")
+        score_label = "distance" if result.data["score_kind"] == "distance_lower_is_better" else "relevance"
+        print(f"--- Result {i} ({score_label}: {evidence['score']:.4f}) ---")
         print(f"Citation: {evidence['citation']}")
         print(f"Type: {evidence['chunk_type']}")
         if evidence["parent_section"]:

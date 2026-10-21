@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from applications.project_assistant.config import RAGConfig
 from applications.project_assistant.corpus import compute_corpus_version
 from applications.project_assistant.rag.retrieval import retrieve
 
@@ -90,10 +91,16 @@ def evaluate(dataset, index, *, top_k=5):
     if top_k < 5:
         raise ValueError("top_k must be at least 5 for Recall@5")
     rows = []
+    config = RAGConfig.from_env()
+    default_kind = ("distance_lower_is_better" if config.retrieval_mode == "vector"
+                    else "relevance_higher_is_better")
     for question in dataset["questions"]:
-        results = retrieve(question["question"], index, top_k=min(top_k, index.count())) if index.count() else []
+        diagnostics = {"retrieval_mode": config.retrieval_mode, "score_kind": default_kind}
+        results = retrieve(question["question"], index, top_k=top_k,
+                           config=config, diagnostics=diagnostics)
         rows.append({"id": question["id"], "split": question["split"],
                      "category": question["category"],
+                     **diagnostics,
                      **question_metrics(question["expected_evidence"], results),
                      "retrieved": [{"citation": result.citation, "score": result.score}
                                    for result in results]})
@@ -111,8 +118,10 @@ def evaluate(dataset, index, *, top_k=5):
             "no_answer": {"count": len(unanswerable), "top_scores": [
                 {"id": row["id"], "score": row["top_score"]} for row in unanswerable]},
         }
+    kinds = {row["score_kind"] for row in rows}
     return {"splits": splits, "questions": rows, "top_k": top_k,
-            "mrr_cutoff": top_k, "score_kind": "distance_lower_is_better"}
+            "retrieval_mode": config.retrieval_mode, "mrr_cutoff": top_k,
+            "score_kind": next(iter(kinds), default_kind) if len(kinds) <= 1 else "mixed"}
 
 
 def write_report(report):
