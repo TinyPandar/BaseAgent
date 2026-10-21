@@ -22,6 +22,11 @@ from applications.project_assistant.evaluation.retrieval import (
     validate_question_set,
     write_report,
 )
+from applications.project_assistant.rag.cache import (
+    CachedEmbedding,
+    DiskCache,
+    usage_stats,
+)
 from applications.project_assistant.rag.embedding import MockEmbedding, OpenAIEmbedding
 from applications.project_assistant.rag.hybrid import reciprocal_rank_fusion
 from applications.project_assistant.rag.lexical import BM25Index, chunk_result
@@ -70,43 +75,25 @@ def validate_cache_path(path, roots):
                 raise ValueError("--query-cache must be gitignored or outside git")
 
 
-def query_vectors(questions, path, config, *, mock=False):
-    """Embed only cache misses; bind cache to provider/model/dimension/endpoint."""
-    identity = {"provider": "mock" if mock else "openai", "model": config.embedding_model,
-                "dimension": config.embedding_dimension,
-                "endpoint_fingerprint": sha256((config.embedding_base_url or "").encode()).hexdigest()}
-    cache = json.loads(path.read_text()) if path.exists() else {"identity": identity, "vectors": {}}
-    if cache["identity"] != identity:
-        raise ValueError("query cache embedding configuration mismatch; use another cache file")
-    vectors = cache["vectors"]
-    missing = list(dict.fromkeys(q["question"] for q in questions if q["question"] not in vectors))
-    provider = None
-    if missing:
-        provider = MockEmbedding(config.embedding_dimension or 1536) if mock else OpenAIEmbedding(
+def query_vectors(questions, path, config, *, mock=False, no_cache=False, max_tokens=None):
+    """Share the chunk cache; construct the API client only when a batch misses.
+
+    --query-cache remains an optional directory override for older invocations.
+    """
+    cache = None if no_cache else DiskCache(path)
+    provider = CachedEmbedding(
+        lambda: MockEmbedding(config.embedding_dimension or 1536) if mock else OpenAIEmbedding(
             api_key=config.openai_api_key, model=config.embedding_model,
             dimension=config.embedding_dimension, base_url=config.embedding_base_url,
-            batch_size=config.embedding_batch_size)
-        for offset in range(0, len(missing), config.embedding_batch_size):
-            batch = missing[offset:offset + config.embedding_batch_size]
-            try:
-                embedded = provider.embed(batch)
-            except Exception:  # noqa: BLE001 -- SDK diagnostics may contain credentials/endpoint.
-                raise RuntimeError("query embedding request failed") from None
-            vectors.update(zip(batch, embedded))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(path.name + ".tmp")
-            temporary.write_text(json.dumps(cache), encoding="utf-8")
-            temporary.replace(path)
-    selected = {q["question"]: vectors[q["question"]] for q in questions}
-    dimensions = {len(vector) for vector in selected.values()}
-    if (len(dimensions) != 1 or not next(iter(dimensions), 0)
-            or any(not isinstance(x, (int, float)) or not math.isfinite(x)
-                   for vector in selected.values() for x in vector)):
-        raise ValueError("invalid cached query vectors")
-    return selected, {"api_calls": getattr(provider, "api_calls", 0),
-                      "total_tokens": getattr(provider, "total_tokens", 0),
-                      "estimated_tokens": sum(math.ceil(len(q) / 2) for q in missing),
-                      "cache_hits": len(selected) - len(missing)}
+            batch_size=config.embedding_batch_size),
+        provider="mock" if mock else "openai",
+        model="mock-sha256" if mock else config.embedding_model,
+        dimensions=(config.embedding_dimension or 1536) if mock else config.embedding_dimension,
+        batch_size=config.embedding_batch_size, cache=cache,
+        max_tokens=None if mock else max_tokens)
+    texts = list(dict.fromkeys(q["question"] for q in questions))
+    vectors = provider.embed(texts)
+    return dict(zip(texts, vectors)), provider.usage()
 
 
 def hybrid_params(value):
@@ -126,7 +113,10 @@ def main(argv=None):
     parser.add_argument("--questions", type=Path, default=QUESTION_SET)
     parser.add_argument("--index-dir", type=Path, default=project_root / ".baseagent/rag_index")
     parser.add_argument("--collection-name")
-    parser.add_argument("--query-cache", type=Path, default=project_root / ".baseagent/query_embeddings.json")
+    parser.add_argument("--query-cache", type=Path, default=None,
+                        help="Cache directory override (default: RAG_CACHE_DIR or .baseagent/cache)")
+    parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--mock-embedding", action="store_true")
     parser.add_argument("--split", choices=["tune"], default=None)
     parser.add_argument("--final", action="store_true")
@@ -137,6 +127,8 @@ def main(argv=None):
     parser.add_argument("--allow-rerank-api", action="store_true")
     parser.add_argument("--max-rerank-tokens", type=int)
     args = parser.parse_args(argv)
+    if args.max_tokens is not None and args.max_tokens < 0:
+        parser.error("--max-tokens must be nonnegative")
     if args.final and args.split:
         parser.error("choose --split tune or --final")
     if args.allow_rerank_api and (args.max_rerank_tokens is None or args.max_rerank_tokens < 0):
@@ -175,9 +167,11 @@ def run(args):
     version = compute_corpus_version(chunks)
     collection = open_frozen_index(args.index_dir, args.collection_name or config.collection_name,
                                    chunks, version)
-    validate_cache_path(args.query_cache, [project_root, args.corpus_root])
+    if args.query_cache is not None and not args.no_cache:
+        validate_cache_path(args.query_cache, [project_root, args.corpus_root])
     vectors, embedding_usage = query_vectors(dataset["questions"], args.query_cache, config,
-                                              mock=args.mock_embedding or config.embedding_provider == "mock")
+                                              mock=args.mock_embedding or config.embedding_provider == "mock",
+                                              no_cache=args.no_cache, max_tokens=args.max_tokens)
     lexical = BM25Index(chunks, config.bm25_k1, config.bm25_b)
     max_depth = max(50, params["candidate_depth"] if params else 50)
     vector_cache, lexical_cache = {}, {}
@@ -193,7 +187,8 @@ def run(args):
                                        result["metadatas"][0], result["distances"][0])]
         return vector_cache[query]
 
-    reranker = QwenRerank(max_tokens=args.max_rerank_tokens, allow_api=True) if (
+    reranker = QwenRerank(max_tokens=args.max_rerank_tokens, allow_api=True,
+                           cache=None if args.no_cache else DiskCache(args.query_cache)) if (
         "hybrid+qwen" in names) else None
     split = "test" if args.final else "tune"
     reports = {}
@@ -245,8 +240,7 @@ def run(args):
               "chunk_count": collection.count(), "embedding_usage": embedding_usage,
               "embedding_model": config.embedding_model,
               "embedding_provider": "mock" if args.mock_embedding else config.embedding_provider,
-              "rerank_usage": {key: getattr(reranker, key, 0) for key in
-                               ("api_calls", "total_tokens", "estimated_tokens", "usage_estimated")},
+              "rerank_usage": reranker.usage() if reranker else usage_stats(),
               "bm25_params": {"k1": config.bm25_k1, "b": config.bm25_b}}
     report["api_calls"] = embedding_usage["api_calls"] + report["rerank_usage"]["api_calls"]
     report["total_tokens"] = embedding_usage["total_tokens"] + report["rerank_usage"]["total_tokens"]

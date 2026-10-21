@@ -20,3 +20,6 @@ chainlit.md
 # Private model recordings; only synthetic fixtures belong in tests/cassettes.
 tests/cassettes_local/
 .cassette-*
+
+# Local RAG embedding and rerank caches
+.baseagent/cache/

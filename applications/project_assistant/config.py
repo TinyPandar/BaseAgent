@@ -14,7 +14,7 @@ class RAGConfig:
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int | None = None
     embedding_base_url: str | None = None
-    embedding_batch_size: int = 100
+    embedding_batch_size: int = 10
 
     # Index configuration
     index_persist_dir: str | None = ".baseagent/rag_index"
@@ -93,7 +93,7 @@ class RAGConfig:
             openai_api_key=(os.getenv("RAG_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")),
             embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
             embedding_dimension=int(dimensions) if dimensions is not None else None,
-            embedding_batch_size=int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", "100")),
+            embedding_batch_size=int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", "10")),
             embedding_base_url=os.getenv("RAG_EMBEDDING_BASE_URL"),
             index_persist_dir=os.getenv("RAG_INDEX_DIR", ".baseagent/rag_index"),
             collection_name=os.getenv("RAG_COLLECTION_NAME", "baseagent_docs"),

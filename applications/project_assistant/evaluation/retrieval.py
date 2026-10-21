@@ -124,4 +124,15 @@ def write_report(report):
     with path.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, allow_nan=False)
         handle.write("\n")
+    if "embedding_usage" in report or "rerank_usage" in report:
+        lines = ["# Retrieval evaluation", "",
+                 "| Cache | Hits | Misses | Hit rate | API calls | Sent token estimate |",
+                 "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        for name in ("embedding", "rerank"):
+            usage = report.get(name + "_usage", {})
+            lines.append(
+                f"| {name} | {usage.get('cache_hits', 0)} | {usage.get('cache_misses', 0)} | "
+                f"{usage.get('cache_hit_rate', 0):.2%} | {usage.get('api_calls', 0)} | "
+                f"{usage.get('estimated_tokens', 0)} |")
+        path.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

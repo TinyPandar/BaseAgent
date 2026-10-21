@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "dbceda73af46de89",
+  "corpus_version": "24748534e55942b1",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
@@ -9,7 +9,7 @@
     "applications/project_assistant/tools.py:24-47": "6d1e26013c8eb6934f203066d5ddb47d8892e56dd79e5ea8af55743c0747c37f",
     "applications/project_assistant/access.py:49-62": "f59d14753ae7e3e7684931e1a9f32d04bed19043e840754276e442afd516b5ef",
     "applications/project_assistant/rag/chunking.py:89-101": "da0c89d99cd601624e63600b899712e6f2521654152680f50f4329554c1aafbc",
-    "applications/project_assistant/rag/embedding.py:138-156": "b7afa1b184baaf9bb8a59bde677b95ca471f03544f5c66396ccce4ee30c2118b",
+    "applications/project_assistant/rag/embedding.py:134-152": "26c42eb8180b4dfe893597c51d954fa77e4658d61292858e53cd7022dd5a8a30",
     "applications/project_assistant/rag/retrieval.py:99-121": "eebcb8d99fbbb9063aff6becde0dec2ceb9b98acd6b441eebc3374dc0ca12844",
     "applications/project_assistant/rag/chunking.py:12-37": "7caf2c88bc08cfdbdc064eb174e250fadd946999360da274d6b568fd71651253",
     "applications/project_assistant/access.py:18-27": "cabc78d4ce97b2dd61a5761d081474b92b5d4243c183196f586ebeaee883a34d",
@@ -20,12 +20,12 @@
     "applications/project_assistant/rag/retrieval.py:75-92": "5d0acdf762701290dce6456a73426670341c7c50e2247eadc99a0a4e7a2538d6",
     "applications/project_assistant/rag/retrieval.py:99-105": "e561b3631121b0dfb02f14e227a3385a43685ec3bf51f165c46760b1f8395163",
     "applications/project_assistant/rag/chunking.py:115-143": "3bfaf64c133043a418b65c4d59a3c4f987654681060e8474618721d1094005cd",
-    "applications/project_assistant/rag/embedding.py:132-164": "0b97fc933f8ed20d09e167585fdca127596275df6e48f61cb8442fbd083999c6",
-    "applications/project_assistant/config.py:80-99": "5f3378dcb912eea3fcd2eb5a484119d7163cd8868422424eb439bdc09524bdc9",
+    "applications/project_assistant/rag/embedding.py:128-160": "8250c1cbecb3e3d9f5fb1cc6d99fcd666a4e06970eb58007de6c4aca328caac9",
+    "applications/project_assistant/config.py:80-99": "700098ac6a26e264f833fea6dc9abfa110f3d66a10df894978ff02a9770e0d41",
     "scripts/build_knowledge_base.py:80-86": "d19197f58c59fd1753acc4bfac5b9bbb4aaa4b180e530a5faebf5f1f69e031de",
-    "applications/project_assistant/rag/embedding.py:59-77": "fc2073852af6196e7ee105a158982ed9758c93c9f554ce543268f5eecbe946eb",
-    "applications/project_assistant/rag/embedding.py:88-91": "b721ca58ea502f38226fb8db49af5b32898412621185e1579423ec85bd113880",
-    "applications/project_assistant/rag/embedding.py:98-105": "d5a56464f4677794d3f6f66b9d42608ef9286166ee22cd5b1c9523294a94585b",
+    "applications/project_assistant/rag/embedding.py:55-73": "9c6fba54e0a872685f1992c5c21612c53a7fb2693bc4c78f422352c4ada6855d",
+    "applications/project_assistant/rag/embedding.py:84-87": "b721ca58ea502f38226fb8db49af5b32898412621185e1579423ec85bd113880",
+    "applications/project_assistant/rag/embedding.py:94-101": "d5a56464f4677794d3f6f66b9d42608ef9286166ee22cd5b1c9523294a94585b",
     "applications/project_assistant/tools.py:63-71": "561cc6b3a8ed9b70a28cab6947b489fb53941fdbe2d1c50145e6fda666bdb299",
     "applications/project_assistant/rag/chunking.py:35-37": "a140e6db70dd395041b80789dd5f89c48c729620d730496b263835d6551d589a",
     "applications/project_assistant/rag/indexing.py:126-136": "935e9a4982d9f24758e3db46326c575091ae593188876f6c89960490f511d535",
@@ -35,11 +35,11 @@
     "scripts/query_knowledge_base.py:50-65": "3f6183dce99e800d2d13aea3e52f14c30a7524550d542da91859c4175d85ba2e",
     "DEVELOPMENT_HANDOFF.md:3-5": "8c88d4052cae35cb58b4fbee3b06c5d1b1e756a1b41775b597e9bf2499437119",
     "DEVELOPMENT_HANDOFF.md:71-75": "1e490b23ba7b983d112ab51ec6e8f7029e21ebc298f7d61399faa922e9ef1348",
-    "applications/project_assistant/rag/embedding.py:93-119": "7b0c0569de6543177535f9a0f72e54f602c136228f1ce8bea04c892d39d1fb79",
-    "applications/project_assistant/rag/embedding.py:126-129": "239cfe638233e844c19967da7afaa9d3e0121580fcd5c4fa6089ef51c83ff435",
+    "applications/project_assistant/rag/embedding.py:89-115": "199717671c243b4bf1c1c9aa0062e82a8ed9a205830569dfa1ea022ad897830a",
+    "applications/project_assistant/rag/embedding.py:122-125": "239cfe638233e844c19967da7afaa9d3e0121580fcd5c4fa6089ef51c83ff435",
     "DEVELOPMENT_HANDOFF.md:72-75": "8e36aa3e36a441a022e36268ce2935e106eeafbd9e57272b65d975daa8c64c57",
     "DEVELOPMENT_HANDOFF.md:90-90": "051167b10b797838ccdf5625f3ee96d1a615f1e61c9d35596c987c36d2a2dcf4",
-    "scripts/evaluate_retrieval.py:84-100": "45e71827dac20b2f4185e6007642a919c36b07a5b6c7a3ef93b18552612f8ca8",
+    "scripts/evaluate_retrieval.py:94-112": "02eb79a4f6eb1aa77ccd5feccbc14053f5b24912c19e4766c1a57365f5af53b6",
     "applications/project_assistant/README.md:180-185": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
     "DEVELOPMENT_HANDOFF.md:84-88": "94f8b40aa6d9e605374432b7a564deebefbba0f3bd54bdaf031e1c245949b883",
     "DEVELOPMENT_HANDOFF.md:40-40": "40ec18e30df8d6773df82e3f8d74aaec76175add5446fda5df38f2d4b39fd367",
@@ -48,7 +48,7 @@
     "applications/project_assistant/rag/chunking.py:146-161": "48bb5991bf184474969d4a393de77f0462e474bc3f392b5f4c27d35dd542653a",
     "applications/project_assistant/rag/lexical.py:69-70": "f7eed170e1af25a2635a066534c0a1fd8c9fcf806e9c4afbbe25993a7f88adc1",
     "applications/project_assistant/tools.py:50-54": "dd04ae88955763ee6295fe3d4e5dbdb633a255021a7d1b31a79670643127b1a3",
-    "applications/project_assistant/rag/embedding.py:93-96": "9341124af303ccbaba4216535a5ba96b690d294662c3d10d972771960bb348a2",
+    "applications/project_assistant/rag/embedding.py:89-92": "c7b7d650fc44e30552082897b08facd1e4c1609b159b51d30748fe1fd4f7cc2d",
     "applications/project_assistant/config.py:43-47": "15333f8d7dcf23752706b7ec755c91b2a694077ca4c0fbb343a6b5e957bb3d57",
     "applications/project_assistant/access.py:64-67": "e35ba50baa860b924dc17ac4561ce123c1934d9e491851cd0cbacaa7554ff349",
     "applications/project_assistant/tools.py:98-107": "70a16c586ba4d1f46e2ce2ffc3103ab15c719e363708879a335f55fe22b7c9f8",
@@ -61,7 +61,7 @@
     "applications/project_assistant/tools.py:83-94": "f2310e5813a6ff01bbe3ce78793f30bf372ca27a41e297fbc36105f20628d70d",
     "applications/project_assistant/rag/chunking.py:183-184": "d2837b399290b21b668928085dced83321a7cdd582805e2377c4e7b10d520d2a",
     "applications/project_assistant/rag/chunking.py:197-204": "5cf4866c77027c70558995de4b08b6a1fd0bf88fe22352f7dc006fc7673e77a9",
-    "applications/project_assistant/rag/embedding.py:109-118": "18950a0a7428a1f072760d6820f48ba209a73f0713cfbf5d18b6e69a6a7e5c8f",
+    "applications/project_assistant/rag/embedding.py:105-114": "18950a0a7428a1f072760d6820f48ba209a73f0713cfbf5d18b6e69a6a7e5c8f",
     "applications/project_assistant/tools.py:26-30": "e77e60a71a8953aaeac697e19c27022a29aad11d56b55273d241a8ea8afcde0d",
     "applications/project_assistant/tools.py:41-48": "ca0ea661beb3cbd650d4b9d41df1666372e82d4aa9f4e4760cab358cb215e261",
     "applications/project_assistant/config.py:85-87": "d46d52534e2e795605366b77f158a44f57740c933925a6d66e062a58dc6a5f56",
@@ -90,7 +90,7 @@
     "applications/project_assistant/rag/retrieval.py:84-90": "d6ab24f2ff7f71546a753b1fa30a93617da5dfc68be56f4179ccf69f7a3750ce",
     "DEVELOPMENT_HANDOFF.md:96-96": "0ffa8093a8ae11a763326d3928af053f9baf8b56ed67724d7b65ecf45a34f586",
     "DEVELOPMENT_HANDOFF.md:128-128": "21e01a10e9147fea017a806fe40b4202a5186a9921fd0159ff50b8bd1f0f78cc",
-    "applications/project_assistant/rag/embedding.py:74-75": "c9eeec9d03771fbd44fa3f490180e08a913831c81c64c21d4ca5b323ec2ffd15",
+    "applications/project_assistant/rag/embedding.py:70-71": "c9eeec9d03771fbd44fa3f490180e08a913831c81c64c21d4ca5b323ec2ffd15",
     "applications/project_assistant/tools.py:58-59": "e2ef8f56b9555ed02a6992386fb1930c9e3e204032f34c227bc5f8ac2124efd5",
     "applications/project_assistant/rag/retrieval.py:75-76": "f32dca460a48e4ffe4e128dabc6dc45a2e4042ddb2e9455bfce9cf173b3780f6",
     "DEVELOPMENT_HANDOFF.md:71-71": "f6401af3ffb163ccfdd3d12fecd3b6114186f33ed474e85058a31289a40395f3",
@@ -163,7 +163,7 @@
       "question": "How does MockEmbedding.embed deterministically turn a text into a vector?",
       "answer_summary": "SHA256 bytes mapped to floats in [-1,1], truncated or zero padded to the configured dimension.",
       "expected_evidence": [
-        "applications/project_assistant/rag/embedding.py:138-156"
+        "applications/project_assistant/rag/embedding.py:134-152"
       ]
     },
     {
@@ -247,7 +247,7 @@
       "question": "Why is Mock embedding useful for offline plumbing checks but not evidence of semantic retrieval quality?",
       "answer_summary": "It uses text hashes rather than a semantic model; no external API is needed.",
       "expected_evidence": [
-        "applications/project_assistant/rag/embedding.py:132-164"
+        "applications/project_assistant/rag/embedding.py:128-160"
       ]
     },
     {
@@ -259,9 +259,9 @@
       "expected_evidence": [
         "applications/project_assistant/config.py:80-99",
         "scripts/build_knowledge_base.py:80-86",
-        "applications/project_assistant/rag/embedding.py:59-77",
-        "applications/project_assistant/rag/embedding.py:88-91",
-        "applications/project_assistant/rag/embedding.py:98-105"
+        "applications/project_assistant/rag/embedding.py:55-73",
+        "applications/project_assistant/rag/embedding.py:84-87",
+        "applications/project_assistant/rag/embedding.py:94-101"
       ]
     },
     {
@@ -353,10 +353,10 @@
       "answer_summary": "No. Configuration can request dimensions, otherwise the first response determines them; known defaults are pre-response fallbacks.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:71-75",
-        "applications/project_assistant/rag/embedding.py:59-77",
-        "applications/project_assistant/rag/embedding.py:88-91",
-        "applications/project_assistant/rag/embedding.py:93-119",
-        "applications/project_assistant/rag/embedding.py:126-129"
+        "applications/project_assistant/rag/embedding.py:55-73",
+        "applications/project_assistant/rag/embedding.py:84-87",
+        "applications/project_assistant/rag/embedding.py:89-115",
+        "applications/project_assistant/rag/embedding.py:122-125"
       ]
     },
     {
@@ -378,7 +378,7 @@
       "answer_summary": "Yes. The offline evaluation script builds a fresh index, evaluates retrieval, and writes a report.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:90-90",
-        "scripts/evaluate_retrieval.py:84-100"
+        "scripts/evaluate_retrieval.py:94-112"
       ]
     },
     {
@@ -389,7 +389,7 @@
       "answer_summary": "No. It maps SHA256 bytes directly to floats and pads zeros.",
       "expected_evidence": [
         "applications/project_assistant/README.md:180-185",
-        "applications/project_assistant/rag/embedding.py:138-156"
+        "applications/project_assistant/rag/embedding.py:134-152"
       ]
     },
     {
@@ -519,7 +519,7 @@
       "question": "What does OpenAIEmbedding.embed do with an empty input list?",
       "answer_summary": "It returns [] without making a request.",
       "expected_evidence": [
-        "applications/project_assistant/rag/embedding.py:93-96"
+        "applications/project_assistant/rag/embedding.py:89-92"
       ]
     },
     {
@@ -640,7 +640,7 @@
       "question": "Why does OpenAIEmbedding sort response items by index?",
       "answer_summary": "It restores input order before validating and extending the batch vectors.",
       "expected_evidence": [
-        "applications/project_assistant/rag/embedding.py:109-118"
+        "applications/project_assistant/rag/embedding.py:105-114"
       ]
     },
     {
@@ -789,8 +789,8 @@
       "answer_summary": "Yes; it reads the explicit or environment base URL and passes it to the client.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:128-128",
-        "applications/project_assistant/rag/embedding.py:74-75",
-        "applications/project_assistant/rag/embedding.py:88-91"
+        "applications/project_assistant/rag/embedding.py:70-71",
+        "applications/project_assistant/rag/embedding.py:84-87"
       ]
     },
     {
@@ -837,7 +837,7 @@
       "answer_summary": "No; its fallback is 3072 and a configured or inferred dimension takes precedence.",
       "expected_evidence": [
         "applications/project_assistant/README.md:182-182",
-        "applications/project_assistant/rag/embedding.py:126-129"
+        "applications/project_assistant/rag/embedding.py:122-125"
       ]
     },
     {

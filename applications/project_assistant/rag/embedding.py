@@ -2,14 +2,13 @@
 
 import os
 from abc import ABC, abstractmethod
-from typing import List
 
 
 class EmbeddingProvider(ABC):
     """Abstract interface for text embedding providers."""
 
     @abstractmethod
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         """
         Embed a batch of texts into dense vectors.
 
@@ -19,10 +18,9 @@ class EmbeddingProvider(ABC):
         Returns:
             List of embedding vectors (each is a list of floats)
         """
-        pass
 
     @abstractmethod
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str) -> list[float]:
         """
         Embed a single query text.
 
@@ -32,20 +30,18 @@ class EmbeddingProvider(ABC):
         Returns:
             Embedding vector
         """
-        pass
 
     @property
     @abstractmethod
     def dimension(self) -> int:
         """Return the dimension of the embedding vectors."""
-        pass
 
 
 class OpenAIEmbedding(EmbeddingProvider):
     """OpenAI-compatible embeddings with configurable or inferred dimensions."""
 
-    def __init__(self, api_key: str = None, model: str = "text-embedding-3-small",
-                 dimension: int = None, base_url: str = None, batch_size: int = None):
+    def __init__(self, api_key: str | None = None, model: str = "text-embedding-3-small",
+                 dimension: int | None = None, base_url: str | None = None, batch_size: int | None = None):
         """
         Initialize OpenAI embedding provider.
 
@@ -54,7 +50,7 @@ class OpenAIEmbedding(EmbeddingProvider):
             model: OpenAI embedding model name
             dimension: RAG_EMBEDDING_DIMENSIONS (alias RAG_EMBEDDING_DIMENSION).
             base_url: Compatible endpoint (defaults to RAG_EMBEDDING_BASE_URL).
-            batch_size: Maximum inputs per request (RAG_EMBEDDING_BATCH_SIZE or 100).
+            batch_size: Maximum inputs per request (RAG_EMBEDDING_BATCH_SIZE or 10).
         """
         self.model = model
         if dimension is None:
@@ -63,7 +59,7 @@ class OpenAIEmbedding(EmbeddingProvider):
         if dimension is not None and (type(dimension) is not int or dimension <= 0):
             raise ValueError("embedding dimension must be a positive integer")
         if batch_size is None:
-            batch_size = int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", "100"))
+            batch_size = int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", "10"))
         if type(batch_size) is not int or batch_size <= 0:
             raise ValueError("embedding batch size must be a positive integer")
         self.batch_size = batch_size
@@ -90,7 +86,7 @@ class OpenAIEmbedding(EmbeddingProvider):
             options["base_url"] = self.base_url
         self.client = OpenAI(**options)
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using OpenAI API."""
         if not texts:
             return []
@@ -118,7 +114,7 @@ class OpenAIEmbedding(EmbeddingProvider):
             embeddings.extend(vectors)
         return embeddings
 
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str) -> list[float]:
         """Embed a single query text."""
         return self.embed([query])[0]
 
@@ -135,7 +131,7 @@ class MockEmbedding(EmbeddingProvider):
     def __init__(self, dimension: int = 1536):
         self._dimension = dimension
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         """Return deterministic mock embeddings based on text hash."""
         import hashlib
 
@@ -155,7 +151,7 @@ class MockEmbedding(EmbeddingProvider):
 
         return embeddings
 
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str) -> list[float]:
         """Embed a single query text."""
         return self.embed([query])[0]
 

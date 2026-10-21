@@ -240,7 +240,7 @@ class ExperimentCLITests(unittest.TestCase):
     def test_tune_grid_caches_all_queries_and_never_evaluates_test(self):
         report = self.invoke("--split", "tune")
         self.assertEqual(len(report["configs"]), 22)  # 18 grid + 4 named configs
-        self.assertEqual(len(json.loads((self.root / "cache.json").read_text())["vectors"]), 4)
+        self.assertTrue((self.root / "cache.json" / "rag.sqlite3").is_file())
         self.assertEqual(self.collection.query.call_count, 2)
         self.assertTrue(all(row["split"] == "tune" for config in report["configs"].values()
                             for row in config["questions"]))
@@ -275,8 +275,11 @@ class ExperimentCLITests(unittest.TestCase):
             second, usage = cli.query_vectors(self.questions, path, config)
         self.assertEqual(first, second)
         self.assertEqual(usage["api_calls"], 0)
-        with self.assertRaises(ValueError):
-            cli.query_vectors(self.questions, path, RAGConfig(embedding_dimension=3))
+        # A different dimension has its own namespace and cannot reuse old vectors.
+        with patch.object(cli, "OpenAIEmbedding") as provider:
+            provider.return_value.embed.return_value = [[1, 2, 3]] * 4
+            _, usage = cli.query_vectors(self.questions, path, RAGConfig(embedding_dimension=3))
+            self.assertEqual(usage["cache_hits"], 0)
 
     def test_mismatch_aborts_before_query_embedding_or_report(self):
         with (patch.object(cli, "collect_corpus", return_value=[self.chunk]),

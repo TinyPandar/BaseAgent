@@ -6,6 +6,7 @@ import os
 import urllib.request
 from abc import ABC, abstractmethod
 
+from .cache import text_hash, usage_stats
 from .lexical import IDENTIFIER, tokenize
 
 
@@ -56,7 +57,7 @@ class QwenRerank(Reranker):
     """
 
     def __init__(self, *, max_tokens, allow_api=False, base_url=None, api_key=None,
-                 transport=None):
+                 transport=None, cache=None):
         if not allow_api:
             raise ValueError("Qwen reranking requires explicit API opt-in")
         if type(max_tokens) is not int or max_tokens < 0:
@@ -66,6 +67,8 @@ class QwenRerank(Reranker):
         self._key = api_key or os.getenv("RAG_RERANK_API_KEY") or os.getenv("RAG_EMBEDDING_API_KEY")
         if not self._base or not self._key:
             raise ValueError("rerank endpoint and credentials must be configured")
+        self.cache = cache
+        self.cache_hits = self.cache_misses = 0
         self.max_tokens = max_tokens
         self.api_calls = self.total_tokens = self.estimated_tokens = self._reserved = 0
         self.usage_estimated = False
@@ -82,12 +85,20 @@ class QwenRerank(Reranker):
         if not documents or top_n <= 0:
             return []
         texts = [row["content"][:6000] for row in documents]
+        key = ["qwen3-rerank", query, [text_hash(row["content"]) for row in documents]]
+        cached = self.cache.get("rerank", key) if self.cache else None
+        if cached is not None:
+            self.cache_hits += 1
+            ranked = [{**documents[row["index"]], "score": row["relevance_score"]}
+                      for row in cached]
+            return sorted(ranked, key=lambda row: (-row["score"], row["doc_id"]))[:top_n]
+        self.cache_misses += 1
         # Reserve repeated query tokens conservatively for pairwise provider accounting.
         estimate = sum(math.ceil((len(query) + len(text)) / 2) for text in texts)
         if self._reserved + estimate > self.max_tokens:
             raise ValueError("rerank token budget exceeded before request")
         payload = {"model": "qwen3-rerank", "query": query, "documents": texts,
-                   "top_n": min(top_n, len(texts))}
+                   "top_n": len(texts)}
         self.api_calls += 1
         self._reserved += estimate
         self.estimated_tokens += estimate
@@ -112,4 +123,13 @@ class QwenRerank(Reranker):
             if index not in seen:
                 ranked.append({**documents[index], "score": score})
                 seen.add(index)
+        if self.cache:
+            self.cache.put("rerank", key, [{"index": result["index"],
+                                           "relevance_score": float(result["relevance_score"])}
+                                          for result in response.get("results", [])])
         return sorted(ranked, key=lambda row: (-row["score"], row["doc_id"]))[:top_n]
+
+    def usage(self):
+        return {**usage_stats(self.cache_hits, self.cache_misses, self.api_calls,
+                             self.estimated_tokens, self.total_tokens),
+                "usage_estimated": self.usage_estimated}

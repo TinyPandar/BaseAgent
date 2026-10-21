@@ -26,6 +26,7 @@ class EvaluationCLITests(unittest.TestCase):
              "expected_evidence": []},
         ]}))
         self.stack.enter_context(patch.dict(os.environ, {
+            "RAG_CACHE_DIR": str(self.directory / "cache"),
             "RAG_EMBEDDING_PROVIDER": "openai", "RAG_EMBEDDING_API_KEY": "fake-private-key",
             "RAG_EMBEDDING_MODEL": "text-embedding-v4", "RAG_EMBEDDING_BATCH_SIZE": "10",
             "RAG_EMBEDDING_DIMENSIONS": "2",
@@ -71,6 +72,39 @@ class EvaluationCLITests(unittest.TestCase):
         for secret in ("fake-private-key", "private-password", "base_url", "provider.invalid", "api_key"):
             self.assertNotIn(secret, serialized)
         self.sdk.assert_called_once_with(api_key="fake-private-key", base_url=os.environ["RAG_EMBEDDING_BASE_URL"])
+
+    def test_second_run_zero_budget_hits_chunks_and_queries_without_sdk(self):
+        self.run_cli()
+        self.sdk.reset_mock()
+        self.client.embeddings.create.reset_mock()
+        self.run_cli("--max-tokens", "0")
+        self.sdk.assert_not_called()
+        self.client.embeddings.create.assert_not_called()
+        usage = self.writer.call_args.args[0]["embedding_usage"]
+        self.assertEqual(usage["cache_hits"], 24)
+        self.assertEqual(usage["cache_misses"], 0)
+        self.assertEqual(usage["estimated_tokens"], 0)
+
+    def test_partial_cache_budget_counts_only_unsent_text(self):
+        from applications.project_assistant.rag.cache import DiskCache, embedding_key
+
+        cache = DiskCache()
+        cache.put("embedding", embedding_key("openai", "text-embedding-v4", 2, "0"), [1., 0.])
+        self.run_cli("--max-tokens", "25")
+        sent = [text for call in self.client.embeddings.create.call_args_list
+                for text in call.kwargs["input"]]
+        self.assertNotIn("0", sent)
+        self.assertEqual(len(sent), 23)
+        self.assertEqual(self.writer.call_args.args[0]["embedding_usage"]["cache_hits"], 1)
+
+    def test_no_cache_sends_all_again_and_budget_counts_all(self):
+        self.run_cli()
+        with self.assertRaises(SystemExit):
+            self.run_cli("--no-cache", "--max-tokens", "0")
+        self.client.embeddings.create.reset_mock()
+        self.run_cli("--no-cache", "--max-tokens", "26")
+        self.assertEqual(self.client.embeddings.create.call_count, 4)
+        self.assertEqual(self.writer.call_args.args[0]["embedding_usage"]["cache_hits"], 0)
 
     def test_budget_aborts_before_client_or_index_creation(self):
         with self.assertRaises(SystemExit) as raised:

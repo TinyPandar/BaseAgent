@@ -20,6 +20,11 @@ from applications.project_assistant.evaluation.retrieval import (
     validate_question_set,
     write_report,
 )
+from applications.project_assistant.rag.cache import (
+    CachedEmbedding,
+    DiskCache,
+    usage_stats,
+)
 from applications.project_assistant.rag.embedding import MockEmbedding, OpenAIEmbedding
 from applications.project_assistant.rag.indexing import VectorIndex
 
@@ -37,6 +42,7 @@ def main(argv=None):
                         help="Real index directory; must be gitignored or outside the repo")
     parser.add_argument("--max-tokens", type=int,
                         help="Abort before API calls if estimated corpus + query tokens exceed this")
+    parser.add_argument("--no-cache", action="store_true", help="Disable disk cache reads and writes")
     args = parser.parse_args(argv)
     if args.top_k < 5:
         parser.error("--top-k must be at least 5")
@@ -55,9 +61,18 @@ def main(argv=None):
     if provider_name not in {"mock", "openai"}:
         parser.error("RAG_EMBEDDING_PROVIDER must be openai or mock")
     unique_chunks = list({chunk.doc_id: chunk for chunk in chunks}.values())
-    # Estimate the actual embedded chunks (including overlap) and query strings.
-    estimated_tokens = sum((len(chunk.content) + 1) // 2 for chunk in unique_chunks)
-    estimated_tokens += sum((len(q["question"]) + 1) // 2 for q in dataset["questions"])
+    cache = None if args.no_cache else DiskCache()
+    embedding = CachedEmbedding(
+        lambda: MockEmbedding(config.embedding_dimension or 1536) if provider_name == "mock"
+        else OpenAIEmbedding(api_key=config.openai_api_key, model=config.embedding_model,
+                             dimension=config.embedding_dimension, base_url=config.embedding_base_url,
+                             batch_size=config.embedding_batch_size),
+        provider=provider_name, model=config.embedding_model if provider_name != "mock" else "mock-sha256",
+        dimensions=config.embedding_dimension if provider_name != "mock" else config.embedding_dimension or 1536,
+        batch_size=config.embedding_batch_size, cache=cache,
+        max_tokens=args.max_tokens if provider_name != "mock" else None)
+    estimated_tokens = embedding.estimate_missing(
+        [c.content for c in unique_chunks] + [q["question"] for q in dataset["questions"]])
     if provider_name == "openai" and args.max_tokens is not None and estimated_tokens > args.max_tokens:
         parser.error(f"estimated {estimated_tokens} tokens exceeds --max-tokens {args.max_tokens}")
     persist_directory = None
@@ -71,11 +86,6 @@ def main(argv=None):
             if ignored.returncode != 0:
                 parser.error("--index-dir must be gitignored or outside the repo")
         persist_directory = str(directory)
-    embedding = MockEmbedding() if provider_name == "mock" else OpenAIEmbedding(
-        api_key=config.openai_api_key, model=config.embedding_model,
-        dimension=config.embedding_dimension, base_url=config.embedding_base_url,
-        batch_size=config.embedding_batch_size,
-    )
     index = VectorIndex(embedding, persist_directory=persist_directory,
                         collection_name="retrieval_" + os.urandom(8).hex())
     # Markdown hierarchy can yield identical chunks; Chroma requires unique IDs.
@@ -85,7 +95,7 @@ def main(argv=None):
     report.update({
         "corpus_version": compute_corpus_version(chunks),
         "question_set_sha256": sha256(args.questions.read_bytes()).hexdigest(),
-        "embedding_provider": type(embedding).__name__,
+        "embedding_provider": provider_name,
         "embedding_model": getattr(embedding, "model", "mock-sha256"),
         "embedding_dimension": embedding.dimension,
         "chunk_count": index.count(),
@@ -93,6 +103,8 @@ def main(argv=None):
         "estimated_tokens": estimated_tokens,
         "total_tokens": getattr(embedding, "total_tokens", 0),
         "embedding_total_tokens": getattr(embedding, "total_tokens", 0),
+        "embedding_usage": embedding.usage(),
+        "rerank_usage": usage_stats(),
         "cost_usd": 0 if provider_name == "mock" else None,
     })
     path = write_report(report)

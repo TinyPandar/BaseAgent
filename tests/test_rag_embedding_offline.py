@@ -141,8 +141,8 @@ class OpenAIEmbeddingOfflineTests(unittest.TestCase):
         self.assertEqual(provider.api_calls, 3)
 
     def test_default_batch_size_and_explicit_override(self):
-        self.assertEqual(OpenAIEmbedding(api_key="fake").batch_size, 100)
-        self.assertEqual(RAGConfig.from_env().embedding_batch_size, 100)
+        self.assertEqual(OpenAIEmbedding(api_key="fake").batch_size, 10)
+        self.assertEqual(RAGConfig.from_env().embedding_batch_size, 10)
         with patch.dict(os.environ, {"RAG_EMBEDDING_BATCH_SIZE": "10"}):
             self.assertEqual(OpenAIEmbedding(api_key="fake", batch_size=3).batch_size, 3)
         for size in (0, -1, True, 1.5):
