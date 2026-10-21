@@ -1,12 +1,24 @@
 """Reusable non-streaming models with environment-only credential entrypoints."""
 
 import json
-from http.client import HTTPException
 import socket
-from urllib import request, error
+from http.client import HTTPException
+from urllib import error, request
 
-from baseagent.kernel.errors import BadRequestError, ModelTimeoutError, ResponseParseError, TransientError
-from ._common import endpoint, environment_key, generation_params, http_error, positive_seconds
+from baseagent.kernel.errors import (
+    BadRequestError,
+    ModelTimeoutError,
+    ResponseParseError,
+    TransientError,
+)
+
+from ._common import (
+    endpoint,
+    environment_key,
+    generation_params,
+    http_error,
+    positive_seconds,
+)
 from .model import Model
 from .response import ModelResponse, TokenUsage
 
@@ -14,12 +26,12 @@ from .response import ModelResponse, TokenUsage
 class OpenAICompatModel(Model):
     def __init__(self, model, *, api_key_env="OPENAI_API_KEY", base_url=None, timeout=30.0,
                  max_completion_tokens=512, generation=None, token_counter=None,
-                 request_bound=None, token_estimator=None):
+                 request_bound=None, token_estimator=None, extra_body=None):
         if base_url is not None:
             base_url = endpoint(base_url)
         super().__init__(model, environment_key(api_key_env), base_url, timeout=timeout,
                          max_completion_tokens=max_completion_tokens, generation=generation,
-                         token_counter=token_counter, request_bound=request_bound, token_estimator=token_estimator)
+                         token_counter=token_counter, request_bound=request_bound, token_estimator=token_estimator, extra_body=extra_body)
 
     def complete_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
         cap = max_completion_tokens if max_completion_tokens is not None else self.max_completion_tokens
@@ -75,7 +87,7 @@ class AnthropicModel:
                             raise ValueError()
                         args = json.loads(call["function"]["arguments"])
                         if not isinstance(args, dict):
-                            raise ValueError()
+                            raise ValueError()  # noqa: TRY004 -- parsed as a response error
                         blocks.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": args})
                 else:
                     raise ValueError()
@@ -159,7 +171,7 @@ class AnthropicModel:
                     body = None
                 failure = http_error(exc.code, body, exc.headers)
             raise failure from None
-        except (socket.timeout, TimeoutError):
+        except TimeoutError:
             raise ModelTimeoutError("model transport timed out") from None
         except error.URLError as exc:
             if isinstance(exc.reason, (socket.timeout, TimeoutError)):

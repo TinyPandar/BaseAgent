@@ -53,6 +53,35 @@ only, and must preserve goals, constraints, decisions and remaining work.
 """
 
 
+def model_configuration(model_name=None, *, generic_only=False):
+    """Resolve a complete provider configuration without mixing credentials."""
+    generic = generic_only or any(os.getenv("BASEAGENT_LLM_" + name) for name in
+                                  ("BASE_URL", "API_KEY", "MODEL", "PROVIDER", "EXTRA_BODY"))
+    prefix = "BASEAGENT_LLM_" if generic else "DEEPSEEK_"
+    key, url = os.getenv(prefix + "API_KEY"), os.getenv(prefix + "BASE_URL")
+    name = model_name or os.getenv(prefix + "MODEL") or (None if generic else "deepseek-chat")
+    if not key or not url or not name:
+        raise ValueError(prefix + "API_KEY, BASE_URL and MODEL configuration required")
+    extra = os.getenv("BASEAGENT_LLM_EXTRA_BODY") if generic else None
+    try:
+        body = json.loads(extra, parse_constant=_invalid_json_constant) if extra else None
+        if extra and not isinstance(body, dict):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("BASEAGENT_LLM_EXTRA_BODY must be a JSON object") from None
+    return {"model_name": name, "api_key": key, "base_url": url,
+            **({"extra_body": body} if body is not None else {})}
+
+
+def _invalid_json_constant(value):
+    raise ValueError("nonfinite JSON value")
+
+
+def initialize_model(model_name=None, *, generic_only=False, **kwargs):
+    """Shared CLI/application/recorder OpenAI-compatible model composition."""
+    return Model(**model_configuration(model_name, generic_only=generic_only), **kwargs)
+
+
 class TraceMiddleware(AgentMiddleware):
     def before_model(self, state):
         print(f"model step {state.step + 1}/{state.max_steps}", file=sys.stderr)
@@ -122,7 +151,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
     parser.add_argument("--accept-config-changes", action="store_true", help="Explicitly accept changed runtime/tools for an unfinished turn")
     parser.add_argument("--accept-workspace-changes", action="store_true", help="Acknowledge changed observed files/guidance; stale write hashes remain rejected")
-    parser.add_argument("--model", default=None, help="Model name (default: DEEPSEEK_MODEL)")
+    parser.add_argument("--model", default=None, help="Model name (default: BASEAGENT_LLM_MODEL or DEEPSEEK_MODEL)")
     parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8; resume: preserve)")
     parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries (defaults to max-steps)")
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
@@ -217,7 +246,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         adapter = None
 
         def bound(self):
-            return request_bound_profile(args.request_bound_profile, args.model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), os.getenv("DEEPSEEK_BASE_URL"), args.max_completion_tokens)
+            configuration = model_configuration(args.model)
+            return request_bound_profile(args.request_bound_profile, configuration["model_name"], configuration["base_url"], args.max_completion_tokens)
 
         def estimate_request(self, messages, tools):
             return estimator.reserve_request(messages, tools, args.max_completion_tokens)
@@ -243,10 +273,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         def initialize(self):
             if self.adapter is None:
                 load_dotenv()
-                key, url = os.getenv("DEEPSEEK_API_KEY"), os.getenv("DEEPSEEK_BASE_URL")
-                if not key or not url:
-                    raise ValueError("DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL are required in local .env")
-                self.adapter = Model(model_name=args.model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), api_key=key, base_url=url,
+                self.adapter = initialize_model(args.model,
                                      **({"request_bound": self.bound()} if args.request_bound_profile else {}),
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
@@ -393,8 +420,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         source_root = Path(__file__).parent
         source_hashes = {str(path.relative_to(source_root)): sha256(path.read_bytes()).hexdigest() for path in sorted(source_root.rglob("*.py"))}
         config = {"harness_source": digest(source_hashes), "openai_version": version("openai"), "jsonschema_version": version("jsonschema"),
-                  "model": args.model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), "endpoint": os.getenv("DEEPSEEK_BASE_URL"),
+                  "model": args.model or os.getenv("BASEAGENT_LLM_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                  "endpoint": os.getenv("BASEAGENT_LLM_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL"),
                   "context_policy_version": 1}
+        if os.getenv("BASEAGENT_LLM_PROVIDER"):
+            config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
+        if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
+            config["extra_body"] = model_configuration(args.model).get("extra_body")
         config["retries"] = {"model": args.model_retries, "tool": args.tool_retries, "delay": 0.25}
         if args.request_bound_profile:
             config["request_bound"] = request_bound_profile(args.request_bound_profile, config["model"], config["endpoint"], args.max_completion_tokens).contract()

@@ -292,16 +292,27 @@ JSON 结果分别记录状态、外部验收、completion report、模型/工具
 外部验收会独立运行只读固定测试，即使 agent 未获命令权限；它不能代替
 agent 自己的 `verify_command` 证据。离线测试覆盖失败路径及新临时目录断网回放。
 
-真实录制脚本仅预留，本次未运行：
-`python -m scripts.record_coding_scenario --runs 3 --budget-cny 2 --output-dir <新目录>`。
-无 `DEEPSEEK_API_KEY` 时打印 pending；`--runs` 仅接受 3–5。
-**整个脚本调用的所有 runs 合计最多 20 次模型请求**，包含失败的传输尝试，SDK 不重试。
-逐响应按 usage 累加费用，达到预算或 usage 缺失立即停止后续请求；最后一次响应
-可能使费用越过阈值，此阈值不是服务商预付费硬限额。单价为待核对的可配置常量，
-来源链接标在脚本中，本次没有联网核价。可用 `--input-cny-per-million` 和
-`--output-cny-per-million` 覆盖，真实授权运行前需核对官方价格。
+真实录制脚本（会调用配置的服务，本次仅用 fake client 离线验证）：
+`python -m scripts.record_coding_scenario --runs 3 --budget-cny 2`。
+必须提供 `BASEAGENT_LLM_BASE_URL`、`BASEAGENT_LLM_API_KEY`、`BASEAGENT_LLM_MODEL`，
+缺失或配置无效时打印 pending 并退出；录制不回退到 DEEPSEEK。
+`BASEAGENT_LLM_EXTRA_BODY='{"enable_thinking":false}'` 可用于百炼 compatible-mode；默认不传。
+CLI 与 Project Assistant 共享初始化，未使用通用环境变量时继续沿用 DEEPSEEK 配置。
 
-CassetteModel 在临时文件保存时脱敏，并在正式输出前再扫描凭据、逐次断网回放；
-所有 runs 校验后才发布，失败不发布部分录像。失败验收结果也如实保留在结果结构，
-不据单次成功推断可靠性。`--replay-dir <录像目录> --runs 3` 不需凭据，阻断网络，
-每次使用全新临时夹具。回放规范化临时根路径和验证 UUID，保留 argv、输出和文件哈希。
+`--runs` 接受 3–5，**每个 run 最多 20 次模型请求**（包括失败的传输尝试），SDK 不重试。
+所有 run 共享 `--budget-cny`（默认 2），逐响应按 usage 累计；预算达到后不再调用模型。
+最后一次响应可越过预算，usage 缺失或传输结果不明时停止后续请求。
+输入默认 0.8 元/百万、普通输出 2 元/百万，可用 `--input-cny-per-million` /
+`--output-cny-per-million` 覆盖；completion 中 reasoning tokens 按 8 元/百万计，不重复计费。
+默认价按用户提供的 2026-10-21 百炼北京 qwen-plus 非思考价格，
+来源 https://help.aliyun.com/zh/model-studio/qwen-plus ，本次未联网核价。
+
+`--smoke` 只发送一次带 ping 工具定义的小请求，打印 tool_calls 是否合规及 usage，不录像。
+录像各自写入 `tests/cassettes/coding_scenario/run_N.json`（CassetteModel 的 JSONL 格式），
+`.result.json` 旁车保存预期最终状态、工具序列、验收结果及费用；拒绝覆盖已有文件。
+保存前扫描 key、私有 llm 子域和 Authorization，endpoint 仅记录为 `<redacted-endpoint>`。
+失败的 run 也保存录像和原因，未知副作用字段用 null 表示未能完成验收。
+汇总 JSON 写入 evaluation/reports；不含 key 或 endpoint。
+`--replay --output-dir <录像目录>`（兼容 `--replay-dir`）无需凭据，阻断 socket 连接，
+逐个使用新临时夹具比较最终状态、工具请求顺序与参数及验收结果；差异返回非零。
+回放规范化临时根路径和验证 UUID，保留 argv、输出和文件哈希。

@@ -1,13 +1,31 @@
-import time
 import json
-from openai import OpenAI, DefaultHttpxClient, APIConnectionError, APITimeoutError, APIStatusError, APIResponseValidationError
+import time
+
+from openai import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APIStatusError,
+    APITimeoutError,
+    DefaultHttpxClient,
+    OpenAI,
+)
+
+from baseagent.kernel.errors import (
+    ModelTimeoutError,
+    ResponseParseError,
+    TransientError,
+)
+
+from ._common import generation_params, http_error, positive_seconds
+from .reservation import ReservationUnavailable, TokenReservation, request_digest
 from .response import ModelResponse, TokenUsage
-from .reservation import TokenReservation, ReservationUnavailable, request_digest
-from ._common import positive_seconds, generation_params, http_error
-from baseagent.kernel.errors import ModelTimeoutError, TransientError, ResponseParseError
+
 
 class Model:
-    def __init__(self, model_name: str, api_key: str, base_url: str | None = None, *, token_counter=None, max_completion_tokens=512, request_bound=None, token_estimator=None, timeout=30.0, generation=None):
+    def __init__(self, model_name: str, api_key: str, base_url: str | None = None, *, token_counter=None, max_completion_tokens=512, request_bound=None, token_estimator=None, timeout=30.0, generation=None, extra_body=None):
+        if extra_body is not None and not isinstance(extra_body, dict):
+            raise ValueError("extra_body must be a JSON object")
+        self.extra_body = json.loads(json.dumps(extra_body, allow_nan=False))
         self.model_name = model_name
         self.token_estimator = token_estimator
         self.timeout = positive_seconds(timeout)
@@ -78,6 +96,8 @@ class Model:
         if max_completion_tokens is not None:
             kwargs["max_tokens"] = max_completion_tokens
         kwargs.update(self.generation_params)
+        if self.extra_body is not None:
+            kwargs["extra_body"] = self.extra_body
         try:
             response = self.client.chat.completions.create(**kwargs)
         except APITimeoutError:
@@ -89,17 +109,22 @@ class Model:
         except (json.JSONDecodeError, APIResponseValidationError):
             raise ResponseParseError("model response is not valid chat completion JSON") from None
         usage = None
+        reasoning_tokens = 0
         if getattr(response, "usage", None) is not None:
             try:
                 usage = TokenUsage(response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens)
+                details = getattr(response.usage, "completion_tokens_details", None)
+                reasoning_tokens = getattr(details, "reasoning_tokens", None)
+                if reasoning_tokens is None:
+                    reasoning_tokens = getattr(response.usage, "reasoning_tokens", 0) or 0
             except (AttributeError, TypeError, ValueError):
                 pass
         try:
             message = response.choices[0].message
-            ModelResponse(message, usage).to_dict()
+            ModelResponse(message, usage, reasoning_tokens).to_dict()
         except (AttributeError, IndexError, TypeError, ValueError):
             raise ResponseParseError("model response has an invalid message envelope") from None
-        return ModelResponse(message, usage)
+        return ModelResponse(message, usage, reasoning_tokens)
 
     def complete_with_control(self, messages, tools=None, *, cancellation, timeout=None):
         cancellation.check()

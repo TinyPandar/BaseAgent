@@ -30,7 +30,7 @@ class FakeClient:
         return ModelResponse({"content": "synthetic"}, self.usage)
 
 
-def test_hard_limit_is_shared_across_runs():
+def test_hard_limit_is_per_run():
     client = FakeClient()
     model = BoundedModel(client)
     for _ in range(MAX_CALLS):
@@ -39,14 +39,16 @@ def test_hard_limit_is_shared_across_runs():
         with pytest.raises(RecordingStopped):
             model.complete([], [])
     assert model.calls == client.calls == 20
-    assert model.cost_cny == Decimal("0.0007")
+    assert model.cost_cny == Decimal("0.00036")
+    model.start_run()
+    model.complete([], [])
+    assert model.calls == 1 and client.calls == 21
 
 
 def test_budget_charged_on_response_then_stops_immediately():
     client = FakeClient(TokenUsage(1_000_000, 1_000_000, 2_000_000))
     model = BoundedModel(client, budget_cny=2, input_rate=2, output_rate=3)
-    with pytest.raises(RecordingStopped):
-        model.complete([], [])
+    model.complete([], [])
     assert model.cost_cny == 5 and client.calls == 1
     with pytest.raises(RecordingStopped):
         model.complete([], [])
@@ -60,8 +62,13 @@ def test_bad_budget_or_prices_refused(value):
             BoundedModel(FakeClient(), **{field: value})
 
 
+class FakeFailure:
+    def complete(self, messages, tools):
+        raise ConnectionError("private diagnostic")
+
+
 def test_unknown_usage_and_transport_failure_fail_closed():
-    for client in (FakeClient(None), Mock(complete=Mock(side_effect=ConnectionError("private diagnostic")))):
+    for client in (FakeClient(None), FakeFailure()):
         model = BoundedModel(client)
         for _ in range(2):
             with pytest.raises(RecordingStopped, match="recording"):
@@ -88,9 +95,9 @@ def test_cassette_redacts_and_scans_credentials(tmp_path):
 
 
 def test_missing_key_is_pending_without_client(monkeypatch, capsys):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("BASEAGENT_LLM_API_KEY", raising=False)
     factory = Mock(side_effect=AssertionError("must not instantiate client"))
-    monkeypatch.setattr("scripts.record_coding_scenario.OpenAICompatModel", factory)
+    monkeypatch.setattr("scripts.record_coding_scenario.initialize_model", factory)
     assert main([]) == 2
     assert "pending" in capsys.readouterr().out
     factory.assert_not_called()
@@ -102,7 +109,7 @@ def test_runs_range(runs):
         main(["--runs", str(runs)])
 
 
-def test_recording_cap_across_three_real_harness_runs_with_fake_client(tmp_path, monkeypatch, capsys):
+def test_three_runs_and_replay_with_fake_client(tmp_path, monkeypatch, capsys):
     from applications.project_assistant.evaluation.coding import scripted_model
 
     class Client:
@@ -128,12 +135,110 @@ def test_recording_cap_across_three_real_harness_runs_with_fake_client(tmp_path,
 
     client = Client()
     key = "fake-only-private-credential"
-    monkeypatch.setenv("DEEPSEEK_API_KEY", key)
-    monkeypatch.setattr("scripts.record_coding_scenario.OpenAICompatModel", lambda *a, **kw: client)
-    # Two complete runs (with disconnected replay) consume 14 calls; the third
-    # cannot exceed the invocation's shared 20-call cap. Nothing is published.
-    assert main(["--runs", "3", "--output-dir", str(tmp_path / "out")]) == 1
-    assert client.calls == 20
-    assert not list(tmp_path.rglob("*.jsonl"))
-    output = capsys.readouterr().out
-    assert "pending" in output and key not in output
+    set_generic(monkeypatch, key)
+    monkeypatch.setattr("scripts.record_coding_scenario.initialize_model", lambda *a, **kw: client)
+    out = tmp_path / "out"
+    reports = tmp_path / "reports"
+    assert main(["--runs", "3", "--output-dir", str(out), "--report-dir", str(reports)]) == 0
+    assert client.calls == 21
+    assert len(list(out.glob("run_[0-9].json"))) == 3
+    report = json.loads(next(reports.glob("*.json")).read_text())
+    assert all(r["external_acceptance_passed"] and r["replay_consistent"] for r in report["runs"])
+    assert main(["--replay", "--output-dir", str(out)]) == 0
+    # Alter the expected result to prove replay detects mismatches.
+    sidecar = out / "run_1.result.json"
+    metadata = json.loads(sidecar.read_text())
+    metadata["outcome"]["final_state"]["status"] = "tampered"
+    sidecar.write_text(json.dumps(metadata))
+    assert main(["--replay-dir", str(out)]) == 1
+    assert key not in capsys.readouterr().out
+
+
+def set_generic(monkeypatch, key="synthetic-private-credential-123"):
+    monkeypatch.setenv("BASEAGENT_LLM_API_KEY", key)
+    monkeypatch.setenv("BASEAGENT_LLM_BASE_URL", "https://llm-private.example.invalid/v1")
+    monkeypatch.setenv("BASEAGENT_LLM_MODEL", "qwen-plus")
+
+
+def test_reasoning_price_and_serialization():
+    response = ModelResponse({"content": "ok"}, TokenUsage(1_000_000, 1_000_000, 2_000_000), 250_000)
+    response = ModelResponse.from_dict(response.to_dict())
+    client = Mock(spec=["complete"], complete=Mock(return_value=response))
+    model = BoundedModel(client, budget_cny=20)
+    model.complete([], [])
+    assert model.cost_cny == Decimal("4.3")
+    assert model.reasoning_tokens == 250_000
+
+
+@pytest.mark.parametrize("text", ["llm-private", "https://llm-private.example.invalid", "Authorization: Basic abc", "sk-private-test"])
+def test_scan_refuses_private_data(tmp_path, text):
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"value": text}))
+    with pytest.raises(ValueError):
+        scan_cassette(path, base_url="https://llm-private.example.invalid/v1")
+
+
+def test_endpoint_is_placeholder(tmp_path):
+    endpoint = "https://llm-private.example.invalid/v1"
+    redactor = cassette_redactor(tmp_path, base_url=endpoint)
+    assert redactor.text(endpoint) == "<redacted-endpoint>"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ({"tool_calls": [{"id": "ping-1", "type": "function", "function": {"name": "ping", "arguments": "{}"}}]}, True),
+    ({"content": "pong"}, False),
+    ({"tool_calls": [{"id": "x", "type": "function", "function": {"name": "ping", "arguments": "bad"}}]}, False),
+])
+def test_smoke_parsing(message, expected, capsys):
+    from scripts.record_coding_scenario import smoke
+    client = Mock(spec=["complete"], complete=Mock(return_value=ModelResponse(message, DEFAULT_USAGE)))
+    assert smoke(client) is expected
+    assert client.complete.call_count == 1
+    assert len(client.complete.call_args.args[1]) == 1
+    assert json.loads(capsys.readouterr().out)["usage"]["prompt_tokens"] == 10
+
+
+@pytest.mark.parametrize("mode", ["budget", "transport", "limit"])
+def test_failed_runs_saved_and_replayable(tmp_path, monkeypatch, mode):
+    set_generic(monkeypatch)
+    client = FakeClient(TokenUsage(1_000_000, 1_000_000, 2_000_000)) if mode == "budget" else FakeFailure() if mode == "transport" else FakeClient()
+    client.model_name, client.generation_params, client.max_completion_tokens = "fake", {}, 1024
+    from contextlib import nullcontext
+    monkeypatch.setattr("scripts.record_coding_scenario.initialize_model", lambda **kw: nullcontext(client))
+    out = tmp_path / "out"
+    assert main(["--output-dir", str(out), "--report-dir", str(tmp_path / "reports")]) == 1
+    report = json.loads(next((tmp_path / "reports").glob("*.json")).read_text())
+    assert report["runs"][0]["reason"]
+    assert all(r["replay_consistent"] for r in report["runs"])
+    assert report["runs"][0]["model_attempts"] == (20 if mode == "limit" else 1)
+    assert len(report["runs"]) == (3 if mode == "limit" else 1)
+    assert main(["--replay", "--output-dir", str(out)]) == 0
+
+
+def test_budget_shared_between_runs():
+    model = BoundedModel(FakeClient(TokenUsage(1_000_000, 0, 1_000_000)), budget_cny="1.5")
+    model.complete([], [])
+    model.start_run()
+    model.complete([], [])
+    assert model.cost_cny == Decimal("1.6")
+    assert model.run_cost_cny == Decimal("0.8")
+    model.start_run()
+    with pytest.raises(RecordingStopped):
+        model.complete([], [])
+    assert model.client.calls == 2
+
+
+def test_smoke_cli_one_call_no_recording(tmp_path, monkeypatch, capsys):
+    from contextlib import nullcontext
+
+    set_generic(monkeypatch)
+    message = {"tool_calls": [{"id": "ping-1", "type": "function", "function": {"name": "ping", "arguments": "{}"}}]}
+    client = Mock(spec=["complete", "model_name", "generation_params", "max_completion_tokens"],
+                  model_name="fake", generation_params={}, max_completion_tokens=64,
+                  complete=Mock(return_value=ModelResponse(message, DEFAULT_USAGE)))
+    monkeypatch.setattr("scripts.record_coding_scenario.initialize_model", lambda **kw: nullcontext(client))
+    assert main(["--smoke", "--output-dir", str(tmp_path / "out"),
+                 "--report-dir", str(tmp_path / "reports")]) == 0
+    assert client.complete.call_count == 1
+    assert not list(tmp_path.iterdir())
+    assert '"compliant_tool_calls": true' in capsys.readouterr().out
