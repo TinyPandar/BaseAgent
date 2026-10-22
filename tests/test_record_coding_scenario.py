@@ -251,9 +251,18 @@ def test_smoke_cli_one_call_no_recording(tmp_path, monkeypatch, capsys):
     assert '"compliant_tool_calls": true' in capsys.readouterr().out
 
 
-def test_all_real_recordings_replay_offline(capsys):
+def test_all_real_recordings_replay_offline(capsys, monkeypatch):
+    from applications.project_assistant.evaluation import coding
     from scripts.record_coding_scenario import disconnected
 
+    # Historical cassettes bind the exact tool schemas offered at recording time.
+    capabilities = coding._capabilities
+
+    def recorded_capabilities(*args, **kwargs):
+        tools = capabilities(*args, **kwargs)
+        return tools.subset(name for name in tools._tools if name not in {"grep", "glob"})
+
+    monkeypatch.setattr(coding, "_capabilities", recorded_capabilities)
     with disconnected():
         assert main(["--replay"]) == 0
     reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]

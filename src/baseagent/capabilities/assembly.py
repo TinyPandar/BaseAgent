@@ -8,7 +8,7 @@ from baseagent.tools.workspace import coding_tools
 
 
 BUILTIN_PACKAGES = {
-    "coding": ("get_instructions", "read_file", "search_files", "write_file", "edit_file", "run_command", "update_plan", "get_task_state", "verify_command", "git_diff"),
+    "coding": ("get_instructions", "read_file", "search_files", "grep", "glob", "write_file", "edit_file", "run_command", "update_plan", "get_task_state", "verify_command", "git_diff"),
     "memory": ("remember", "forget_memory", "recall_memory", "read_history", "set_history_summary"),
     "shared-memory": ("publish_memory", "search_shared_memory", "withdraw_memory"),
 }

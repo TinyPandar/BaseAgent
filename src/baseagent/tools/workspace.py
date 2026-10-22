@@ -8,9 +8,12 @@ from pathlib import Path
 
 from baseagent.backends import LocalBackend, WorkspaceBackend
 
+from .edit_policy import EditPolicy
+from .edit_policy import write_file as policy_write_file
 from .registry import ToolRegistry
 from .result import ErrorCode, ToolFailure, ToolResult
-from .edit_policy import EditPolicy, write_file as policy_write_file
+from .search import glob as search_glob
+from .search import grep as search_grep
 
 
 def apply_edits(content: str, edits: list[dict]) -> str:
@@ -96,7 +99,7 @@ class Workspace:
 
     def write_file(self, path: str, content: str, expected_sha256: str | None = None, expected_instructions: str | None = None, *, context=None) -> dict:
         return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
-                               request=("write_file", dict(path=path, content=content, expected_sha256=expected_sha256, expected_instructions=expected_instructions)))
+                               request=("write_file", {"path": path, "content": content, "expected_sha256": expected_sha256, "expected_instructions": expected_instructions}))
 
     def _write_file(self, path, content, expected_sha256, expected_instructions, *, context, request):
         self._check_observation_capacity(path, context)
@@ -130,7 +133,7 @@ class Workspace:
             raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file")
         content = apply_edits(value.decode("utf-8"), edits)
         return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
-                                request=("edit_file", dict(path=path, edits=edits, expected_sha256=expected_sha256, expected_instructions=expected_instructions)))
+                                request=("edit_file", {"path": path, "edits": edits, "expected_sha256": expected_sha256, "expected_instructions": expected_instructions}))
 
     def refresh_observed(self, state):
         changed = []
@@ -147,6 +150,13 @@ class Workspace:
 
     def search_files(self, query: str, glob: str = "**/*") -> dict:
         return self.backend.search_files(query, glob)
+
+    def grep(self, pattern: str, path: str = ".", glob: str | None = None,
+             ignore_case: bool = False, max_matches: int = 100) -> dict:
+        return search_grep(self, pattern, path, glob, ignore_case, max_matches)
+
+    def glob(self, pattern: str, path: str = ".", max_results: int = 200) -> dict:
+        return search_glob(self, pattern, path, max_results)
 
     def validate_command(self, argv, timeout):
         if not self.allow_command:
@@ -209,6 +219,8 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     registry.register("get_instructions", "Get applicable root-to-directory AGENTS.md guidance and its digest for a target path", params({"path": string}, []), workspace.get_instructions, retry_safe=True, contextual=True)
     registry.register("read_file", "Read UTF-8 lines with whole-file SHA-256 and applicable guidance; use small line ranges if context is truncated", params({"path": string, "start_line": {"type": "integer", "minimum": 1}, "max_lines": {"type": "integer", "minimum": 1, "maximum": 2000}}, ["path"]), workspace.read_file, retry_safe=True, contextual=True)
     registry.register("search_files", "Search text in workspace files", params({"query": string, "glob": string}, ["query"]), workspace.search_files, retry_safe=True)
+    registry.register("grep", "Search workspace UTF-8 lines with a Python regex; skips ignored, binary and large files", params({"pattern": string, "path": string, "glob": string, "ignore_case": {"type": "boolean"}, "max_matches": {"type": "integer", "minimum": 1, "maximum": 2000}}, ["pattern"]), workspace.grep, retry_safe=True)
+    registry.register("glob", "List matching workspace files in sorted order, excluding ignored paths", params({"pattern": string, "path": string, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}}, ["pattern"]), workspace.glob, retry_safe=True)
     write_fields = {"path": string, "expected_sha256": version, "expected_instructions": digest}
     registry.register("write_file", "Create with expected_sha256='missing', or replace using the SHA-256 and instruction digest from a fresh read", params({**write_fields, "content": string}, [*write_fields, "content"]), workspace.write_file, contextual=True)
     edits = {"type": "array", "minItems": 1, "maxItems": 20, "items": params({"old_text": {"type": "string", "minLength": 1, "maxLength": 200000}, "new_text": {"type": "string", "maxLength": 200000}}, ["old_text", "new_text"])}
