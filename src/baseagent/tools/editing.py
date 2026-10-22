@@ -64,7 +64,7 @@ def write_target(workspace, path):
     return target
 
 
-def atomic_write(workspace, path, content, expected_sha256, expected_instructions):
+def atomic_write(workspace, path, content, expected_sha256, expected_instructions, *, pre_edit_check=None, post_edit_check=None):
     if not workspace.allow_write:
         raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
     if expected_sha256 is not None and expected_sha256 != "missing" and not re.fullmatch("[0-9a-f]{64}", expected_sha256):
@@ -78,6 +78,9 @@ def atomic_write(workspace, path, content, expected_sha256, expected_instruction
         expected = "missing" if expected_sha256 is None else expected_sha256
         if original != expected:
             raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file before editing")
+        original_bytes = read_bytes(target) if (pre_edit_check is not None or post_edit_check is not None) and original != "missing" else None
+        if pre_edit_check is not None:
+            pre_edit_check(original_bytes)
         instructions = workspace.get_instructions(path)
         if expected_instructions is not None and expected_instructions != instructions["digest"]:
             raise ToolFailure(ErrorCode.CONFLICT, "repository instructions changed; reload them before editing")
@@ -115,5 +118,7 @@ def atomic_write(workspace, path, content, expected_sha256, expected_instruction
             if temporary.exists():
                 os.chmod(temporary, stat.S_IREAD | stat.S_IWRITE)
             temporary.unlink(missing_ok=True)
+        if post_edit_check is not None:
+            post_edit_check(target, original_bytes)
     return {"path": str(target.relative_to(workspace.root)), "bytes": len(value), "sha256": sha256(value).hexdigest(),
             "instruction_digest": final_instruction_digest}

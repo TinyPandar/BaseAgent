@@ -136,7 +136,8 @@ def run_agent(
     root = str(Path(workspace_root).resolve()) if workspace_root is not None else None
     if subtasks is not None:
         tools = subtasks.bind_tools(tools)
-    policy = tool_policy or ToolPolicy()
+    from baseagent.tools.edit_policy import bind_edit_policy
+    policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
     config = runtime_config
     if subtasks is not None:

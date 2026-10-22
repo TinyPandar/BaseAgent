@@ -10,6 +10,7 @@ from baseagent.backends import LocalBackend, WorkspaceBackend
 
 from .registry import ToolRegistry
 from .result import ErrorCode, ToolFailure, ToolResult
+from .edit_policy import EditPolicy, write_file as policy_write_file
 
 
 def apply_edits(content: str, edits: list[dict]) -> str:
@@ -32,7 +33,7 @@ def apply_edits(content: str, edits: list[dict]) -> str:
 
 class Workspace:
     def __init__(self, root: str | Path | None = None, *, backend: WorkspaceBackend | None = None,
-                 allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=()):
+                 allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=(), edit_policy: EditPolicy | None = None):
         if backend is None:
             if root is None:
                 raise ValueError("workspace requires a root or backend")
@@ -49,6 +50,7 @@ class Workspace:
         self.allow_command = allow_command
         self.allow_memory_publish = allow_memory_publish
         self.protected_paths = backend.protected_paths
+        self.edit_policy = edit_policy if edit_policy is not None else EditPolicy()
 
     def _path(self, relative: str) -> Path:
         # Namespace validation only. All actual I/O belongs to the backend.
@@ -93,11 +95,15 @@ class Workspace:
         return result
 
     def write_file(self, path: str, content: str, expected_sha256: str | None = None, expected_instructions: str | None = None, *, context=None) -> dict:
+        return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
+                               request=("write_file", dict(path=path, content=content, expected_sha256=expected_sha256, expected_instructions=expected_instructions)))
+
+    def _write_file(self, path, content, expected_sha256, expected_instructions, *, context, request):
         self._check_observation_capacity(path, context)
         if not self.allow_write:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
         self._path(path)
-        result = self.backend.write_file(path, content, expected_sha256, expected_instructions)
+        result = policy_write_file(self, path, content, expected_sha256, expected_instructions, context=context, request=request)
         self._observe(result, context)
         if context is not None:
             from .workflow import invalidate_verifications
@@ -122,7 +128,8 @@ class Workspace:
         if sha256(value).hexdigest() != expected_sha256:
             raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file")
         content = apply_edits(value.decode("utf-8"), edits)
-        return self.write_file(path, content, expected_sha256, expected_instructions, context=context)
+        return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
+                                request=("edit_file", dict(path=path, edits=edits, expected_sha256=expected_sha256, expected_instructions=expected_instructions)))
 
     def refresh_observed(self, state):
         changed = []
@@ -192,6 +199,7 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
                                     "allow_memory_publish": workspace.allow_memory_publish,
                                     "protected_paths": sorted(str(path) for path in workspace.protected_paths),
                                     "backend": workspace.backend.contract()}
+    registry.capability_contract["edit_policy"] = workspace.edit_policy.contract()
     def params(properties: dict, required: list[str]) -> dict:
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
     string = {"type": "string"}
