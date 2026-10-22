@@ -5,7 +5,7 @@
 ## CLI 入口（Phase 3 / P1）
 
 仅从仓库 checkout 运行，不改变发行包或默认 `baseagent` CLI。入口复用
-`baseagent.main` 的配置、DEEPSEEK 模型初始化、`SessionStore` 和 `run_agent`。
+`baseagent.main` 的配置、模型初始化、`SessionStore` 和 `run_agent`；提供 `index`、`status`、`ask` 及 `history log/show/added`。
 
 ```bash
 # 离线入库；参数及相对路径语义与 scripts/build_knowledge_base.py 一致
@@ -38,8 +38,9 @@
 `index`，不会自动重建。语料修改后必须重新入库。
 
 问答默认 hybrid，沿用 `RAG_RETRIEVAL_MODE` 等现有配置。`--mock-embedding`
-仅替换 embedding，不替换问答模型；生产问答沿用 `.env` 中的
-`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`，涉及真实调用时需另行授权。
+仅替换 embedding，不替换问答模型。问答支持 `.env` 中完整的
+`BASEAGENT_LLM_API_KEY`、`BASEAGENT_LLM_BASE_URL`、`BASEAGENT_LLM_MODEL`；
+未启用通用模型配置时使用 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`。
 `ask --config`、`--db`、`--session`、`--resume`、`--inspect-session`、预算、
 能力包及权限开关与原 CLI 一致；检查会话不需要索引、模型或密钥。
 默认不开启写入或命令权限。
@@ -172,7 +173,7 @@ print(result.to_dict())
 .venv/Scripts/python.exe -B -m unittest discover -s tests -p "test_rag*.py" -v
 ```
 
-Phase 2 新增 20 项测试，与 Phase 1 合计 35 项 RAG 测试通过；最终全量回归 497 项全部通过（235.373 秒）。演示的 7 项检查通过，包括回放时再次执行检索、状态一致、引用定位和写权限保持关闭。这里的模型响应和 usage 为合成值；真实模型回答质量、Recall@k 和受控 coding 场景的端到端评测仍待后续阶段。
+Phase 2 新增 20 项测试，与 Phase 1 合计 35 项 RAG 测试通过；最终全量回归 497 项全部通过（235.373 秒）。演示的 7 项检查通过，包括回放时再次执行检索、状态一致、引用定位和写权限保持关闭。这里的模型响应和 usage 为合成值；真实模型回答质量仍待评估；当前已有下述检索指标与受控 coding 录制/回放。
 
 ## 使用示例
 
@@ -235,7 +236,7 @@ RAG_COLLECTION_NAME=baseagent_docs
 RAG_INDEX_DIR=.baseagent/rag_index
 ```
 
-`RAG_EMBEDDING_API_KEY` 优先于 `OPENAI_API_KEY`；批次大小默认为 100，百炼请设为 10（每次请求最多 10 个输入）。`RAG_EMBEDDING_DIMENSIONS` 可省略，兼容旧名 `RAG_EMBEDDING_DIMENSION`，两者同时设置时优先使用新名。构建、查询和评估脚本读取同一组配置，不自动加载 `.env`；更换模型或维度后须重建索引。
+`RAG_EMBEDDING_API_KEY` 优先于 `OPENAI_API_KEY`；批次大小默认为 10。`RAG_EMBEDDING_DIMENSIONS` 可省略，兼容旧名 `RAG_EMBEDDING_DIMENSION`，两者同时设置时优先使用新名。构建、查询和评估脚本读取同一组配置，不自动加载 `.env`；更换模型或维度后须重建索引。
 
 脚本通过 `--corpus-root`、`--index-dir`、`--top-k` 等参数选择路径与数量；这些参数不自动读取同名的其他环境变量。
 
@@ -249,7 +250,30 @@ hybrid 使用 BM25 与向量候选的加权 RRF。BM25 默认从向量 collectio
 
 正常 hybrid 的 RRF 分数越高越好，`min_score` 为相关性下限。`knowledge_search` 返回实际模式和对应的 `score_kind`，查询脚本按实际分数显示 distance/relevance。回退后应按实际分数语义解释结果，不混用阈值。
 
-默认值依据[80 题集评测报告](evaluation/reports/bailian-80q-summary-2026-10-21.md)：test 上 vector R@1/MRR 为 **0.378/0.678**，bm25 **0.407/0.759**，hybrid **0.567/0.845**，hybrid+qwen **0.583/0.857**。参数在 tune 上选择，test 使用固定参数。qwen 的收益小且每查询约 **1.4 万 token**，故保持可选、默认关闭；只有显式向 `retrieve` 传入 reranker 才会重排，评测 API 还需 `--allow-rerank-api --max-rerank-tokens N` 显式启用。普通 hybrid 不调用重排 API；向量分支沿用配置的 embedding provider，离线测试使用 Mock。本次没有重跑付费评测。
+默认值依据[80 题集评测报告](evaluation/reports/bailian-80q-summary-2026-10-21.md)。test split 为 28 道有答案、8 道无答案；以下指标仅计有答案题，参数在 tune 上选择后固定：
+
+| 模式 | R@1 | R@5 | MRR |
+| --- | ---: | ---: | ---: |
+| vector | 0.378 | 0.710 | 0.678 |
+| BM25 | 0.407 | 0.734 | 0.759 |
+| hybrid | 0.567 | 0.782 | 0.845 |
+| hybrid + qwen3-rerank | 0.583 | 0.770 | 0.857 |
+
+qwen 可选、默认关闭；只有显式向 `retrieve` 传入 reranker 才会重排。评测脚本使用 `--allow-rerank-api --max-rerank-tokens N` 启用。普通 hybrid 不调用重排 API；向量分支使用配置的 embedding provider。
+
+### Embedding / rerank 缓存
+
+两个检索评测 CLI 默认共享 `.baseagent/cache/rag.sqlite3`，`RAG_CACHE_DIR` 可改目录，`--no-cache` 关闭读写；实验脚本的 `--query-cache` 接受目录。embedding 按 provider/model/dimensions/文本哈希缓存，rerank 按模型、查询和有序候选文本缓存；命中不重复请求对应 API。应用问答没有自动启用这层评测缓存。恢复已有 Chroma 向量及统计口径见 [evaluation/CACHE.md](evaluation/CACHE.md)。
+
+## 受控 coding 与离线回放
+
+`applications.project_assistant.evaluation.coding` 在临时夹具中检索约定、修复加法实现、运行固定测试并生成报告；脚本模型版本可离线运行。`scripts/record_coding_scenario.py` 提供真实模型录制与断网回放，仓库附有百炼 qwen-plus cassettes：
+
+```bash
+PYTHONPATH=.:src .venv/bin/python scripts/record_coding_scenario.py --replay
+```
+
+回放无需密钥，在新临时工作区比较最终状态、工具序列与验收结果；差异返回非零。录像请求中包含录制时的绝对工作区路径，需在原仓库路径下回放；录像同时保留失败的运行，用于失败分析。录制配置与限制见[评测说明](evaluation/README.md#受控-coding-离线验收phase-3-第-3-项)。
 
 ## 技术选型
 
@@ -272,8 +296,9 @@ hybrid 使用 BM25 与向量候选的加权 RRF。BM25 默认从向量 collectio
 - [x] 默认混合检索 (BM25 + 向量 RRF，可选重排)
 - [ ] Chunk 预算控制 (限制 top-k tokens ≤ N)
 - [ ] 增量索引更新 (基于 corpus version diff)
-- [ ] Cross-encoder 重排 (可选)
-- [ ] 评测框架 (Recall@5, 引用准确率)
+- [x] 可选 qwen3-rerank API 重排
+- [x] 检索评测 (Recall@k、MRR)
+- [ ] 生成回答质量与引用准确率评测
 
 ## Phase 3 / P2：Git 历史与进度恢复
 

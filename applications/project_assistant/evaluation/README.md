@@ -14,7 +14,7 @@ OpenAI client, uses explicit local vectors, and disables Chroma telemetry. It
 builds a fresh `VectorIndex` in batches (in-memory for Mock, persisted for real providers) and retrieves using the existing
 `retrieve` function. It does not evaluate generated answers or the agent tool's
 ACL/redaction filters. There are no new dependencies. Existing indexes are not
-modified. `--openai-embedding` selects the configured OpenAI-compatible provider; no real embedding quality or cost has been measured in this work.
+modified. `--openai-embedding` selects the configured OpenAI-compatible provider; retained real-provider measurements appear below.
 
 `questions.json` contains 80 manually specified questions: sixteen each for
 exact identifiers, concepts, cross-file evidence, no-answer, and stale claims.
@@ -78,7 +78,7 @@ export RAG_EMBEDDING_BATCH_SIZE=10
 python scripts/evaluate_retrieval.py --index-dir .baseagent/retrieval_evaluation --max-tokens 1000000
 ```
 
-`RAG_EMBEDDING_BATCH_SIZE` must be positive (default 100); Bailian accepts at
+`RAG_EMBEDDING_BATCH_SIZE` must be positive (default 10); Bailian accepts at
 most 10 inputs per request, so set it to 10. Each request contributes to usage
 counters. `RAG_EMBEDDING_DIMENSIONS` is optional and positive; the legacy
 `RAG_EMBEDDING_DIMENSION` alias is accepted, with the plural name taking priority.
@@ -129,17 +129,16 @@ without version metadata are accepted only when every chunk equals the snapshot.
 # Offline plumbing baseline; the existing index must also use mock embeddings.
 python scripts/run_retrieval_experiments.py --split tune --mock-embedding \
   --corpus-root /tmp/frozen-corpus --index-dir /tmp/frozen-index \
-  --query-cache .baseagent/mock-query-embeddings.json
+  --query-cache .baseagent/mock-query-cache
 ```
 
 Omit `--mock-embedding` to use `RAGConfig`'s configured embedding provider. Query
-vectors for all questions are cached once as JSON under `.baseagent/` by
-default, or at `--query-cache` (gitignored or outside both checkouts). Matching
-cache hits do not construct an embedding client and cost no query embedding
-calls. Caches bind to provider, model, dimensions and an endpoint fingerprint;
-use separate caches for different embedding configurations. Query vectors must
-use the same model/dimensions as the existing index; mock rankings do not measure
-semantic quality. No live experiment was run as part of this implementation.
+vectors and rerank results use the shared SQLite cache described in [CACHE.md](CACHE.md).
+The default is `.baseagent/cache/rag.sqlite3`; `RAG_CACHE_DIR` changes the directory,
+`--query-cache DIRECTORY` overrides it for experiments, and `--no-cache` disables
+reads and writes. Matching embedding hits avoid creating an embedding client.
+Embedding entries bind to provider, model, dimensions and text hash; use the same
+model/dimensions as the index. Mock rankings do not measure semantic quality.
 
 Tune runs vector, BM25, 18 hybrid combinations (`rrf_k=10/30/60`, vector:BM25
 weights `1:1/1:2/2:1`, depth `20/50`), and heuristic reranking of the best hybrid.
@@ -158,7 +157,7 @@ test. `--final` evaluates each named config once and writes one new report using
 ```bash
 python scripts/run_retrieval_experiments.py --final --mock-embedding \
   --corpus-root /tmp/frozen-corpus --index-dir /tmp/frozen-index \
-  --query-cache .baseagent/mock-query-embeddings.json \
+  --query-cache .baseagent/mock-query-cache \
   --hybrid-params '{"rrf_k":30,"vector_weight":1,"bm25_weight":2,"candidate_depth":50}' \
   --thresholds '{"vector":-0.8,"bm25":2.5,"hybrid":0.05,"hybrid+heuristic":0.4}'
 ```
@@ -178,8 +177,8 @@ the estimate reduces the remaining budget; estimates cannot guarantee exact
 provider billing. `RAG_RERANK_BASE_URL` overrides the embedding base, otherwise a
 trailing `/compatible-mode/v1` becomes `/compatible-api/v1`.
 `RAG_RERANK_API_KEY` falls back to `RAG_EMBEDDING_API_KEY`. Neither endpoint nor
-key is included in reports or transport errors. Rerank API calls themselves
-are not cached; omit the flag for repeat runs without rerank charges.
+key is included in reports or transport errors. Rerank results are cached by model, query and ordered candidate texts; matching
+hits avoid API calls. Token budgets apply to cache misses. See [CACHE.md](CACHE.md).
 
 Application retrieval defaults to hybrid (RRF k=30, vector:BM25=1:2, candidate depth 20).
 `RAG_RETRIEVAL_MODE=vector|bm25|hybrid` or `retrieve(..., config=RAGConfig(...))`
@@ -255,13 +254,21 @@ request framing and provider tokenizer differences.
 
 ## Current default (80-question test, 2026-10-21)
 
-The [retained Bailian report](reports/bailian-80q-summary-2026-10-21.md) measured
-vector R@1/MRR **0.378/0.678**, bm25 **0.407/0.759**, hybrid **0.567/0.845**,
-and hybrid+qwen **0.583/0.857**. Hybrid is now the application default, using
-existing tune-selected parameters: RRF k=30, vector:BM25=1:2, candidate depth 20.
-Qwen adds little and costs about 14K tokens per query, so it stays optional and
-disabled by default. These are existing measurements; this change uses only
-local Mock tests and does not repeat API evaluation.
+The [retained Bailian report](reports/bailian-80q-summary-2026-10-21.md) uses
+an 80-question set; its test split has 28 answerable and 8 no-answer questions.
+Retrieval metrics below exclude no-answer questions:
+
+| Config | R@1 | R@5 | MRR |
+| --- | ---: | ---: | ---: |
+| vector | 0.378 | 0.710 | 0.678 |
+| BM25 | 0.407 | 0.734 | 0.759 |
+| hybrid | 0.567 | 0.782 | 0.845 |
+| hybrid + qwen3-rerank | 0.583 | 0.770 | 0.857 |
+
+Hybrid is the application default, using tune-selected parameters: RRF k=30,
+vector:BM25=1:2, candidate depth 20. `RAG_RETRIEVAL_MODE` overrides it.
+Qwen reranking remains optional and disabled by default. These are retained
+measurements, not a fresh API evaluation.
 
 Hybrid falls back to vector if BM25 cannot be built/searched (including empty
 corpus), and to bm25 if vector count/search is unavailable or yields no
@@ -292,7 +299,7 @@ JSON 结果分别记录状态、外部验收、completion report、模型/工具
 外部验收会独立运行只读固定测试，即使 agent 未获命令权限；它不能代替
 agent 自己的 `verify_command` 证据。离线测试覆盖失败路径及新临时目录断网回放。
 
-真实录制脚本（会调用配置的服务，本次仅用 fake client 离线验证）：
+真实录制脚本（会调用配置的服务；仓库已包含百炼 qwen-plus 录像）：
 `python -m scripts.record_coding_scenario --runs 3 --budget-cny 2`。
 必须提供 `BASEAGENT_LLM_BASE_URL`、`BASEAGENT_LLM_API_KEY`、`BASEAGENT_LLM_MODEL`，
 缺失或配置无效时打印 pending 并退出；录制不回退到 DEEPSEEK。
@@ -316,3 +323,12 @@ CLI 与 Project Assistant 共享初始化，未使用通用环境变量时继续
 `--replay --output-dir <录像目录>`（兼容 `--replay-dir`）无需凭据，阻断 socket 连接，
 逐个使用新临时夹具比较最终状态、工具请求顺序与参数及验收结果；差异返回非零。
 回放规范化临时根路径和验证 UUID，保留 argv、输出和文件哈希。
+
+
+从仓库根目录回放已有录像（无需密钥，不发起模型请求）：
+
+```bash
+PYTHONPATH=.:src .venv/bin/python scripts/record_coding_scenario.py --replay
+```
+
+录像请求绑定录制时的仓库绝对路径，需在原 checkout 路径下回放（其他路径如 git worktree 会在首个请求报 `CassetteMismatch`）。录像同时保留成功与失败的运行，`.result.json` 记录每次的验收结果，供失败分析。

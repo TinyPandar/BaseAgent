@@ -2,13 +2,24 @@
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
 
-The library includes strict deterministic recording/replay and OpenAI-compatible/Anthropic adapters with retry and rate-limit middleware. The [Project Assistant](applications/project_assistant/README.md) now provides document/code ingestion, Chroma retrieval, and a `knowledge_search` tool package with source visibility, citation checks, redaction, and offline replay tests. Application modules run from a repository checkout; they are not built into the default coding CLI. Real-model answer evaluation and the controlled coding scenario remain future work. Runtime, concurrency admission, Redis/queues, and other framework extensions will follow demonstrated application needs. See [ARCHITECTURE.md](ARCHITECTURE.md) for current status, deferred milestones, and acceptance criteria.
+The library includes strict deterministic recording/replay and OpenAI-compatible/Anthropic adapters with retry and rate-limit middleware. The [Project Assistant](applications/project_assistant/README.md) now provides document/code ingestion, Chroma retrieval, and a `knowledge_search` tool package with source visibility, citation checks, redaction, and offline replay tests. Application modules run from a repository checkout; they are not built into the default coding CLI. Retrieval evaluation and a controlled coding scenario with recorded Bailian qwen-plus cassettes and offline replay are available; generated-answer quality evaluation remains future work. Runtime, concurrency admission, Redis/queues, and other framework extensions will follow demonstrated application needs. See [ARCHITECTURE.md](ARCHITECTURE.md) for current status, deferred milestones, and acceptance criteria.
 
 For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
 
+## Features / 功能概览
+
+- **Project Assistant**：文档/代码入库、带引用问答，默认 vector + BM25 加权 RRF 混合检索；`RAG_RETRIEVAL_MODE` 可覆盖，qwen 重排可选且默认关闭。见[检索结果](#project-assistant-默认检索)。
+- **检索缓存**：评测支持 embedding 与 rerank 的本地 SQLite 缓存，复用命中结果；见[缓存说明](applications/project_assistant/evaluation/CACHE.md)。
+- **应用 CLI 与历史**：`python -m applications.project_assistant` 提供 `index`、`status`、`ask` 和 `history log/show/added`；只读 `git_log`、`git_show`、`git_pickaxe` 工具用于历史查询。见[应用说明](applications/project_assistant/README.md)。
+- **受控 coding 场景**：临时夹具中检索约定、修改代码、运行验证并写报告；附百炼 qwen-plus 录像与离线回放入口。见[场景说明](applications/project_assistant/evaluation/README.md#受控-coding-离线验收phase-3-第-3-项)。
+- **上下文压缩（opt-in）**：保留原始会话，以摘要替换模型输入中的旧轮次；默认摘要器不调用模型。见[上下文压缩](#context-compactionopt-in)。
+- **测试修复循环（opt-in）**：编辑后在完成前运行配置的测试命令，失败时向模型反馈，达到迭代上限则停止。见[测试修复循环](#test-and-fix-loopopt-in)。
+- **通用编辑策略**：`EditPolicy` 支持路径允许/拒绝规则、大改动审批及编辑后检查失败回滚。见[编辑策略](#edit-policy)。
+- **工作区搜索**：`grep` 搜索正则与行号，`glob` 查找文件；遵守工作区边界与忽略规则，支持 ripgrep 和 Python 回退。见[搜索工具](#workspace-searchgrep--glob)。
+
 ## 快速上手（Quick Start）
 
-> 以下命令基于 HEAD `e4b4437` 的 `pyproject.toml`、`src/baseagent/main.py`、`applications/project_assistant/config.py` 与 `scripts/` 核对。
+> 以下入口与配置见 `pyproject.toml`、`src/baseagent/main.py`、`applications/project_assistant/config.py` 与 `scripts/`。
 
 ### 1. 环境要求与安装
 
@@ -51,10 +62,10 @@ py -3.12 -m venv .venv
 
 | 变量 | 是否必需 | 读取位置 | 说明 |
 | --- | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | CLI/UI 调用模型时必需 | `src/baseagent/main.py` | 缺失时报错 `DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL are required in local .env` |
-| `DEEPSEEK_BASE_URL` | CLI/UI 调用模型时必需 | `main.py` | OpenAI 兼容端点地址 |
+| `DEEPSEEK_API_KEY` | 使用 DEEPSEEK 配置时必需 | `src/baseagent/main.py` | 与 `DEEPSEEK_BASE_URL` 一起配置 |
+| `DEEPSEEK_BASE_URL` | 使用 DEEPSEEK 配置时必需 | `main.py` | OpenAI 兼容端点地址 |
 | `DEEPSEEK_MODEL` | 可选 | `main.py` | 默认 `deepseek-chat`；`--model` 优先 |
-| `OPENAI_API_KEY` | 仅 RAG 真实 embedding 需要 | `applications/project_assistant/config.py`、`rag/embedding.py` | 用 `--mock-embedding` 时不需要 |
+| `OPENAI_API_KEY` | RAG embedding 凭据回退项 | `applications/project_assistant/config.py`、`rag/embedding.py` | `RAG_EMBEDDING_API_KEY` 优先；用 `--mock-embedding` 时不需要 |
 | `RAG_EMBEDDING_PROVIDER` | 可选 | `config.py` | 默认 `openai` |
 | `RAG_EMBEDDING_MODEL` | 可选 | `config.py` | 默认 `text-embedding-3-small` |
 | `RAG_INDEX_DIR` | 可选 | `config.py` | 默认 `.baseagent/rag_index`（入库脚本的 `--output-dir` 会覆盖） |
@@ -67,7 +78,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 # DEEPSEEK_MODEL=deepseek-chat
 ```
 
-注意：只有 CLI（`main.py`）和 `scripts/record_cassettes.py` 会调用 `load_dotenv()`。`scripts/build_knowledge_base.py` / `query_knowledge_base.py` 只读取进程环境变量，不会自动加载 `.env`；`OPENAI_API_KEY`、`RAG_*` 需在 shell 中导出。Anthropic 适配器（`api_key_env="ANTHROPIC_API_KEY"`）只在库级调用时由调用方指定，CLI 不读取。
+CLI（包括 Project Assistant `ask`）加载本地 `.env`。可用完整的 `BASEAGENT_LLM_BASE_URL`、`BASEAGENT_LLM_API_KEY`、`BASEAGENT_LLM_MODEL` 选择 OpenAI 兼容模型；设置任一 `BASEAGENT_LLM_*` 模型配置项后，不再混用 DEEPSEEK 凭据。`BASEAGENT_LLM_EXTRA_BODY` 可传 JSON 对象。`scripts/build_knowledge_base.py` / `query_knowledge_base.py` 只读取进程环境变量，不会自动加载 `.env`；`OPENAI_API_KEY`、`RAG_*` 需在 shell 中导出。Anthropic 适配器（`api_key_env="ANTHROPIC_API_KEY"`）只在库级调用时由调用方指定，CLI 不读取。
 
 ### 3. 运行 CLI
 
@@ -402,7 +413,7 @@ Every CLI run uses a SQLite session. The default database is `.baseagent/session
 .\.venv\Scripts\python.exe -m baseagent --session demo --resume --max-steps 16 --max-model-calls 16
 ```
 
-A new prompt starts a new turn only after the previous one completes. Turn counters reset for a new prompt; recovery preserves counters and unspecified limits. Write/command permissions must be granted explicitly on each invocation, including recovery. Tools and middleware are supplied again by the caller; the database stores state, not Python objects or provider credentials. Full archived history currently grows without compaction; the model receives a separate bounded projection.
+A new prompt starts a new turn only after the previous one completes. Turn counters reset for a new prompt; recovery preserves counters and unspecified limits. Write/command permissions must be granted explicitly on each invocation, including recovery. Tools and middleware are supplied again by the caller; the database stores state, not Python objects or provider credentials. Full archived history remains intact; the model receives a bounded projection with optional history summaries.
 
 The checkpoint includes the transcript, outcome, workspace, turn ID, and budgets. The tool ledger records `pending → running → completed`, original requests, actual dispatch attempts, the latest dispatched request and terminal result, and the final middleware result. The assistant message and its pending calls commit together; a completed tool result and its transcript reply also commit together. A per-session OS file lock rejects concurrent writers and is released when the process exits.
 
@@ -875,8 +886,39 @@ backend 实现是可信扩展，负责字节读取限额、受保护路径/搜�
 
 `RAG_RETRIEVAL_MODE` 默认 `hybrid`（BM25 + 向量，RRF `rrf_k=30`、vector:bm25 权重 `1:2`、`candidate_depth=20`）；可显式设置 `vector` 或 `bm25`，非法值会报出配置项与允许值。`knowledge_search` 和查询脚本沿用此默认值。hybrid 无法构建 BM25（包括空语料）时回退 vector；向量索引为空、不可用或查询失败且 BM25 可用时回退 bm25。每个进程对每种回退方向只记录一次 warning；空索引返回空证据，两路均查询失败则报错。显式单路模式不自动切换。
 
-[80 题集评测报告](applications/project_assistant/evaluation/reports/bailian-80q-summary-2026-10-21.md)的 test 结果（R@1 / MRR）：vector `0.378 / 0.678`、bm25 `0.407 / 0.759`、hybrid `0.567 / 0.845`、hybrid+qwen `0.583 / 0.857`。因此默认 hybrid；qwen 收益小且每查询约 1.4 万 token，保持可选、默认关闭。这是既有报告的结果，本次修改仅运行离线 Mock 测试。完整参数与回退分数语义见[应用配置说明](applications/project_assistant/README.md#配置)。
+[80 题集评测报告](applications/project_assistant/evaluation/reports/bailian-80q-summary-2026-10-21.md)的 test split（28 道有答案、8 道无答案；下列检索指标仅计有答案题）：
+
+| 模式 | R@1 | R@5 | MRR |
+| --- | ---: | ---: | ---: |
+| vector | 0.378 | 0.710 | 0.678 |
+| BM25 | 0.407 | 0.734 | 0.759 |
+| hybrid | 0.567 | 0.782 | 0.845 |
+| hybrid + qwen3-rerank | 0.583 | 0.770 | 0.857 |
+
+参数在 tune 上选择，test 使用固定参数。qwen 重排默认关闭，需显式向 `retrieve` 传入 reranker；实验脚本使用 `--allow-rerank-api --max-rerank-tokens N` 启用。完整参数与回退分数语义见[应用配置说明](applications/project_assistant/README.md#配置)。评测 embedding/rerank 缓存见 [CACHE.md](applications/project_assistant/evaluation/CACHE.md)。
+
+## Context compaction（opt-in）
 
 Automatic history compaction is opt-in: `--compaction-max-chars 24000 --compaction-keep-turns 2`, or `run.compaction_max_chars` / `run.compaction_keep_turns` in harness JSON. The budget counts JSON characters of the projected messages, excluding tool schemas; recent turns include the active user turn. Settings persist across session recovery; `--compaction-max-chars 0` disables future automatic summaries. The default summarizer is deterministic truncation with a 1000-character excerpt and makes no model calls. Python callers can supply `summarizer=ModelSummarizer(adapter)` or any `Summarizer` implementation from `baseagent.agent.compaction`; that explicit adapter owns its controls and usage accounting.
 
 Compaction extends the existing provenance-bound `history_summary` projection, leaving the raw transcript and message indices intact. It preserves system/developer instructions and the latest N whole user turns, validates tool call/result pairs, and feeds the previous summary into subsequent compactions. Summaries remain assistant reference data. Empty, failed, or nonshrinking summaries leave history unchanged and record `context_compaction_failed`; successful replacements record `context_compacted` without message content. The character budget is a soft trigger: protected turns may exceed it. When enabled, the hard context byte limit may clip tool previews but cannot remove turns; if the protected input still cannot fit, the run stops with `context_limit_exceeded`.
+
+## Test-and-fix loop（opt-in）
+
+`src/baseagent/agent/completion.py` 在本轮有编辑时，于完成前运行宿主配置的测试 argv。失败输出截断后反馈给模型继续修复；默认最多反馈 3 次，耗尽后任务失败。默认不启用，也不会自行选择测试命令。
+
+```bash
+uv run baseagent "Fix the failing tests" --root . --allow-write --allow-command \
+  --test-command '[".venv/bin/python", "-m", "unittest", "discover", "-s", "tests"]' \
+  --test-fix-max-iterations 3 --test-fix-output-max-chars 4000
+```
+
+也可在 completion policy 的 `test_fix` 中配置 `argv`、`max_iterations`、`output_max_chars` 和 `timeout`。仍需命令权限；此循环不代替其他 completion checks。
+
+## Edit policy
+
+`src/baseagent/tools/edit_policy.py` 的 `EditPolicy` 由 Python 宿主传给 `Workspace(edit_policy=...)`。它对 `write_file` / `edit_file` 应用路径 allowlist/denylist（拒绝优先，默认保护凭据与 `.git`），可设置 `max_changed_lines` 触发精确工具调用审批。可选 `post_edit_check` 使用 argv 执行检查，失败时恢复该文件原始内容；事务检查需要 LocalBackend。编辑策略仍需配合写入/命令权限。
+
+## Workspace search（grep / glob）
+
+coding 能力包注册 `grep(pattern, path=".", glob=None, ignore_case=False, max_matches=100)` 和 `glob(pattern, path=".", max_results=200)`，实现在 `src/baseagent/tools/search.py`。前者返回路径、行号和文本，后者返回排序后的文件路径；均报告截断。搜索限于本机工作区，过滤保护路径、链接及忽略目录；内容搜索跳过二进制、非 UTF-8 和大文件。优先使用 ripgrep，缺失或表达式不兼容时使用 Python 回退。
