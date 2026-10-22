@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "fcef1b423d0d9e1c",
+  "corpus_version": "a8c2addc6b832129",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
@@ -103,7 +103,7 @@
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
     "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89",
-    "src/baseagent/main.py:176-177": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
+    "src/baseagent/main.py:179-180": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
   },
   "questions": [
     {
@@ -413,7 +413,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:176-177",
+        "src/baseagent/main.py:179-180",
         "applications/project_assistant/tools.py:104-116"
       ]
     },

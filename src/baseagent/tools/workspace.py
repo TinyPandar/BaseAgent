@@ -107,6 +107,7 @@ class Workspace:
         self._observe(result, context)
         if context is not None:
             from .workflow import invalidate_verifications
+            context.state.metadata["edited_this_turn"] = True
             invalidate_verifications(self, context.state)
             if Path(path).name.casefold() == "agents.md":
                 self.refresh_observed(context.state)

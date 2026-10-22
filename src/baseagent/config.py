@@ -14,14 +14,15 @@ SECTIONS = {
             "max_tool_context_bytes", "max_total_tokens", "max_duration_seconds", "model_retries",
             "tool_retries", "trace", "estimate_model", "preauthorize_model", "max_completion_tokens",
             "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile"},
-    "policies": {"tool_policy", "completion_policy", "subtasks_config"},
+    "policies": {"tool_policy", "completion_policy", "subtasks_config", "test_command", "test_fix_max_iterations", "test_fix_output_max_chars"},
 }
 PATH_FIELDS = {"root", "db", "tokenizer_file", "tool_policy", "completion_policy", "subtasks_config"}
 BOOL_FIELDS = SECTIONS["permissions"] | {"trace", "estimate_model", "preauthorize_model"}
 INT_MIN = {"compaction_max_chars": 0, "compaction_keep_turns": 1, "max_steps": 1, "max_model_calls": 1, "max_tool_calls": 0,
            "max_context_bytes": 256, "max_tool_context_bytes": 256, "max_total_tokens": 1,
            "model_retries": 0, "tool_retries": 0, "max_completion_tokens": 1,
-           "estimate_margin_percent": 0, "estimate_fixed_margin": 0}
+           "estimate_margin_percent": 0, "estimate_fixed_margin": 0,
+           "test_fix_max_iterations": 0, "test_fix_output_max_chars": 1}
 
 
 def load_harness_config(path):
@@ -55,6 +56,9 @@ def load_harness_config(path):
                 valid_duration = False
             if not valid_duration:
                 raise ValueError("max_duration_seconds must be positive and finite")
+        elif key == "test_command":
+            if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+                raise ValueError("test_command must be a nonempty argv array")
         elif key in {"tool_packages", "skills_dirs"}:
             if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value) or len(set(value)) != len(value):
                 raise ValueError(f"{key} must be a unique string array")

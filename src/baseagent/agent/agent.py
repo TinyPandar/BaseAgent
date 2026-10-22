@@ -83,6 +83,9 @@ def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_ca
     state.metadata.pop("tool_approvals", None)
     state.metadata.pop("approval_request", None)
     state.metadata.pop("completion_report", None)
+    state.metadata.pop("edited_this_turn", None)
+    state.metadata.pop("test_fix_feedback_count", None)
+    state.metadata.pop("test_fix_failure", None)
     state.max_steps = 8 if max_steps is None else max_steps
     state.max_model_calls = state.max_steps if max_model_calls is None else max_model_calls
     state.max_tool_calls = 32 if max_tool_calls is None else max_tool_calls
@@ -491,6 +494,11 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
         def accept_completion(self):
             if completion_policy is not None:
+                check_budgets()
+                accept_test_fix = getattr(completion_policy, "accept_test_fix", None)
+                if accept_test_fix is not None and not accept_test_fix(tool_context(None)):
+                    return False
+                check_budgets()
                 report = completion_policy.evaluate(state)
                 state.metadata["completion_report"] = report
                 checkpoint("completion_checked", passed=report["passed"], issue_count=len(report["issues"]))

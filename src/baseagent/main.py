@@ -149,6 +149,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--request-bound-profile", choices=["deepseek-context-v1"], help="Explicit conservative whole-context bound for official DeepSeek Flash/Pro; requires --preauthorize-model")
     parser.add_argument("--max-completion-tokens", type=int, default=4096, help="Output cap for strict or estimated reservations (default: 4096)")
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
+    parser.add_argument("--test-command", type=json.loads, help='Test-and-fix command as a JSON argv array; requires --allow-command')
+    parser.add_argument("--test-fix-max-iterations", type=int, default=None, help="Maximum failure feedback messages (default: 3)")
+    parser.add_argument("--test-fix-output-max-chars", type=int, default=None, help="Failure output character limit (default: 4000)")
     parser.add_argument("--accept-config-changes", action="store_true", help="Explicitly accept changed runtime/tools for an unfinished turn")
     parser.add_argument("--accept-workspace-changes", action="store_true", help="Acknowledge changed observed files/guidance; stale write hashes remain rejected")
     parser.add_argument("--model", default=None, help="Model name (default: BASEAGENT_LLM_MODEL or DEEPSEEK_MODEL)")
@@ -407,8 +410,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             from baseagent.agent.subtasks import SubtaskRuntime
             configuration = read_json_object(args.subtasks_config, max_bytes=32000, label="subtask configuration")
             subtasks = SubtaskRuntime.from_dict(configuration, workspace=workspace)
-        if args.completion_policy:
-            completion = CompletionPolicy(workspace, read_json_object(args.completion_policy, max_bytes=20_000, label="completion policy"))
+        requirements = (read_json_object(args.completion_policy, max_bytes=20_000, label="completion policy")
+                        if args.completion_policy else {"require_plan": False, "checks": [], "artifacts": []})
+        if args.test_command is not None:
+            requirements["test_fix"] = {**requirements.get("test_fix", {}), "argv": args.test_command}
+        for field, value in (("max_iterations", args.test_fix_max_iterations), ("output_max_chars", args.test_fix_output_max_chars)):
+            if value is not None:
+                if "test_fix" not in requirements:
+                    raise ValueError("test-fix settings require --test-command or completion policy test_fix")
+                requirements["test_fix"][field] = value
+        if args.completion_policy or "test_fix" in requirements:
+            completion = CompletionPolicy(workspace, requirements)
         load_dotenv()
         if args.request_bound_profile and not args.preauthorize_model:
             raise ValueError("request bound profile requires --preauthorize-model")
