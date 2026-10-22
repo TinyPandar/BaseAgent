@@ -274,3 +274,39 @@ hybrid 使用 BM25 与向量候选的加权 RRF。BM25 默认从向量 collectio
 - [ ] 增量索引更新 (基于 corpus version diff)
 - [ ] Cross-encoder 重排 (可选)
 - [ ] 评测框架 (Recall@5, 引用准确率)
+
+## Phase 3 / P2：Git 历史与进度恢复
+
+新增只读 `git_log`、`git_show`、`git_pickaxe` 工具，普通 `ask` 同时装配知识检索和
+Git 历史。Agent 对进度问题优先读取历史并引用 commit hash；代码/文档问题仍引用
+`knowledge_search` 的来源。无需知识索引时，显式使用 `ask --history-only`：
+
+```bash
+# 直接读取历史：不初始化模型、不需要索引或 API
+.venv/bin/python -m applications.project_assistant history log --root . --max-count 10
+.venv/bin/python -m applications.project_assistant history log --root . \
+  --since 2026-10-01 --author TinyPandar --path applications/project_assistant --grep retrieval
+.venv/bin/python -m applications.project_assistant history show HEAD --root .
+.venv/bin/python -m applications.project_assistant history added knowledge_search --root .
+# --regex 切换为 git log -G；默认使用 -S 的字面量计数变化搜索
+.venv/bin/python -m applications.project_assistant history added 'def knowledge_.*' --regex --root .
+
+# 真实问答模型调用仍需另行授权；离线测试使用 scripted fake LLM
+.venv/bin/python -m applications.project_assistant ask \
+  "最近完成了什么？哪个 commit 加入了 knowledge_search？" --history-only --root .
+.venv/bin/python -m pytest -q tests/test_project_assistant_git_history.py
+```
+
+`history log` 支持 `--since/--until/--author/--path/--grep/--max-count`；`show`、
+`added` 也支持 `--path`。根目录必须是完整 Git 仓库根目录；搜索默认仅覆盖 HEAD
+可达历史。结果默认最多 10 个 commit，上限 50；每次 Git 调用超时 10 秒，输出至多
+24,000 UTF-8 字节，超限带 `[TRUNCATED: output limit reached]` 和 `truncated=true`。
+`show` 只返回 commit 元数据和 diff stat，不返回完整 patch。`-S` 同时匹配添加与删除，
+`-G` 匹配变动行；候选 commit 不证明首次引入、测试通过或全部计划已完成。
+
+实现固定调用 `/usr/bin/git`，仅使用 argv 列表、`git -C` 和 `--no-pager`，隔离继承的
+Git 环境/全局配置，禁用外部 diff、textconv、签名、fsmonitor 和网络协议。
+输入拒绝选项注入，路径解析后必须留在根目录内，pathspec 按字面量处理。
+这些工具不授予写文件或任意命令权限，仍受各自名称的 ToolPolicy 控制；Git 历史的
+授权范围是整个仓库，不复用知识检索的 Markdown/Python 来源 ACL 或 `read_file` 规则。
+仅在允许读取仓库历史（含历史 commit 消息和文件名）时启用；输出作为不可信参考数据。

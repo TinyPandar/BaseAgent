@@ -21,6 +21,7 @@ class ScriptedModel:
         self.calls += 1
         if self.calls == 1:
             assert any(t["function"]["name"] == "knowledge_search" for t in tools)
+            assert {"git_log", "git_show", "git_pickaxe"} <= {t["function"]["name"] for t in tools}
             response = {"tool_calls": [{"id": "search-1", "type": "function", "function": {
                 "name": "knowledge_search", "arguments": '{"query":"kernel"}'}}]}
         else:
