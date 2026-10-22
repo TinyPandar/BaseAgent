@@ -155,6 +155,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8; resume: preserve)")
     parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries (defaults to max-steps)")
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
+    parser.add_argument("--compaction-max-chars", type=int, help="Enable historical summaries above this JSON character budget (0 disables; resume: preserve)")
+    parser.add_argument("--compaction-keep-turns", type=int, help="Recent user turns to preserve including the active turn (default 2)")
     parser.add_argument("--max-context-bytes", type=int, help="Serialized model input UTF-8 bytes (default 96000; resume: preserve)")
     parser.add_argument("--max-tool-context-bytes", type=int, help="Per-tool data excerpt limit (default 4000; resume: preserve)")
     parser.add_argument("--max-total-tokens", type=int, help="Reported token budget per turn; unknown usage blocks execution")
@@ -233,6 +235,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     for value in (args.max_context_bytes, args.max_tool_context_bytes):
         if value is not None and value < 256:
             parser.error("context byte limits must be >= 256")
+    if args.compaction_max_chars is not None and args.compaction_max_chars < 0:
+        parser.error("compaction character budget must be nonnegative")
+    if args.compaction_keep_turns is not None and args.compaction_keep_turns < 1:
+        parser.error("compaction keep turns must be positive")
     if args.max_total_tokens is not None and args.max_total_tokens < 1:
         parser.error("token budget must be positive")
     if args.max_duration_seconds is not None and (not math.isfinite(args.max_duration_seconds) or args.max_duration_seconds <= 0):
@@ -448,6 +454,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             system_prompt=system_prompt, max_steps=args.max_steps,
             max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
             store=store, session_id=args.session, workspace_root=workspace.root,
+            compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
             max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
             runtime_config=config, accept_config_changes=args.accept_config_changes,
             max_total_tokens=args.max_total_tokens, max_duration_seconds=args.max_duration_seconds,

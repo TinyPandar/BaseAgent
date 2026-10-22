@@ -4,9 +4,9 @@ Budgets are serialized UTF-8 bytes, not a claim about a provider's tokenization.
 Completed old turns and then old exchanges can be removed as whole units.
 """
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass
-import json
 from typing import Any
 
 
@@ -74,7 +74,7 @@ class ContextPolicy:
         if type(self.max_tool_result_bytes) is not int or self.max_tool_result_bytes < 256:
             raise ValueError("tool context byte limit must be an integer >= 256")
 
-    def build(self, messages: list[dict], tools: list[dict]) -> ContextView:
+    def build(self, messages: list[dict], tools: list[dict], *, preserve_turns: bool = False) -> ContextView:
         projected = deepcopy(messages)
         groups = _exchanges(projected)
         original_count = len(projected)
@@ -129,12 +129,12 @@ class ContextPolicy:
             return values
 
         view = flatten()
-        while input_bytes(view, tools) > self.max_input_bytes and previous:
+        while input_bytes(view, tools) > self.max_input_bytes and previous and not preserve_turns:
             # Remove an entire completed user turn, including all tool replies.
             end = next((index for index in range(1, len(previous)) if previous[index][0]["role"] == "user"), len(previous))
             del previous[:end]
             view = flatten()
-        while input_bytes(view, tools) > self.max_input_bytes and len(active) > 2:
+        while input_bytes(view, tools) > self.max_input_bytes and len(active) > 2 and not preserve_turns:
             # Preserve the current prompt and the most recent full exchange.
             del active[1]
             view = flatten()

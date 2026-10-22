@@ -1,16 +1,17 @@
 import ast
-from copy import deepcopy
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
-from baseagent.agent.events import AgentEvent as LegacyAgentEvent, event
-from baseagent.agent.state import RunStatus as LegacyRunStatus, State
+from baseagent.agent.events import AgentEvent as LegacyAgentEvent
+from baseagent.agent.events import event
+from baseagent.agent.state import RunStatus as LegacyRunStatus
+from baseagent.agent.state import State
 from baseagent.kernel import AgentEvent, KernelState, RunStatus
-
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL = ROOT / "src" / "baseagent" / "kernel"
@@ -85,6 +86,8 @@ class KernelStateTests(unittest.TestCase):
         # Captured from State in tag v0.1-sync-baseline, before extraction.
         data = json.loads(BASELINE_STATE.read_text(encoding="utf-8"))
         state = State.from_dict(data)
+        # New harness options append defaults without changing legacy fields.
+        data = {**data, "compaction_max_chars": None, "compaction_keep_turns": 2}
         self.assertEqual(state.to_dict(), data)
         self.assertEqual(list(state.__dataclass_fields__), list(data))
         self.assertIs(state.status, RunStatus.INTERRUPTED)

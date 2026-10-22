@@ -1,22 +1,21 @@
-from copy import deepcopy
 import importlib.util
 import inspect
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import baseagent.agent.agent as adapter
 from baseagent.agent import iter_agent as public_iter_agent
-from baseagent.agent.state import RunStatus
 from baseagent.agent.errors import WorkspaceChanged
+from baseagent.agent.state import RunStatus
 from baseagent.kernel import AgentMiddleware, CancellationToken, Cancelled, iter_agent
 from baseagent.llm.response import ModelResponse, TokenUsage
 from baseagent.session import SessionStore
-from baseagent.tools.registry import ToolRegistry
 from baseagent.tools.policy import ToolPolicy
-
+from baseagent.tools.registry import ToolRegistry
 
 BASELINE_PATH = Path(__file__).parent / "fixtures" / "sync_agent_v0_1_baseline.py"
 spec = importlib.util.spec_from_file_location("baseagent.agent._sync_baseline_for_tests", BASELINE_PATH)
@@ -215,7 +214,13 @@ class KernelCompatibilityTests(unittest.TestCase):
         self.assertEqual(state.final_answer, "done")
 
     def test_sync_signature_and_public_kernel_export_are_preserved(self):
-        self.assertEqual(str(inspect.signature(adapter.run_agent)), str(inspect.signature(baseline.run_agent)))
+        current = inspect.signature(adapter.run_agent)
+        additions = {"compaction_max_chars", "compaction_keep_turns", "summarizer"}
+        for name in additions:
+            self.assertEqual(current.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
+            self.assertIsNone(current.parameters[name].default)
+        legacy = current.replace(parameters=[p for name, p in current.parameters.items() if name not in additions])
+        self.assertEqual(str(legacy), str(inspect.signature(baseline.run_agent)))
         self.assertIs(public_iter_agent, iter_agent)
 
 

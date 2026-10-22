@@ -2,37 +2,46 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from copy import deepcopy
-from dataclasses import replace
 import json
 import math
 import time
+from collections.abc import Iterable
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from baseagent.middleware import AgentMiddleware, MiddlewarePipeline, ModelRequest, ToolCallRequest
 from baseagent.kernel import AgentEvent, iter_agent
+from baseagent.kernel.agent import _as_dict as _as_dict  # noqa: PLC0414 -- Compatibility export.
+from baseagent.kernel.agent import _pending_calls as _pending_calls  # noqa: PLC0414 -- Compatibility export.
+from baseagent.kernel.agent import _tool_calls as _tool_calls  # noqa: PLC0414 -- Compatibility export.
 from baseagent.kernel.errors import ModelTimeoutError
-from baseagent.kernel.agent import _as_dict, _pending_calls, _tool_calls
 from baseagent.kernel.hooks import LoopHooks, TaskStopped
 from baseagent.kernel.model import Model
+from baseagent.llm.estimation import TokenEstimate
+from baseagent.llm.reservation import ReservationUnavailable, TokenReservation
+from baseagent.llm.response import ModelResponse
+from baseagent.middleware import (
+    AgentMiddleware,
+    MiddlewarePipeline,
+    ModelRequest,
+    ToolCallRequest,
+)
+from baseagent.session.compatibility import check_contract, runtime_contract
+from baseagent.tools.context import ToolContext
+from baseagent.tools.memory import project_history
+from baseagent.tools.policy import ToolPolicy, request_digest
 from baseagent.tools.registry import ToolRegistry
 from baseagent.tools.result import ErrorCode, ToolResult
-from baseagent.tools.context import ToolContext
-from baseagent.tools.policy import ToolPolicy, request_digest
-from baseagent.session.compatibility import check_contract, runtime_contract
-from .context import ContextLimitExceeded, ContextPolicy
-from .events import event
-from baseagent.llm.response import ModelResponse
-from .state import RunStatus, State
-from .errors import WorkspaceChanged, BudgetExceeded, TaskPaused
-from .scope import ExecutionScope
+
 from .cancellation import CancellationToken, Cancelled
-from baseagent.tools.memory import project_history
-from baseagent.llm.estimation import TokenEstimate
-from baseagent.llm.reservation import TokenReservation, ReservationUnavailable
+from .compaction import Summarizer, TruncatingSummarizer, compact_history
+from .context import ContextLimitExceeded, ContextPolicy
+from .errors import BudgetExceeded, TaskPaused, WorkspaceChanged
+from .events import event
+from .scope import ExecutionScope
+from .state import RunStatus, State
 
 if TYPE_CHECKING:
     from baseagent.session import SessionStore
@@ -93,6 +102,9 @@ def run_agent(
     store: SessionStore | None = None,
     session_id: str | None = None,
     workspace_root: str | Path | None = None,
+    compaction_max_chars: int | None = None,
+    compaction_keep_turns: int | None = None,
+    summarizer: Summarizer | None = None,
     max_context_bytes: int | None = None,
     max_tool_context_bytes: int | None = None,
     runtime_config: dict[str, Any] | None = None,
@@ -167,6 +179,14 @@ def run_agent(
                 state.max_context_bytes = max_context_bytes
             if max_tool_context_bytes is not None:
                 state.max_tool_context_bytes = max_tool_context_bytes
+            if compaction_max_chars is not None:
+                state.compaction_max_chars = compaction_max_chars or None
+            if compaction_keep_turns is not None:
+                state.compaction_keep_turns = compaction_keep_turns
+            if compaction_max_chars is not None and (type(compaction_max_chars) is not int or compaction_max_chars < 0):
+                raise ValueError("compaction character budget must be a nonnegative integer (0 disables)")
+            if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
+                raise ValueError("compaction keep turns must be a positive integer")
             ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes)
             state.metadata["runtime_contract"] = runtime_contract(tools, state.messages[0]["content"], config)
             return state
@@ -193,7 +213,7 @@ def run_agent(
     if store is None:
         if session_id is not None:
             raise ValueError("session_id requires a SessionStore")
-        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes)
+        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer)
     session_id = session_id or uuid4().hex
     with store.exclusive(session_id):
         existing = store.load(session_id)
@@ -214,10 +234,10 @@ def run_agent(
         store.save(state)
         supplied = cancellation
         token = CancellationToken(lambda: bool((supplied and supplied.cancelled()) or store.cancellation(state.session_id, state.turn_id)))
-        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes)
+        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer)
 
 
-def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False) -> State:
+def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None) -> State:
     scope = execution_scope or ExecutionScope(state)
     if scope.state is not state:
         raise ValueError("execution scope must own the active state")
@@ -269,7 +289,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         if completion_policy is not None:
             messages = deepcopy(messages)
             messages.insert(1, {"role": "system", "content": json.dumps(completion_policy.instructions(), ensure_ascii=False)})
-        view = ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes).build(messages, request.tools)
+        view = ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes).build(messages, request.tools, preserve_turns=state.compaction_max_chars is not None)
         state.metadata["context"] = {"input_bytes": view.input_bytes, "removed_messages": view.removed_messages,
                                      "clipped_tool_results": view.clipped_tool_results}
         check_budgets()
@@ -355,7 +375,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
             arguments = json.loads(request.arguments or "{}", parse_constant=reject_constant, object_pairs_hook=unique_object)
             if not isinstance(arguments, dict):
-                raise ValueError("tool arguments must be a JSON object")
+                raise ValueError("tool arguments must be a JSON object")  # noqa: TRY004 -- ToolResult validation contract
             json.dumps(arguments, allow_nan=False)
         except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
             result = ToolResult.failure(ErrorCode.INVALID_ARGUMENTS, "tool arguments must be a valid JSON object")
@@ -387,6 +407,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
         def before_model(self, current):
             pipeline.before_model(current)
+            compact_history(state, summarizer if summarizer is not None else TruncatingSummarizer(), checkpoint)
 
         def model_started(self):
             # Actual dispatch events are still recorded inside execute_model.
@@ -528,7 +549,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             except KeyboardInterrupt:
                 state.status = RunStatus.INTERRUPTED
                 state.error = "execution interrupted during cleanup; resume the saved session"
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- Persist cleanup failures as run status.
                 state.status = RunStatus.FAILED
                 state.error = f"{type(exc).__name__}: {exc}"
 

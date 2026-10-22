@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "621d175239bb69e5",
+  "corpus_version": "812da286eda66d57",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
@@ -43,7 +43,6 @@
     "applications/project_assistant/README.md:256-261": "c35bb53cdf1c1d62628fc3a6d6f7fab3f066c2a206f357241197fb86274f74d1",
     "DEVELOPMENT_HANDOFF.md:84-88": "94f8b40aa6d9e605374432b7a564deebefbba0f3bd54bdaf031e1c245949b883",
     "DEVELOPMENT_HANDOFF.md:40-40": "40ec18e30df8d6773df82e3f8d74aaec76175add5446fda5df38f2d4b39fd367",
-    "src/baseagent/main.py:174-175": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4",
     "applications/project_assistant/config.py:35-41": "431f42eeb330961c4d2ae3f07d9218517ba54c88882a214eaab51ceabafb8a79",
     "applications/project_assistant/rag/chunking.py:146-161": "48bb5991bf184474969d4a393de77f0462e474bc3f392b5f4c27d35dd542653a",
     "applications/project_assistant/rag/lexical.py:69-70": "f7eed170e1af25a2635a066534c0a1fd8c9fcf806e9c4afbbe25993a7f88adc1",
@@ -103,7 +102,8 @@
     "DEVELOPMENT_HANDOFF.md:75-75": "39e90f452fe0d3e1781e1214d73f7d0cf00e1d5db574d805cf5bf244ec745977",
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
-    "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89"
+    "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89",
+    "src/baseagent/main.py:176-177": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
   },
   "questions": [
     {
@@ -413,7 +413,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:174-175",
+        "src/baseagent/main.py:176-177",
         "applications/project_assistant/tools.py:104-116"
       ]
     },

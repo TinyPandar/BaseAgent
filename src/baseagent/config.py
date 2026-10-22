@@ -1,17 +1,16 @@
 """Declarative host defaults. CLI overrides config; config never imports code."""
 
-from pathlib import Path
 import math
+from pathlib import Path
 
 from baseagent.capabilities.assembly import BUILTIN_PACKAGES
 from baseagent.jsondata import read_json_object
-
 
 SECTIONS = {
     "workspace": {"root", "db"},
     "capabilities": {"tool_packages", "skills_dirs"},
     "permissions": {"allow_write", "allow_command", "allow_memory_publish"},
-    "run": {"model", "max_steps", "max_model_calls", "max_tool_calls", "max_context_bytes",
+    "run": {"compaction_max_chars", "compaction_keep_turns", "model", "max_steps", "max_model_calls", "max_tool_calls", "max_context_bytes",
             "max_tool_context_bytes", "max_total_tokens", "max_duration_seconds", "model_retries",
             "tool_retries", "trace", "estimate_model", "preauthorize_model", "max_completion_tokens",
             "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile"},
@@ -19,7 +18,7 @@ SECTIONS = {
 }
 PATH_FIELDS = {"root", "db", "tokenizer_file", "tool_policy", "completion_policy", "subtasks_config"}
 BOOL_FIELDS = SECTIONS["permissions"] | {"trace", "estimate_model", "preauthorize_model"}
-INT_MIN = {"max_steps": 1, "max_model_calls": 1, "max_tool_calls": 0,
+INT_MIN = {"compaction_max_chars": 0, "compaction_keep_turns": 1, "max_steps": 1, "max_model_calls": 1, "max_tool_calls": 0,
            "max_context_bytes": 256, "max_tool_context_bytes": 256, "max_total_tokens": 1,
            "model_retries": 0, "tool_retries": 0, "max_completion_tokens": 1,
            "estimate_margin_percent": 0, "estimate_fixed_margin": 0}

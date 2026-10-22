@@ -42,6 +42,8 @@ class State:
     estimate_model: bool = False
     preauthorize_model: bool = False
     model_reservations: dict[str, int] = field(default_factory=dict)
+    compaction_max_chars: int | None = None
+    compaction_keep_turns: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
