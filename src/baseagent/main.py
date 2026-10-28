@@ -175,6 +175,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
+    parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
+    parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
+    parser.add_argument("--harness-timeout", type=float, default=3.0)
     parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
     parser.add_argument("--tool-package", action="append", choices=["coding", "memory", "shared-memory"], help="Select built-in tool packages; repeat to combine (default: all)")
     parser.add_argument("--skills-dir", action="append", type=Path, help="Explicit local skill package directory; repeat to combine")
@@ -194,6 +197,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     skills_default = defaults.pop("skills_dir", [])
     parser.set_defaults(**defaults)
     args = parser.parse_args(argv)
+    if not math.isfinite(args.harness_timeout) or args.harness_timeout <= 0:
+        parser.error("--harness-timeout must be positive and finite")
     if args.tool_package is None:
         args.tool_package = packages_default
     if args.skills_dir is None:
@@ -451,6 +456,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if estimator:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
+        if args.harness_url:
+            from baseagent.middleware.harnessknight import install_harnessknight
+            policy, layers = install_harnessknight(policy, layers, url=args.harness_url,
+                fail_mode=args.harness_fail_mode, timeout=args.harness_timeout, agent_version=version("baseagent"))
         skills = SkillCatalog(args.skills_dir) if args.skills_dir else None
         tools = (capability_factory(workspace, args, skills, policy) if capability_factory is not None
                  else assemble_capabilities(workspace, packages=args.tool_package, skills=skills))

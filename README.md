@@ -6,6 +6,15 @@ The library includes strict deterministic recording/replay and OpenAI-compatible
 
 For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
 
+## HarnessKnight 安全服务对接 (可选)
+
+BaseAgent can send prompt and tool events to HarnessKnight for ALLOW, REVIEW, or BLOCK decisions.
+Enable it with `--harness-url URL`; without this flag the integration is off.
+Set `HARNESS_API_TOKEN` in the environment when the service requires bearer authentication.
+`--harness-fail-mode {closed,open}` defaults to `closed`; `--harness-timeout SECONDS` defaults to 3.
+Closed mode blocks when the service is unavailable, while open mode warns once and allows the action.
+Tool REVIEW uses BaseAgent's exact-call approval flow; prompt BLOCK stops the run before model dispatch.
+
 ## Features / 功能概览
 
 - **Project Assistant**：文档/代码入库、带引用问答，默认 vector + BM25 加权 RRF 混合检索；`RAG_RETRIEVAL_MODE` 可覆盖，qwen 重排可选且默认关闭。见[检索结果](#project-assistant-默认检索)。
