@@ -160,6 +160,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
     parser.add_argument("--compaction-max-chars", type=int, help="Enable historical summaries above this JSON character budget (0 disables; resume: preserve)")
     parser.add_argument("--compaction-keep-turns", type=int, help="Recent user turns to preserve including the active turn (default 2)")
+    parser.add_argument("--spill-threshold-tokens", type=int, help="Spill large tool results above this estimated token count (0 disables; resume: preserve)")
+    parser.add_argument("--spill-head-lines", type=int, help="Lines to include at the start of spill previews (default 20)")
+    parser.add_argument("--spill-tail-lines", type=int, help="Lines to include at the end of spill previews (default 10)")
     parser.add_argument("--max-context-bytes", type=int, help="Serialized model input UTF-8 bytes (default 96000; resume: preserve)")
     parser.add_argument("--max-tool-context-bytes", type=int, help="Per-tool data excerpt limit (default 4000; resume: preserve)")
     parser.add_argument("--max-total-tokens", type=int, help="Reported token budget per turn; unknown usage blocks execution")
@@ -446,6 +449,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                   "model": args.model or os.getenv("BASEAGENT_LLM_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
                   "endpoint": os.getenv("BASEAGENT_LLM_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL"),
                   "context_policy_version": 1}
+        spill_settings = {"threshold_tokens": args.spill_threshold_tokens, "head_lines": args.spill_head_lines, "tail_lines": args.spill_tail_lines}
+        if any(value is not None for value in spill_settings.values()):
+            config["spill"] = {key: value for key, value in spill_settings.items() if value is not None}
         if os.getenv("BASEAGENT_LLM_PROVIDER"):
             config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
         if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):

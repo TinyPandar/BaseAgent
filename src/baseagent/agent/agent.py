@@ -59,6 +59,10 @@ def _set_limits(state: State, max_steps: int | None, max_model_calls: int | None
         raise ValueError("step/model limits must be positive integers and tool limit a nonnegative integer")
 
 
+def _spill_config(state):
+    return {"threshold_tokens": 0, "head_lines": 20, "tail_lines": 10, **state.metadata.get("spill_config", {})}
+
+
 def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
     if not user_input.strip():
         raise ValueError("user input must not be blank")
@@ -137,12 +141,19 @@ def run_agent(
             state.metadata["subtask_tree"] = transient.task_tree(state.session_id, state.turn_id)["nodes"]
             return state
     root = str(Path(workspace_root).resolve()) if workspace_root is not None else None
+    from .spill import SpillStore, register_read_spill
+    spill_store = SpillStore(store)
+    spill_options = (runtime_config or {}).get("spill", {})
+    spill_threshold = spill_options.get("threshold_tokens")
+    spill_head = spill_options.get("head_lines")
+    spill_tail = spill_options.get("tail_lines")
     if subtasks is not None:
         tools = subtasks.bind_tools(tools)
     from baseagent.tools.edit_policy import bind_edit_policy
     policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
-    config = runtime_config
+    config = ({key: value for key, value in runtime_config.items() if key != "spill"}
+              if isinstance(runtime_config, dict) else runtime_config)
     if subtasks is not None:
         config = {"runtime": config, "subtasks": subtasks.contract()}
     if policy.contract() != ToolPolicy().contract():
@@ -187,11 +198,24 @@ def run_agent(
                 state.compaction_max_chars = compaction_max_chars or None
             if compaction_keep_turns is not None:
                 state.compaction_keep_turns = compaction_keep_turns
+            spill_config = _spill_config(state)
+            if spill_threshold is not None:
+                spill_config["threshold_tokens"] = spill_threshold
+            if spill_head is not None:
+                spill_config["head_lines"] = spill_head
+            if spill_tail is not None:
+                spill_config["tail_lines"] = spill_tail
+            if state.metadata.get("spill_config") or any(value is not None for value in (spill_threshold, spill_head, spill_tail)):
+                state.metadata["spill_config"] = spill_config
             if compaction_max_chars is not None and (type(compaction_max_chars) is not int or compaction_max_chars < 0):
                 raise ValueError("compaction character budget must be a nonnegative integer (0 disables)")
             if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
                 raise ValueError("compaction keep turns must be a positive integer")
             ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes)
+            if any(type(value) is not int or value < 0 for value in spill_config.values()):
+                raise ValueError("spill settings must be nonnegative integers")
+            if spill_config["threshold_tokens"]:
+                register_read_spill(tools, spill_store)
             state.metadata["runtime_contract"] = runtime_contract(tools, state.messages[0]["content"], config)
             return state
 
@@ -208,6 +232,8 @@ def run_agent(
                 raise ValueError("finish or reconcile the current turn before appending a new prompt")
             _new_turn(existing, user_input, max_steps, max_model_calls, max_tool_calls)
         elif existing.status != RunStatus.COMPLETED:
+            if _spill_config(existing)["threshold_tokens"]:
+                register_read_spill(tools, spill_store)
             check_contract(existing.metadata.get("runtime_contract"), runtime_contract(tools, existing.messages[0]["content"], config), accept_changes=accept_config_changes)
             _set_limits(existing, max_steps, max_model_calls, max_tool_calls)
             existing.status = RunStatus.RUNNING
@@ -217,7 +243,7 @@ def run_agent(
     if store is None:
         if session_id is not None:
             raise ValueError("session_id requires a SessionStore")
-        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer)
+        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store)
     session_id = session_id or uuid4().hex
     with store.exclusive(session_id):
         existing = store.load(session_id)
@@ -238,10 +264,10 @@ def run_agent(
         store.save(state)
         supplied = cancellation
         token = CancellationToken(lambda: bool((supplied and supplied.cancelled()) or store.cancellation(state.session_id, state.turn_id)))
-        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer)
+        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store)
 
 
-def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None) -> State:
+def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None, spill_store=None) -> State:
     scope = execution_scope or ExecutionScope(state)
     if scope.state is not state:
         raise ValueError("execution scope must own the active state")
@@ -469,8 +495,13 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
         def tool_result(self, request):
             try:
-                return (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
-                        if self.action == "deny" else tool_handler(replace(request, remaining_seconds=remaining_seconds)))
+                result = (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
+                          if self.action == "deny" else tool_handler(replace(request, remaining_seconds=remaining_seconds)))
+                spill_config = _spill_config(state)
+                if spill_config["threshold_tokens"]:
+                    result = spill_store.spill(state, request.call_id, request.name, result,
+                        spill_config["threshold_tokens"], spill_config["head_lines"], spill_config["tail_lines"], checkpoint)
+                return result
             except ModelTimeoutError:
                 check_budgets()
                 raise
