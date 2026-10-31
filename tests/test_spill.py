@@ -136,6 +136,21 @@ class SpillTests(unittest.TestCase):
             _, b, _ = self.run_large(Path(right), 1)
         self.assertEqual([serialized(x) for x in a.seen], [serialized(x) for x in b.seen])
 
+    def test_structured_spill_is_indented_and_long_lines_are_wrapped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = ToolRegistry()
+            tools.register("structured", "Return structured data", {"type": "object"},
+                           lambda: {"text": "x" * 2101, "items": [1, 2]})
+            model = Model([{"tool_calls": [call("structured")]}, {"content": "done"}])
+            run_agent(model, "task", tools=tools, store=SessionStore(root / "sessions.db"), session_id="structured",
+                      runtime_config={"spill": {"threshold_tokens": 1}})
+            stub = json.loads(next(m for m in model.seen[1] if m["role"] == "tool")["content"])["data"]
+            stored = (root / "spill" / "structured" / f"{stub['spill_ref']}.txt").read_text(encoding="utf-8")
+            self.assertIn('\n "items": [\n  1,\n  2\n ]', stored)
+            self.assertTrue(all(len(line) <= 1000 for line in stored.splitlines()))
+            self.assertGreater(stub["lines"], 5)
+
     def test_cli_threshold_persists_from_flag_and_config_on_resume(self):
         for source in ("flag", "config"):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:

@@ -40,6 +40,7 @@ from .compaction import Summarizer, TruncatingSummarizer, compact_history
 from .context import ContextLimitExceeded, ContextPolicy
 from .errors import BudgetExceeded, TaskPaused, WorkspaceChanged
 from .events import event
+from .guards import prior_reads, repeat_result, successful_write_since
 from .scope import ExecutionScope
 from .state import RunStatus, State
 
@@ -61,6 +62,11 @@ def _set_limits(state: State, max_steps: int | None, max_model_calls: int | None
 
 def _spill_config(state):
     return {"threshold_tokens": 0, "head_lines": 20, "tail_lines": 10, **state.metadata.get("spill_config", {})}
+
+
+def _guard_config(state):
+    return {"wrapup_hint_steps": 0, "repeat_call_guard": False, "dedupe_reads": False,
+            **state.metadata.get("guard_config", {})}
 
 
 def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
@@ -88,6 +94,7 @@ def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_ca
     state.metadata.pop("approval_request", None)
     state.metadata.pop("completion_report", None)
     state.metadata.pop("edited_this_turn", None)
+    state.metadata.pop("wrapup_hint_injected", None)
     state.metadata.pop("test_fix_feedback_count", None)
     state.metadata.pop("test_fix_failure", None)
     state.max_steps = 8 if max_steps is None else max_steps
@@ -144,6 +151,7 @@ def run_agent(
     from .spill import SpillStore, register_read_spill
     spill_store = SpillStore(store)
     spill_options = (runtime_config or {}).get("spill", {})
+    guard_options = (runtime_config or {}).get("guards", {})
     spill_threshold = spill_options.get("threshold_tokens")
     spill_head = spill_options.get("head_lines")
     spill_tail = spill_options.get("tail_lines")
@@ -152,7 +160,7 @@ def run_agent(
     from baseagent.tools.edit_policy import bind_edit_policy
     policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
-    config = ({key: value for key, value in runtime_config.items() if key != "spill"}
+    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards"}}
               if isinstance(runtime_config, dict) else runtime_config)
     if subtasks is not None:
         config = {"runtime": config, "subtasks": subtasks.contract()}
@@ -207,6 +215,14 @@ def run_agent(
                 spill_config["tail_lines"] = spill_tail
             if state.metadata.get("spill_config") or any(value is not None for value in (spill_threshold, spill_head, spill_tail)):
                 state.metadata["spill_config"] = spill_config
+            guard_config = _guard_config(state)
+            for key, value in guard_options.items():
+                if value is not None:
+                    guard_config[key] = value
+            if state.metadata.get("guard_config") or guard_options:
+                state.metadata["guard_config"] = guard_config
+            if type(guard_config["wrapup_hint_steps"]) is not int or guard_config["wrapup_hint_steps"] < 0 or any(type(guard_config[key]) is not bool for key in ("repeat_call_guard", "dedupe_reads")):
+                raise ValueError("guard settings must be nonnegative/boolean")
             if compaction_max_chars is not None and (type(compaction_max_chars) is not int or compaction_max_chars < 0):
                 raise ValueError("compaction character budget must be a nonnegative integer (0 disables)")
             if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
@@ -316,6 +332,13 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         check_budgets()
         scope.admit_model()
         messages = request.messages
+        guard_config = _guard_config(state)
+        remaining_steps = max(0, state.max_steps - state.step)
+        if guard_config["wrapup_hint_steps"] and remaining_steps <= guard_config["wrapup_hint_steps"] and not state.metadata.get("wrapup_hint_injected"):
+            messages = deepcopy(messages)
+            messages.insert(1, {"role": "system", "content": f"{remaining_steps} logical steps remain. Stop exploring; finish required edits and checks, then give the final answer. Do not repeat an answer that was already rejected; address the listed unmet requirements instead."})
+            state.metadata["wrapup_hint_injected"] = True
+            checkpoint("wrapup_hint_injected", remaining_steps=remaining_steps)
         if completion_policy is not None:
             messages = deepcopy(messages)
             messages.insert(1, {"role": "system", "content": json.dumps(completion_policy.instructions(), ensure_ascii=False)})
@@ -495,8 +518,38 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
         def tool_result(self, request):
             try:
-                result = (ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
-                          if self.action == "deny" else tool_handler(replace(request, remaining_seconds=remaining_seconds)))
+                if self.action == "deny":
+                    result = ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
+                else:
+                    try:
+                        args = json.loads(request.arguments or "{}")
+                    except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
+                        args = None
+                    if not isinstance(args, dict):
+                        result = tool_handler(replace(request, remaining_seconds=remaining_seconds))
+                        args = None
+                    guard_config = _guard_config(state)
+                    repeat = repeat_result(state, request, args, checkpoint) if args is not None and guard_config["repeat_call_guard"] else None
+                    if isinstance(repeat, ToolResult):
+                        result = repeat
+                    elif args is not None and request.name == "read_file" and guard_config["dedupe_reads"] and isinstance(args.get("path"), str):
+                        previous = prior_reads(state, args)
+                        workspace_handler = tools._tools.get("read_file", (None, None, None))[1]
+                        workspace = getattr(workspace_handler, "__self__", None)
+                        prior = next(((call_id, digest, index) for call_id, digest, index in reversed(previous)
+                                      if not successful_write_since(state, args["path"], index)), None)
+                        current = workspace.file_hash(args["path"]) if prior and workspace is not None else None
+                        if prior and current == prior[1]:
+                            checkpoint("read_deduplicated", path=args["path"], call_id=request.call_id, previous_call_id=prior[0])
+                            result = ToolResult(data={"path": args["path"], "sha256": prior[1], "unchanged": True,
+                                                      "note": f"unchanged since earlier read (call_id {prior[0]}); refer to that result"})
+                        else:
+                            result = tool_handler(replace(request, remaining_seconds=remaining_seconds))
+                    elif args is not None:
+                        result = tool_handler(replace(request, remaining_seconds=remaining_seconds))
+                    if repeat == "warn":
+                        data = result.data if isinstance(result.data, dict) else {"result": result.data}
+                        result = ToolResult(data={**data, "guard_warning": "identical call repeated; result may be unchanged; change approach"})
                 spill_config = _spill_config(state)
                 if spill_config["threshold_tokens"]:
                     result = spill_store.spill(state, request.call_id, request.name, result,

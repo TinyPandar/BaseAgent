@@ -2,6 +2,8 @@
 
 Spilling runs before context projection, so ``--max-tool-context-bytes`` may
 clip the preview sent to the model while the complete result remains retrievable.
+Stored text is line-addressable: structured values use indented JSON and every
+line is split into segments of at most 1000 characters.
 """
 
 from hashlib import sha256
@@ -35,7 +37,16 @@ class SpillStore:
     def spill(self, state, call_id, tool, result, threshold, head_lines, tail_lines, checkpoint):
         if not result.ok or tool == "read_spill":
             return result
-        content = result.data if isinstance(result.data, str) else json.dumps(result.data, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        rendered = result.data if isinstance(result.data, str) else json.dumps(result.data, ensure_ascii=False, allow_nan=False, indent=1, sort_keys=False)
+        wrapped = []
+        for line in rendered.splitlines(keepends=True) or [""]:
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            body = line[:-len(ending)] if ending else line
+            width = 1000 - len(ending or "\n")
+            segments = [body[i:i + width] for i in range(0, len(body), width)] or [""]
+            wrapped.extend(segment + (ending if index == len(segments) - 1 else "\n")
+                           for index, segment in enumerate(segments))
+        content = "".join(wrapped)
         tokens = (len(content) + 3) // 4
         if tokens <= threshold:
             return result

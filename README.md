@@ -22,6 +22,7 @@ Tool REVIEW uses BaseAgent's exact-call approval flow; prompt BLOCK stops the ru
 - **应用 CLI 与历史**：`python -m applications.project_assistant` 提供 `index`、`status`、`ask` 和 `history log/show/added`；只读 `git_log`、`git_show`、`git_pickaxe` 工具用于历史查询。见[应用说明](applications/project_assistant/README.md)。
 - **受控 coding 场景**：临时夹具中检索约定、修改代码、运行验证并写报告；附百炼 qwen-plus 录像与离线回放入口。见[场景说明](applications/project_assistant/evaluation/README.md#受控-coding-离线验收phase-3-第-3-项)。
 - **上下文压缩（opt-in）**：保留原始会话，以摘要替换模型输入中的旧轮次；默认摘要器不调用模型。见[上下文压缩](#context-compactionopt-in)。
+- **成功率提示（opt-in）**：`--wrapup-hint-steps N` 在剩余步骤较少时提示收尾；`--repeat-call-guard` 警告并阻止第三次完全相同的工具调用；`--dedupe-reads` 对文件未变化的重复读取返回简短引用。三项默认关闭，也可在版本化配置的 `run` 区域设置。
 - **测试修复循环（opt-in）**：编辑后在完成前运行配置的测试命令，失败时向模型反馈，达到迭代上限则停止。见[测试修复循环](#test-and-fix-loopopt-in)。
 - **通用编辑策略**：`EditPolicy` 支持路径允许/拒绝规则、大改动审批及编辑后检查失败回滚。见[编辑策略](#edit-policy)。
 - **工作区搜索**：`grep` 搜索正则与行号，`glob` 查找文件；遵守工作区边界与忽略规则，支持 ripgrep 和 Python 回退。见[搜索工具](#workspace-searchgrep--glob)。

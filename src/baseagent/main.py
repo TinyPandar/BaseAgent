@@ -163,6 +163,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--spill-threshold-tokens", type=int, help="Spill large tool results above this estimated token count (0 disables; resume: preserve)")
     parser.add_argument("--spill-head-lines", type=int, help="Lines to include at the start of spill previews (default 20)")
     parser.add_argument("--spill-tail-lines", type=int, help="Lines to include at the end of spill previews (default 10)")
+    parser.add_argument("--wrapup-hint-steps", type=int, help="Inject a wrap-up hint at or below this many remaining steps (0 disables; recommended 3)")
+    parser.add_argument("--repeat-call-guard", action=argparse.BooleanOptionalAction, default=None, help="Warn on repeated identical calls and block the third (resume: preserve)")
+    parser.add_argument("--dedupe-reads", action=argparse.BooleanOptionalAction, default=None, help="Return a short reference for unchanged repeated file reads (resume: preserve)")
     parser.add_argument("--max-context-bytes", type=int, help="Serialized model input UTF-8 bytes (default 96000; resume: preserve)")
     parser.add_argument("--max-tool-context-bytes", type=int, help="Per-tool data excerpt limit (default 4000; resume: preserve)")
     parser.add_argument("--max-total-tokens", type=int, help="Reported token budget per turn; unknown usage blocks execution")
@@ -452,6 +455,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         spill_settings = {"threshold_tokens": args.spill_threshold_tokens, "head_lines": args.spill_head_lines, "tail_lines": args.spill_tail_lines}
         if any(value is not None for value in spill_settings.values()):
             config["spill"] = {key: value for key, value in spill_settings.items() if value is not None}
+        guard_settings = {key: value for key, value in {"wrapup_hint_steps": args.wrapup_hint_steps, "repeat_call_guard": args.repeat_call_guard, "dedupe_reads": args.dedupe_reads}.items() if value is not None}
+        if any(value is not None for value in guard_settings.values()):
+            config["guards"] = guard_settings
         if os.getenv("BASEAGENT_LLM_PROVIDER"):
             config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
         if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
