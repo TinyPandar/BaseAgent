@@ -186,7 +186,7 @@ def scripted_model(*, repair=True, verify=True, plan=True, artifact=True, search
 
 
 def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model_calls=20,
-                 policy_version=3):
+                 policy_version=3, runtime_config=None):
     root = Path(root).resolve()
     assert root.is_relative_to(Path(tempfile.gettempdir()).resolve())
     assert not root.is_relative_to(REPOSITORY) and not REPOSITORY.is_relative_to(root)
@@ -209,7 +209,8 @@ def run_scenario(model, root, *, allow_write=True, allow_command=True, max_model
     state = run_agent(model, PROMPT, system_prompt=CODING_SYSTEM_PROMPT, tools=tools, store=store,
                       session_id="coding", workspace_root=root, tool_policy=policy,
                       middleware=[RepositoryMiddleware(workspace)], completion_policy=completion,
-                      max_steps=max_model_calls, max_model_calls=min(20, max_model_calls), max_tool_calls=40)
+                      max_steps=max_model_calls, max_model_calls=min(20, max_model_calls), max_tool_calls=40,
+                      runtime_config=runtime_config)
     ledger = store.calls("coding", state.turn_id)
     # External acceptance is separate from the agent's claim and completion gate.
     external = workspace.backend.execute(ARGV, timeout=20, output_limit=2000)

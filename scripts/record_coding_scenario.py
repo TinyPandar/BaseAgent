@@ -238,12 +238,13 @@ def outcome(result, state, ledger, root):
     })
 
 
-def replay(path, *, details=False):
+def replay(path, *, details=False, runtime_config=None):
     with (disconnected(), scenario_workspace() as root,
           ScenarioCassetteModel(path, mode="replay", redactor=cassette_redactor(root)) as model):
         # Unversioned cassettes were recorded under the original exact-patch policy.
         result, state, ledger = run_scenario(model, root,
-                                           policy_version=model._header.get("scenario_policy_version", 1))
+                                           policy_version=model._header.get("scenario_policy_version", 1),
+                                           runtime_config=runtime_config)
         actual = outcome(result, state, ledger, root)
     return actual if details else result
 
