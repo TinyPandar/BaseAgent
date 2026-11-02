@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from scripts.compare_coding_m1 import comparison_summary, main
 
@@ -44,26 +45,51 @@ def test_finalize_cassette_stamps_policy_v3(tmp_path):
     assert header["base_url"] == "<redacted-endpoint>"
 
 
-def test_live_loop_continues_after_failed_run_and_writes_report(tmp_path, monkeypatch, capsys):
+def test_finalize_cassette_raises_if_stamp_missing(tmp_path, monkeypatch):
+    from scripts import compare_coding_m1 as mod
+
+    cassette = tmp_path / "run_1.json"
+    cassette.write_text(json.dumps({"version": 1}) + "\n")
+    original = Path.write_text
+
+    def write_without_persist(self, data, *args, **kwargs):
+        # Pretend the write succeeded but leave the old header on disk.
+        return None
+
+    monkeypatch.setattr(Path, "write_text", write_without_persist)
+    try:
+        raised = False
+        try:
+            mod.finalize_cassette(cassette, {})
+        except RuntimeError as exc:
+            raised = "scenario_policy_version=3" in str(exc)
+        assert raised
+    finally:
+        monkeypatch.setattr(Path, "write_text", original)
+
+
+def test_live_loop_records_outside_output_dir_and_stamps_header(tmp_path, monkeypatch, capsys):
     import contextlib
 
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps({"runs": [{"external_acceptance_passed": True, "total_tokens": 10}]}))
+    output_dir = tmp_path / "out"
+    report_dir = tmp_path / "reports"
 
     class Client:
         model_name, generation_params, max_completion_tokens = "fake", {}, 1024
 
+    seen_paths = []
+
     class Cassette:
         def __init__(self, path, *a, **k):
-            self.path = path
+            self.path = Path(path)
+            seen_paths.append(self.path)
 
         def close(self):
             self.path.write_text(json.dumps({"version": 1}) + "\n")
 
-    calls = []
-
     def run_scenario(*a, **k):
-        calls.append(1)
         raise AssertionError("boom")
 
     monkeypatch.setattr("scripts.compare_coding_m1.model_configuration",
@@ -74,11 +100,14 @@ def test_live_loop_continues_after_failed_run_and_writes_report(tmp_path, monkey
     monkeypatch.setattr("scripts.compare_coding_m1.run_scenario", run_scenario)
     monkeypatch.chdir(tmp_path)
     assert main(["--runs", "2", "--budget-cny", "0.1", "--baseline-report", str(baseline),
-                 "--output-dir", str(tmp_path / "out"), "--report-dir", str(tmp_path / "reports")]) == 1
-    assert len(calls) == 2
+                 "--output-dir", str(output_dir), "--report-dir", str(report_dir)]) == 1
+    assert len(seen_paths) == 2
+    for path in seen_paths:
+        assert path.parent != output_dir
+        assert not str(path).startswith(str(output_dir))
     for number in (1, 2):
-        header = json.loads((tmp_path / "out" / f"run_{number}.json").read_text().splitlines()[0])
+        header = json.loads((output_dir / f"run_{number}.json").read_text().splitlines()[0])
         assert header["scenario_policy_version"] == 3
-    report = json.loads(next((tmp_path / "reports").glob("coding-m1-*.json")).read_text())
+    report = json.loads(next(report_dir.glob("coding-m1-*.json")).read_text())
     assert [run["reason"] for run in report["runs"]] == ["AssertionError", "AssertionError"]
     assert report["partial"] is False and report["error"] is None

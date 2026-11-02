@@ -6,6 +6,7 @@ as record_coding_scenario. --dry-run is fully offline.
 import argparse
 import json
 import sys
+import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -34,7 +35,11 @@ def _mean(runs, key):
 
 
 def finalize_cassette(path, configuration, key="", url=""):
-    """Stamp the live scenario policy into the header so replay uses v3, then scan."""
+    """Stamp the live scenario policy into the header so replay uses v3, then scan.
+
+    The rewrite is flushed and re-read before scan_cassette so a failed stamp cannot
+    be mistaken for a successful finalize (replay defaults unversioned headers to v1).
+    """
     lines = path.read_text().splitlines()
     header = json.loads(lines[0])
     header["base_url"] = "<redacted-endpoint>"
@@ -43,6 +48,9 @@ def finalize_cassette(path, configuration, key="", url=""):
         header["extra_body"] = configuration["extra_body"]
     lines[0] = json.dumps(header, ensure_ascii=False)
     path.write_text("\n".join(lines) + "\n")
+    stamped = json.loads(path.read_text().splitlines()[0])
+    if stamped.get("scenario_policy_version") != 3:
+        raise RuntimeError("cassette header rewrite did not persist scenario_policy_version=3")
     scan_cassette(path, key, url)
 
 
@@ -130,26 +138,35 @@ def main(argv=None):
                 if meter.stopped:
                     break
                 meter.start_run()
-                cassette_path = args.output_dir / f"run_{number}.json"
+                name = f"run_{number}.json"
                 state, result, observed, consistent = None, {"external_acceptance_passed": False}, None, False
+                reason = None
                 try:
-                    with scenario_workspace() as root:
-                        model = CassetteModel(cassette_path, meter, mode="record", redactor=cassette_redactor(root, key, url))
-                        try:
-                            result, state, ledger = run_scenario(model, root, runtime_config=runtime_config)
-                            observed = outcome(result, state, ledger, root)
-                            reason = meter.reason or state.error
-                        except Exception as exc:  # noqa: BLE001 -- record the failure, keep going
-                            result, observed, reason = {"external_acceptance_passed": False}, None, type(exc).__name__
-                        finally:
-                            model.close()
-                    if cassette_path.is_file():
-                        finalize_cassette(cassette_path, configuration, key, url)
-                    try:
-                        consistent = (observed is not None and cassette_path.is_file()
-                                      and replay(cassette_path, details=True, runtime_config=runtime_config) == observed)
-                    except Exception as exc:  # noqa: BLE001 -- replay failure is a per-run result
-                        reason = reason or f"replay failed: {type(exc).__name__}"
+                    # Record outside the repo so scenario_workspace's snapshot assert cannot fire
+                    # when CassetteModel.close() publishes the cassette (see record_coding_scenario).
+                    with tempfile.TemporaryDirectory(prefix="coding-m1-") as directory:
+                        path = Path(directory) / name
+                        with scenario_workspace() as root:
+                            model = CassetteModel(path, meter, mode="record",
+                                                  redactor=cassette_redactor(root, key, url))
+                            try:
+                                result, state, ledger = run_scenario(model, root, runtime_config=runtime_config)
+                                observed = outcome(result, state, ledger, root)
+                                reason = meter.reason or state.error
+                            except Exception as exc:  # noqa: BLE001 -- record the failure, keep going
+                                result, observed, reason = {"external_acceptance_passed": False}, None, type(exc).__name__
+                            finally:
+                                model.close()
+                        if path.is_file():
+                            finalize_cassette(path, configuration, key, url)
+                            try:
+                                consistent = (observed is not None
+                                              and replay(path, details=True, runtime_config=runtime_config) == observed)
+                            except Exception as exc:  # noqa: BLE001 -- replay failure is a per-run result
+                                reason = reason or f"replay failed: {type(exc).__name__}"
+                            target = args.output_dir / name
+                            with target.open("xb") as stream:
+                                stream.write(path.read_bytes())
                 except Exception as exc:  # noqa: BLE001 -- one bad run must not abort the loop
                     reason = f"run failed: {type(exc).__name__}"
                 results.append({"run": number, **signature(result),
