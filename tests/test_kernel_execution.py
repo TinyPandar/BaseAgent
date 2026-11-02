@@ -60,8 +60,8 @@ class KernelExecutionTests(unittest.TestCase):
                 self.assertEqual(json.loads(state.messages[-1]["content"])["data"], 5)
         self.assertEqual([item.type for item in events], [
             "run_started", "model_started", "model_returned", "assistant_checkpoint",
-            "tool_started", "tool_returned", "tool_completed",
-            "model_started", "model_returned", "assistant_checkpoint", "run_stopped",
+            "tool_started", "tool_call_started", "tool_returned", "tool_completed", "tool_call_finished",
+            "model_started", "model_returned", "assistant_checkpoint", "turn_finished", "run_stopped",
         ])
         self.assertEqual((state.status, state.final_answer, state.step, state.model_calls, state.tool_calls),
                          (RunStatus.COMPLETED, "5", 2, 2, 1))
@@ -119,7 +119,7 @@ class KernelExecutionTests(unittest.TestCase):
         events = list(iter_agent(model, state, tools=ToolRegistry(), cancellation=token))
         self.assertEqual(state.status, RunStatus.CANCELLED)
         self.assertEqual(model.seen, [])
-        self.assertEqual([value.type for value in events], ["run_started", "run_stopped"])
+        self.assertEqual([value.type for value in events], ["run_started", "turn_finished", "run_stopped"])
 
     def test_cancellation_at_tool_before_event_prevents_handler(self):
         token, effects, tools = CancellationToken(), [], ToolRegistry()
@@ -234,7 +234,7 @@ class KernelExecutionTests(unittest.TestCase):
         events = list(iter_agent(Model([]), state, tools=ToolRegistry(), hooks=[Hook()]))
         self.assertEqual(state.status, RunStatus.FAILED)
         self.assertEqual(cleaned, [RunStatus.FAILED])
-        self.assertEqual([value.type for value in events], ["run_started", "model_started", "model_failed", "run_stopped"])
+        self.assertEqual([value.type for value in events], ["run_started", "model_started", "model_failed", "turn_finished", "run_stopped"])
 
 
 class KernelMigrationTests(unittest.TestCase):

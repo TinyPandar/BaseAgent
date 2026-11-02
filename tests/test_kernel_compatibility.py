@@ -123,6 +123,25 @@ SCENARIOS = (
 
 
 class KernelCompatibilityTests(unittest.TestCase):
+    # Step-2 aliases / turn_finished are additive; strip for v0.1 baseline equality.
+    ADDITIVE_EVENTS = frozenset({"tool_call_started", "tool_call_finished", "turn_finished", "model_delta"})
+
+    def _strip_additive(self, payload):
+        state, events, effects, seen = payload
+        state = dict(state)
+
+        def normalize(items):
+            kept = [dict(item) for item in items if item.get("type") not in self.ADDITIVE_EVENTS]
+            # Persistent store sequences advance for aliases; renumber for baseline equality.
+            for index, item in enumerate(kept, start=1):
+                if "sequence" in item:
+                    item["sequence"] = index
+            return kept
+
+        state["events"] = normalize(state.get("events", []))
+        events = normalize(events)
+        return state, events, effects, seen
+
     def tools(self, effects):
         tools = ToolRegistry()
         tools.register("add", "Add", {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
@@ -162,7 +181,7 @@ class KernelCompatibilityTests(unittest.TestCase):
                     old = self.run_case(baseline, directory, persistent, responses, options, hooks)
                     new = self.run_case(adapter, directory, persistent, responses, options, hooks)
                     self.assertEqual(new[0]["status"], status)
-                    self.assertEqual(new, old)
+                    self.assertEqual(self._strip_additive(new), self._strip_additive(old))
 
     def test_pending_resume_and_completed_cache_match_baseline_without_repeating_effects(self):
         results = []
@@ -184,7 +203,7 @@ class KernelCompatibilityTests(unittest.TestCase):
                 self.assertEqual(store.events("demo"), before)
                 self.assertEqual(unused.seen, [])
                 results.append((resumed.to_dict(), before, effects, store.calls("demo", resumed.turn_id)))
-        self.assertEqual(results[0], results[1])
+        self.assertEqual(self._strip_additive(results[0]), self._strip_additive(results[1]))
 
     def test_pre_cancelled_sync_execution_matches_baseline(self):
         results = []
@@ -196,7 +215,12 @@ class KernelCompatibilityTests(unittest.TestCase):
                 state = implementation.run_agent(model, "task", tools=ToolRegistry(), cancellation=token)
                 self.assertEqual(model.seen, [])
                 results.append(state.to_dict())
-        self.assertEqual(results[0], results[1])
+        stripped = []
+        for state in results:
+            state = dict(state)
+            state["events"] = [item for item in state.get("events", []) if item.get("type") not in self.ADDITIVE_EVENTS]
+            stripped.append(state)
+        self.assertEqual(stripped[0], stripped[1])
 
     def test_sync_adapter_consumes_kernel_iterator_and_returns_its_same_state(self):
         observed = []

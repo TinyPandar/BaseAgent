@@ -69,6 +69,14 @@ def _guard_config(state):
             **state.metadata.get("guard_config", {})}
 
 
+def _stream_config(state):
+    return {"enabled": False, **state.metadata.get("stream_config", {})}
+
+
+def _parallel_config(state):
+    return {"readonly": False, **state.metadata.get("parallel_config", {})}
+
+
 def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
     if not user_input.strip():
         raise ValueError("user input must not be blank")
@@ -152,6 +160,8 @@ def run_agent(
     spill_store = SpillStore(store)
     spill_options = (runtime_config or {}).get("spill", {})
     guard_options = (runtime_config or {}).get("guards", {})
+    stream_options = (runtime_config or {}).get("stream", {})
+    parallel_options = (runtime_config or {}).get("parallel", {})
     spill_threshold = spill_options.get("threshold_tokens")
     spill_head = spill_options.get("head_lines")
     spill_tail = spill_options.get("tail_lines")
@@ -160,7 +170,7 @@ def run_agent(
     from baseagent.tools.edit_policy import bind_edit_policy
     policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
-    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards"}}
+    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards", "stream", "parallel"}}
               if isinstance(runtime_config, dict) else runtime_config)
     if subtasks is not None:
         config = {"runtime": config, "subtasks": subtasks.contract()}
@@ -223,6 +233,20 @@ def run_agent(
                 state.metadata["guard_config"] = guard_config
             if type(guard_config["wrapup_hint_steps"]) is not int or guard_config["wrapup_hint_steps"] < 0 or any(type(guard_config[key]) is not bool for key in ("repeat_call_guard", "dedupe_reads")):
                 raise ValueError("guard settings must be nonnegative/boolean")
+            stream_config = _stream_config(state)
+            if "enabled" in stream_options and stream_options["enabled"] is not None:
+                stream_config["enabled"] = bool(stream_options["enabled"])
+            if state.metadata.get("stream_config") or stream_options:
+                state.metadata["stream_config"] = stream_config
+            if type(stream_config["enabled"]) is not bool:
+                raise ValueError("stream.enabled must be boolean")
+            parallel_config = _parallel_config(state)
+            if "readonly" in parallel_options and parallel_options["readonly"] is not None:
+                parallel_config["readonly"] = bool(parallel_options["readonly"])
+            if state.metadata.get("parallel_config") or parallel_options:
+                state.metadata["parallel_config"] = parallel_config
+            if type(parallel_config["readonly"]) is not bool:
+                raise ValueError("parallel.readonly must be boolean")
             if compaction_max_chars is not None and (type(compaction_max_chars) is not int or compaction_max_chars < 0):
                 raise ValueError("compaction character budget must be a nonnegative integer (0 disables)")
             if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
@@ -301,6 +325,8 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
     cancellation = CancellationToken(lambda: supplied_cancellation.cancelled() or scope.cancelled() or bool(scope.ancestors and store and store.cancellation(state.session_id, state.turn_id)))
     pipeline = MiddlewarePipeline(middleware)
     active_call_id: str | None = None
+    tool_prep: dict[str, dict] = {}
+    tool_lock = __import__("threading").Lock()
 
     def checkpoint(kind: str | None = None, **data) -> None:
         value = event(kind, **data) if kind else None
@@ -380,8 +406,39 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             remaining = remaining_seconds()
             if remaining is not None and remaining <= 0:
                 raise BudgetExceeded(RunStatus.DEADLINE_EXCEEDED)
+            stream_enabled = _stream_config(state)["enabled"]
+            can_stream = stream_enabled and not reservation and (
+                hasattr(model, "complete_stream_with_control") or hasattr(model, "complete_stream")
+                or hasattr(model, "complete_stream_with_timeout")
+            )
             if reservation:
                 response = model.complete_reserved(view.messages, deepcopy(request.tools), reservation=reservation, cancellation=cancellation, timeout=remaining)
+            elif can_stream:
+                import sys
+                from baseagent.llm.streaming import StreamDelta
+                if hasattr(model, "complete_stream_with_control"):
+                    generator = model.complete_stream_with_control(
+                        view.messages, deepcopy(request.tools), cancellation=cancellation, timeout=remaining)
+                elif hasattr(model, "complete_stream_with_timeout") and remaining is not None:
+                    generator = model.complete_stream_with_timeout(
+                        view.messages, deepcopy(request.tools), timeout=max(0.001, remaining))
+                else:
+                    generator = model.complete_stream(view.messages, deepcopy(request.tools))
+                printed = False
+                try:
+                    while True:
+                        check_budgets()
+                        delta = next(generator)
+                        payload = delta.to_dict() if isinstance(delta, StreamDelta) else dict(delta)
+                        delta_kind = payload.pop("kind", None)
+                        checkpoint("model_delta", attempt=state.model_calls, delta_kind=delta_kind, **payload)
+                        if delta_kind == "content" and payload.get("delta"):
+                            print(payload["delta"], end="", file=sys.stderr, flush=True)
+                            printed = True
+                except StopIteration as finished:
+                    response = finished.value
+                    if printed:
+                        print(file=sys.stderr)
             elif hasattr(model, "complete_with_control"):
                 response = model.complete_with_control(view.messages, deepcopy(request.tools), cancellation=cancellation, timeout=remaining)
             elif remaining is not None and hasattr(model, "complete_with_timeout"):
@@ -401,18 +458,19 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
     def execute_tool(request: ToolCallRequest) -> ToolResult:
         check_budgets()
-        if request.call_id != active_call_id:
+        if request.call_id != active_call_id and request.call_id not in tool_prep:
             raise ValueError("middleware cannot change the tool call ID")
         # Recheck actual dispatch after wrappers; redirected arguments never
         # inherit authorization for another request.
         if policy.action(state, request.call_id, request.name, request.arguments) != "allow":
             return ToolResult.failure(ErrorCode.PERMISSION_DENIED, "actual tool request is not authorized by tool policy")
-        scope.admit_tool()
-        scope.tool_started(retry_safe=tools.retry_safe(request.name))
-        if store:
-            store.record_attempt(state, active_call_id, {"name": request.name, "arguments": request.arguments})
-        else:
-            checkpoint("tool_attempt", call_id=active_call_id, name=request.name, tool_calls=state.tool_calls)
+        with tool_lock:
+            scope.admit_tool()
+            scope.tool_started(retry_safe=tools.retry_safe(request.name))
+            if store:
+                store.record_attempt(state, request.call_id, {"name": request.name, "arguments": request.arguments})
+            else:
+                checkpoint("tool_attempt", call_id=request.call_id, name=request.name, tool_calls=state.tool_calls)
         started = time.monotonic()
         try:
             def reject_constant(value: str):
@@ -433,11 +491,12 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
             result = ToolResult.failure(ErrorCode.INVALID_ARGUMENTS, "tool arguments must be a valid JSON object")
         else:
-            result = tools.execute(request.name, arguments, context=tool_context(active_call_id))
-        if store:
-            store.record_terminal_result(state, active_call_id, result, duration_seconds=time.monotonic() - started)
-        else:
-            checkpoint("tool_returned", call_id=active_call_id, ok=result.ok, error_code=result.error.code if result.error else None, duration_seconds=time.monotonic() - started)
+            result = tools.execute(request.name, arguments, context=tool_context(request.call_id))
+        with tool_lock:
+            if store:
+                store.record_terminal_result(state, request.call_id, result, duration_seconds=time.monotonic() - started)
+            else:
+                checkpoint("tool_returned", call_id=request.call_id, ok=result.ok, error_code=result.error.code if result.error else None, duration_seconds=time.monotonic() - started)
         return result
 
     tool_handler = pipeline.wrap_tool(execute_tool)
@@ -487,30 +546,35 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         def prepare_tool(self, request):
             nonlocal active_call_id
             active_call_id = request.call_id
-            self.record = store.call(state, active_call_id) if store else None
-            record = self.record
+            record = store.call(state, request.call_id) if store else None
             if record and record["status"] == "completed":
+                tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": None}
                 return ToolResult.from_dict(json.loads(record["result_json"]))
-            if record and subtasks and subtasks.managed(tool_context(active_call_id), record):
-                return tools.normalize_result(subtasks.resume(tool_context(active_call_id), record))
+            if record and subtasks and subtasks.managed(tool_context(request.call_id), record):
+                tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": None}
+                return tools.normalize_result(subtasks.resume(tool_context(request.call_id), record))
             scope.admit_tool()
             cancellation.check()
             pipeline.before_tool(request)
             cancellation.check()
-            self.action = policy.action(state, active_call_id, request.name, request.arguments)
-            if self.action == "ask":
-                state.metadata["approval_request"] = {"call_id": active_call_id, "turn_id": state.turn_id,
+            action = policy.action(state, request.call_id, request.name, request.arguments)
+            if action == "ask":
+                state.metadata["approval_request"] = {"call_id": request.call_id, "turn_id": state.turn_id,
                     "name": request.name, "request_digest": request_digest(request.name, request.arguments),
                     "policy": policy.fingerprint}
                 state.status = RunStatus.AWAITING_APPROVAL
-                state.error = "tool requires an explicit approval or denial: " + active_call_id
-                checkpoint("approval_requested", call_id=active_call_id, name=request.name)
+                state.error = "tool requires an explicit approval or denial: " + request.call_id
+                checkpoint("approval_requested", call_id=request.call_id, name=request.name)
                 raise TaskStopped()
             state.metadata.pop("approval_request", None)
             if store:
-                store.start_call(state, active_call_id)
+                store.start_call(state, request.call_id)
             else:
-                checkpoint("tool_started", call_id=active_call_id)
+                checkpoint("tool_started", call_id=request.call_id)
+            checkpoint("tool_call_started", call_id=request.call_id)
+            tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": action}
+            self.record = record
+            self.action = action
             return None
 
         def tool_started(self, request):
@@ -518,7 +582,9 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
 
         def tool_result(self, request):
             try:
-                if self.action == "deny":
+                prep = tool_prep.get(request.call_id) or {}
+                action = prep.get("action", getattr(self, "action", None))
+                if action == "deny":
                     result = ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
                 else:
                     try:
@@ -560,13 +626,18 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 raise
 
         def commit_tool(self, request, result):
+            prep = tool_prep.get(request.call_id) or {}
+            record = prep.get("record", getattr(self, "record", None))
             if store:
-                if self.record["status"] == "completed":
+                if record and record["status"] == "completed":
                     checkpoint()
                 else:
-                    store.complete_call(state, active_call_id, result)
+                    store.complete_call(state, request.call_id, result)
             else:
-                checkpoint("tool_completed", call_id=active_call_id, ok=result.ok, error_code=result.error.code if result.error else None)
+                checkpoint("tool_completed", call_id=request.call_id, ok=result.ok, error_code=result.error.code if result.error else None)
+            checkpoint("tool_call_finished", call_id=request.call_id, ok=result.ok,
+                       error_code=result.error.code if result.error else None)
+            tool_prep.pop(request.call_id, None)
 
         def tool_returned(self, request, result, duration_seconds):
             return AgentEvent("tool_returned", data={"call_id": request.call_id, "ok": result.ok,
@@ -645,6 +716,22 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             except Exception as exc:  # noqa: BLE001 -- Persist cleanup failures as run status.
                 state.status = RunStatus.FAILED
                 state.error = f"{type(exc).__name__}: {exc}"
+
+        def tool_call_started(self, request):
+            return AgentEvent("tool_call_started", data={"call_id": request.call_id})
+
+        def tool_call_finished(self, request, result):
+            return AgentEvent("tool_call_finished", data={"call_id": request.call_id, "ok": result.ok,
+                                                         "error_code": result.error.code if result.error else None})
+
+        def parallel_readonly_enabled(self):
+            return _parallel_config(state)["readonly"]
+
+        def turn_finished(self):
+            checkpoint("turn_finished", status=state.status, model_calls=state.model_calls, tool_calls=state.tool_calls,
+                       total_tokens=state.total_tokens)
+            return AgentEvent("turn_finished", data={"status": state.status, "model_calls": state.model_calls,
+                                                    "tool_calls": state.tool_calls, "total_tokens": state.total_tokens})
 
         def stopped(self):
             checkpoint("run_stopped", status=state.status, model_calls=state.model_calls, tool_calls=state.tool_calls,

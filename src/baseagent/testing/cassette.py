@@ -164,6 +164,13 @@ class CassetteModel:
                     if row["response"]["kind"] not in kinds[operation]:
                         raise ValueError()
                     _decode(row["response"], [], [])
+                    chunks = row.get("chunks")
+                    if chunks is not None:
+                        if not isinstance(chunks, list):
+                            raise ValueError()
+                        from baseagent.llm.streaming import StreamDelta
+                        for chunk in chunks:
+                            StreamDelta.from_dict(chunk)
                 else:
                     _decode_error(row["error"])
             self._header, self._rows = header, values[1:]
@@ -260,6 +267,93 @@ class CassetteModel:
         return self._invoke("complete_reserved", messages, tools,
                             lambda: self._model.complete_reserved(messages, tools, reservation=reservation, cancellation=cancellation, timeout=timeout),
                             reservation=reservation, max_completion_tokens=reservation.max_completion_tokens)
+
+    def complete_stream(self, messages, tools=None, *, cancellation=None, timeout=None, max_completion_tokens=None):
+        """Replay/record streamed completions. Yields StreamDelta; returns ModelResponse."""
+        from baseagent.llm.streaming import StreamDelta
+
+        if cancellation is not None:
+            cancellation.check()
+        if self._closed or self._broken:
+            raise CassetteError("cassette is closed or recording failed")
+        if not self._lock.acquire(blocking=False):
+            raise CassetteError("concurrent cassette use: use one wrapper per task")
+        try:
+            if self._closed or self._broken:
+                raise CassetteError("cassette is closed or recording failed")
+            request = {"operation": "complete", "model_name": self.model_name, "messages": messages, "tools": tools or [],
+                       "generation": self.generation_params,
+                       "max_completion_tokens": max_completion_tokens if max_completion_tokens is not None else self.max_completion_tokens}
+            try:
+                normalized = self.redactor.value(json.loads(_json(request)))
+                digest = _hash(normalized)
+            except (ValueError, TypeError, RecursionError):
+                raise CassetteError("request is not supported JSON") from None
+            if self.mode == "replay":
+                if self._index == len(self._rows):
+                    raise CassetteMismatch("model call exceeds recorded operations")
+                row = self._rows[self._index]
+                if digest != row["request_hash"]:
+                    detail = self.redactor.text(_diff(row["request"], normalized))[:500]
+                    raise CassetteMismatch(f"operation {self._index}: {detail}")
+                self._index += 1
+                if "error" in row:
+                    raise _decode_error(row["error"])
+                for chunk in row.get("chunks") or ():
+                    if cancellation is not None:
+                        cancellation.check()
+                    yield StreamDelta.from_dict(chunk)
+                return _decode(row["response"], messages, tools)
+            row = {"seq": len(self._rows), "request": normalized, "request_hash": digest}
+            chunks = []
+            try:
+                method = getattr(self._model, "complete_stream_with_control", None)
+                if method is not None and cancellation is not None:
+                    generator = method(messages, tools, cancellation=cancellation, timeout=timeout)
+                elif hasattr(self._model, "complete_stream_with_timeout"):
+                    generator = self._model.complete_stream_with_timeout(
+                        messages, tools, timeout=timeout, max_completion_tokens=max_completion_tokens)
+                elif hasattr(self._model, "complete_stream"):
+                    generator = self._model.complete_stream(messages, tools)
+                else:
+                    # Non-stream model: record final only (no chunks).
+                    value = self._model.complete(messages, tools)
+                    row["response"] = self.redactor.value(json.loads(_json(_encode(value))))
+                    self._rows.append(row)
+                    return value
+                try:
+                    while True:
+                        if cancellation is not None:
+                            cancellation.check()
+                        delta = next(generator)
+                        chunks.append(self.redactor.value(delta.to_dict()))
+                        yield delta
+                except StopIteration as finished:
+                    value = finished.value
+            except (Exception, Cancelled) as exc:
+                row["error"] = self.redactor.value(_encode_error(exc))
+                if chunks:
+                    row["chunks"] = chunks
+                self._rows.append(row)
+                raise
+            try:
+                row["response"] = self.redactor.value(json.loads(_json(_encode(value))))
+                _decode(row["response"], messages, tools)
+                if chunks:
+                    row["chunks"] = chunks
+            except (ValueError, TypeError, KeyError, RecursionError):
+                self._broken = True
+                raise CassetteError("model return cannot be recorded") from None
+            self._rows.append(row)
+            return value
+        finally:
+            self._lock.release()
+
+    def complete_stream_with_control(self, messages, tools=None, *, cancellation, timeout=None):
+        return self.complete_stream(messages, tools, cancellation=cancellation, timeout=timeout)
+
+    def complete_stream_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
+        return self.complete_stream(messages, tools, timeout=timeout, max_completion_tokens=max_completion_tokens)
 
     def assert_all_consumed(self):
         if self.mode == "replay" and self._index != len(self._rows):

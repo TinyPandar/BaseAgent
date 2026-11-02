@@ -134,6 +134,70 @@ class Model:
             cancellation.check()
             raise
 
+
+    def complete_stream(self, messages, tools=None):
+        return self.complete_stream_with_timeout(messages, tools)
+
+    def complete_stream_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
+        """Yield StreamDelta values; return ModelResponse via StopIteration.value."""
+        from .streaming import StreamAssembler
+
+        kwargs = {"model": self.model_name, "messages": messages, "stream": True,
+                  "stream_options": {"include_usage": True}}
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        if timeout is not None:
+            kwargs["timeout"] = min(self.timeout, positive_seconds(timeout))
+        if max_completion_tokens is not None:
+            kwargs["max_tokens"] = max_completion_tokens
+        kwargs.update(self.generation_params)
+        if self.extra_body is not None:
+            kwargs["extra_body"] = self.extra_body
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+        except APITimeoutError:
+            raise ModelTimeoutError("model transport timed out") from None
+        except APIConnectionError:
+            raise TransientError("model transport connection failed") from None
+        except APIStatusError as exc:
+            raise http_error(exc.status_code, exc.body, exc.response.headers) from None
+        except (json.JSONDecodeError, APIResponseValidationError):
+            raise ResponseParseError("model response is not valid chat completion JSON") from None
+        assembler = StreamAssembler()
+        try:
+            for chunk in stream:
+                for delta in assembler.ingest_openai_chunk(chunk):
+                    yield delta
+        except APITimeoutError:
+            raise ModelTimeoutError("model transport timed out") from None
+        except APIConnectionError:
+            raise TransientError("model transport connection failed") from None
+        except APIStatusError as exc:
+            raise http_error(exc.status_code, exc.body, exc.response.headers) from None
+        except (json.JSONDecodeError, APIResponseValidationError):
+            raise ResponseParseError("model response is not valid chat completion JSON") from None
+        try:
+            response = assembler.response()
+            response.to_dict()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise ResponseParseError("model stream assembled an invalid message envelope") from None
+        return response
+
+    def complete_stream_with_control(self, messages, tools=None, *, cancellation, timeout=None):
+        cancellation.check()
+        stream = self.complete_stream_with_timeout(messages, tools, timeout=timeout)
+        try:
+            while True:
+                cancellation.check()
+                yield next(stream)
+        except StopIteration as finished:
+            cancellation.check()
+            return finished.value
+        except Exception:
+            cancellation.check()
+            raise
+
     def close(self):
         self.client.close()
 

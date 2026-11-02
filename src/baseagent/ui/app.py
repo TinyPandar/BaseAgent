@@ -51,11 +51,27 @@ async def show_state(state=None):
 async def render_events(ctrl):
     cursor = cl.user_session.get('event_cursor', 0)
     events = await asyncio.to_thread(ctrl.events, cursor)
+    stream_msg = cl.user_session.get('stream_message')
     for event in events:
         kind = event['type']
-        if kind in ('model_started', 'model_returned', 'tool_started', 'tool_completed', 'verification_completed', 'approval_requested'):
+        data = event.get('data') or {}
+        if kind == 'model_delta' and data.get('delta_kind', data.get('kind')) == 'content' and data.get('delta'):
+            if stream_msg is None:
+                stream_msg = cl.Message(content='')
+                await stream_msg.send()
+                cl.user_session.set('stream_message', stream_msg)
+            await stream_msg.stream_token(data['delta'])
+        elif kind in ('model_returned', 'model_failed', 'turn_finished'):
+            if stream_msg is not None:
+                await stream_msg.update()
+                cl.user_session.set('stream_message', None)
+                stream_msg = None
+            if kind != 'model_delta':
+                async with cl.Step(name=kind, type='run') as step:
+                    step.output = json.dumps(data, ensure_ascii=False)
+        elif kind in ('model_started', 'tool_started', 'tool_call_started', 'tool_completed', 'tool_call_finished', 'verification_completed', 'approval_requested'):
             async with cl.Step(name=kind, type='tool' if 'tool' in kind else 'run') as step:
-                step.output = json.dumps(event['data'], ensure_ascii=False)
+                step.output = json.dumps(data, ensure_ascii=False)
         cursor = event['sequence']
     cl.user_session.set('event_cursor', cursor)
 

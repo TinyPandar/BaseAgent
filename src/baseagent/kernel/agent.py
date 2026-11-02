@@ -1,8 +1,10 @@
 """One-task model/tool loop; persistence and authorization stay with callers."""
 
 from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 import json
+import threading
 import time
 from typing import Any
 
@@ -69,6 +71,7 @@ class _SingleTaskHooks(LoopHooks):
         self.cancellation = cancellation
         self.pipeline = MiddlewarePipeline(hooks)
         self.model_handler = self.pipeline.wrap_model(self.execute_model)
+        self._tool_lock = threading.Lock()
 
     def checkpoint(self, kind, **data):
         value = AgentEvent(kind, timestamp=time.time(), data=data)
@@ -101,6 +104,10 @@ class _SingleTaskHooks(LoopHooks):
     def messages(self):
         return deepcopy(self.state.messages)
 
+    def _stream_enabled(self):
+        metadata = getattr(self.state, "metadata", None) or {}
+        return bool((metadata.get("stream_config") or {}).get("enabled"))
+
     def execute_model(self, request):
         self.check()
         if self.state.model_calls >= self.state.max_model_calls:
@@ -108,7 +115,26 @@ class _SingleTaskHooks(LoopHooks):
         view = ContextPolicy(self.state.max_context_bytes, self.state.max_tool_context_bytes).build(request.messages, request.tools)
         self.check()
         self.state.model_calls += 1
-        if hasattr(self.model, "complete_with_control"):
+        attempt = self.state.model_calls
+        stream = self._stream_enabled() and (
+            hasattr(self.model, "complete_stream_with_control") or hasattr(self.model, "complete_stream")
+        )
+        if stream:
+            if hasattr(self.model, "complete_stream_with_control"):
+                generator = self.model.complete_stream_with_control(
+                    view.messages, deepcopy(request.tools), cancellation=self.cancellation, timeout=None)
+            else:
+                generator = self.model.complete_stream(view.messages, deepcopy(request.tools))
+            try:
+                while True:
+                    self.check()
+                    delta = next(generator)
+                    payload = delta.to_dict()
+                    delta_kind = payload.pop("kind")
+                    self.checkpoint("model_delta", attempt=attempt, delta_kind=delta_kind, **payload)
+            except StopIteration as finished:
+                response = finished.value
+        elif hasattr(self.model, "complete_with_control"):
             response = self.model.complete_with_control(view.messages, deepcopy(request.tools), cancellation=self.cancellation, timeout=None)
         else:
             response = self.model.complete(view.messages, deepcopy(request.tools))
@@ -142,11 +168,12 @@ class _SingleTaskHooks(LoopHooks):
             self.check()
             if actual.call_id != original_id:
                 raise ValueError("middleware cannot change the tool call ID")
-            if self.state.tool_calls >= self.state.max_tool_calls:
-                raise _LimitExceeded(RunStatus.MAX_TOOL_CALLS_EXCEEDED)
-            self.state.tool_calls += 1
-            if not self.tools.retry_safe(actual.name):
-                self.state.unsafe_tool_calls += 1
+            with self._tool_lock:
+                if self.state.tool_calls >= self.state.max_tool_calls:
+                    raise _LimitExceeded(RunStatus.MAX_TOOL_CALLS_EXCEEDED)
+                self.state.tool_calls += 1
+                if not self.tools.retry_safe(actual.name):
+                    self.state.unsafe_tool_calls += 1
 
             def reject_constant(value):
                 raise ValueError("non-finite numbers are not valid JSON")
@@ -166,7 +193,9 @@ class _SingleTaskHooks(LoopHooks):
                 json.dumps(arguments, allow_nan=False)
             except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
                 return ToolResult.failure(ErrorCode.INVALID_ARGUMENTS, "tool arguments must be a valid JSON object")
-            return self.tools.execute(actual.name, arguments, context=ToolContext(self.state, self.checkpoint, self.cancellation))
+            with self._tool_lock:
+                context = ToolContext(self.state, self.checkpoint, self.cancellation)
+            return self.tools.execute(actual.name, arguments, context=context)
 
         return self.pipeline.wrap_tool(execute_tool)(request)
 
@@ -225,6 +254,22 @@ class _SingleTaskHooks(LoopHooks):
             self.state.status = RunStatus.FAILED
             self.state.error = f"{type(exc).__name__}: {exc}"
 
+    def tool_call_started(self, request):
+        return self.checkpoint("tool_call_started", call_id=request.call_id)
+
+    def tool_call_finished(self, request, result):
+        return self.checkpoint("tool_call_finished", call_id=request.call_id, ok=result.ok,
+                               error_code=result.error.code if result.error else None)
+
+    def turn_finished(self):
+        return self.checkpoint("turn_finished", status=self.state.status,
+                               model_calls=self.state.model_calls, tool_calls=self.state.tool_calls,
+                               total_tokens=getattr(self.state, "total_tokens", 0))
+
+    def parallel_readonly_enabled(self):
+        metadata = getattr(self.state, "metadata", None) or {}
+        return bool((metadata.get("parallel_config") or {}).get("readonly"))
+
     def stopped(self):
         return self.checkpoint("run_stopped", status=self.state.status,
                                model_calls=self.state.model_calls, tool_calls=self.state.tool_calls)
@@ -261,26 +306,76 @@ def iter_agent(
             driver.check()
             pending = _pending_calls(state)
             if pending:
-                for call in pending:
-                    function = call["function"]
-                    request = ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation)
-                    result = driver.prepare_tool(request)
-                    started = time.monotonic()
-                    if result is None:
-                        yield driver.tool_started(request)
-                        result = driver.tool_result(request)
-                        if not isinstance(result, ToolResult):
-                            raise TypeError("wrap_tool_call must return ToolResult")
-                        result = tools.normalize_result(result)
-                    state.messages.append({"role": "tool", "tool_call_id": request.call_id,
-                                           "content": json.dumps(result.to_dict(), ensure_ascii=False, allow_nan=False)})
-                    try:
-                        driver.commit_tool(request, result)
-                    except BaseException:
-                        state.messages.pop()
-                        raise
-                    yield driver.tool_returned(request, result, time.monotonic() - started)
-                    yield driver.tool_completed(request, result)
+                parallel = bool(getattr(driver, "parallel_readonly_enabled", lambda: False)())
+                can_parallel = (
+                    parallel and len(pending) > 1
+                    and all(tools.retry_safe(call["function"]["name"]) for call in pending)
+                )
+                if can_parallel:
+                    prepared = []
+                    for call in pending:
+                        function = call["function"]
+                        request = ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation)
+                        started = time.monotonic()
+                        result = driver.prepare_tool(request)
+                        if result is None:
+                            yield driver.tool_started(request)
+                            alias = getattr(driver, "tool_call_started", None)
+                            if callable(alias):
+                                yield alias(request)
+                        prepared.append((request, result, started))
+                    need_run = [(request, started) for request, result, started in prepared if result is None]
+                    bodies = {}
+                    with ThreadPoolExecutor(max_workers=len(need_run)) as pool:
+                        futures = {pool.submit(driver.tool_result, request): request for request, _ in need_run}
+                        for future in as_completed(futures):
+                            request = futures[future]
+                            bodies[request.call_id] = future.result()
+                    for request, result, started in prepared:
+                        if result is None:
+                            result = bodies[request.call_id]
+                            if not isinstance(result, ToolResult):
+                                raise TypeError("wrap_tool_call must return ToolResult")
+                            result = tools.normalize_result(result)
+                        state.messages.append({"role": "tool", "tool_call_id": request.call_id,
+                                               "content": json.dumps(result.to_dict(), ensure_ascii=False, allow_nan=False)})
+                        try:
+                            driver.commit_tool(request, result)
+                        except BaseException:
+                            state.messages.pop()
+                            raise
+                        yield driver.tool_returned(request, result, time.monotonic() - started)
+                        yield driver.tool_completed(request, result)
+                        finished = getattr(driver, "tool_call_finished", None)
+                        if callable(finished):
+                            yield finished(request, result)
+                else:
+                    for call in pending:
+                        function = call["function"]
+                        request = ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation)
+                        started = time.monotonic()
+                        result = driver.prepare_tool(request)
+                        if result is None:
+                            yield driver.tool_started(request)
+                            alias = getattr(driver, "tool_call_started", None)
+                            if callable(alias):
+                                yield alias(request)
+                            result = driver.tool_result(request)
+                            if not isinstance(result, ToolResult):
+                                raise TypeError("wrap_tool_call must return ToolResult")
+                            result = tools.normalize_result(result)
+                        state.messages.append({"role": "tool", "tool_call_id": request.call_id,
+                                               "content": json.dumps(result.to_dict(), ensure_ascii=False, allow_nan=False)})
+                        try:
+                            driver.commit_tool(request, result)
+                        except BaseException:
+                            state.messages.pop()
+                            raise
+                        yield driver.tool_returned(request, result, time.monotonic() - started)
+                        yield driver.tool_completed(request, result)
+                        finished = getattr(driver, "tool_call_finished", None)
+                        if callable(finished):
+                            yield finished(request, result)
                 continue
             last_message = state.messages[-1]
             if last_message["role"] == "assistant" and not _tool_calls(last_message):
@@ -331,5 +426,8 @@ def iter_agent(
             raise
     finally:
         driver.cleanup()
+        turn = getattr(driver, "turn_finished", lambda: None)()
         stopped = driver.stopped()
+    if turn is not None:
+        yield turn
     yield stopped

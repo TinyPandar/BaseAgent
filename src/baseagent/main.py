@@ -166,6 +166,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--wrapup-hint-steps", type=int, help="Inject a wrap-up hint at or below this many remaining steps (0 disables; recommended 3)")
     parser.add_argument("--repeat-call-guard", action=argparse.BooleanOptionalAction, default=None, help="Warn on repeated identical calls and block the third (resume: preserve)")
     parser.add_argument("--dedupe-reads", action=argparse.BooleanOptionalAction, default=None, help="Return a short reference for unchanged repeated file reads (resume: preserve)")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=None, help="Stream model tokens as model_delta events (resume: preserve)")
+    parser.add_argument("--parallel-readonly-tools", action=argparse.BooleanOptionalAction, default=None, help="Run retry_safe tool batches in parallel (resume: preserve)")
     parser.add_argument("--max-context-bytes", type=int, help="Serialized model input UTF-8 bytes (default 96000; resume: preserve)")
     parser.add_argument("--max-tool-context-bytes", type=int, help="Per-tool data excerpt limit (default 4000; resume: preserve)")
     parser.add_argument("--max-total-tokens", type=int, help="Reported token budget per turn; unknown usage blocks execution")
@@ -458,6 +460,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         guard_settings = {key: value for key, value in {"wrapup_hint_steps": args.wrapup_hint_steps, "repeat_call_guard": args.repeat_call_guard, "dedupe_reads": args.dedupe_reads}.items() if value is not None}
         if any(value is not None for value in guard_settings.values()):
             config["guards"] = guard_settings
+        if args.stream is not None:
+            config["stream"] = {"enabled": bool(args.stream)}
+        if args.parallel_readonly_tools is not None:
+            config["parallel"] = {"readonly": bool(args.parallel_readonly_tools)}
         if os.getenv("BASEAGENT_LLM_PROVIDER"):
             config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
         if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
