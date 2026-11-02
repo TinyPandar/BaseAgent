@@ -24,8 +24,26 @@ from scripts.record_coding_scenario import (
 
 
 def _mean(runs, key):
-    values = [float(run[key]) for run in runs if isinstance(run.get(key), (int, float))]
+    values = []
+    for run in runs:
+        try:
+            values.append(float(run[key]))
+        except (KeyError, TypeError, ValueError):
+            pass
     return sum(values) / len(values) if values else None
+
+
+def finalize_cassette(path, configuration, key="", url=""):
+    """Stamp the live scenario policy into the header so replay uses v3, then scan."""
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["base_url"] = "<redacted-endpoint>"
+    header["scenario_policy_version"] = 3
+    if "extra_body" in configuration:
+        header["extra_body"] = configuration["extra_body"]
+    lines[0] = json.dumps(header, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n")
+    scan_cassette(path, key, url)
 
 
 def comparison_summary(before_runs, after_runs):
@@ -35,7 +53,7 @@ def comparison_summary(before_runs, after_runs):
                 **{key: _mean(runs, key) for key in ("total_tokens", "prompt_tokens", "completion_tokens", "cost_cny")}}
     before, after = summarize(before_runs), summarize(after_runs)
     base_tokens, new_tokens = before["total_tokens"], after["total_tokens"]
-    reduction = (base_tokens - new_tokens) / base_tokens if base_tokens else None
+    reduction = (base_tokens - new_tokens) / base_tokens if base_tokens and new_tokens is not None else None
     return {"before": before, "after": after, "total_tokens_reduction": reduction,
             "targets": {"success_rate": 0.8, "total_tokens_reduction": 0.3},
             "passed": {"success_rate": after["success_rate"] is not None and after["success_rate"] >= 0.8,
@@ -101,6 +119,7 @@ def main(argv=None):
         print("pending: refusing to overwrite an existing cassette.")
         return 1
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    status = None
     try:
         with initialize_model(generic_only=True, timeout=30, max_completion_tokens=1024,
                               generation={"temperature": 0}) as client:
@@ -112,45 +131,53 @@ def main(argv=None):
                     break
                 meter.start_run()
                 cassette_path = args.output_dir / f"run_{number}.json"
-                with scenario_workspace() as root:
-                    model = CassetteModel(cassette_path, meter, mode="record", redactor=cassette_redactor(root, key, url))
-                    state = None
+                state, result, observed, consistent = None, {"external_acceptance_passed": False}, None, False
+                try:
+                    with scenario_workspace() as root:
+                        model = CassetteModel(cassette_path, meter, mode="record", redactor=cassette_redactor(root, key, url))
+                        try:
+                            result, state, ledger = run_scenario(model, root, runtime_config=runtime_config)
+                            observed = outcome(result, state, ledger, root)
+                            reason = meter.reason or state.error
+                        except Exception as exc:  # noqa: BLE001 -- record the failure, keep going
+                            result, observed, reason = {"external_acceptance_passed": False}, None, type(exc).__name__
+                        finally:
+                            model.close()
+                    if cassette_path.is_file():
+                        finalize_cassette(cassette_path, configuration, key, url)
                     try:
-                        result, state, ledger = run_scenario(model, root, runtime_config=runtime_config)
-                        observed = outcome(result, state, ledger, root)
-                        reason = meter.reason or state.error
-                    except Exception as exc:
-                        result, observed, reason = {"external_acceptance_passed": False}, None, type(exc).__name__
-                    finally:
-                        model.close()
-                scan_cassette(cassette_path, key, url)
-                consistent = (observed is not None and cassette_path.is_file()
-                              and replay(cassette_path, details=True, runtime_config=runtime_config) == observed)
+                        consistent = (observed is not None and cassette_path.is_file()
+                                      and replay(cassette_path, details=True, runtime_config=runtime_config) == observed)
+                    except Exception as exc:  # noqa: BLE001 -- replay failure is a per-run result
+                        reason = reason or f"replay failed: {type(exc).__name__}"
+                except Exception as exc:  # noqa: BLE001 -- one bad run must not abort the loop
+                    reason = f"run failed: {type(exc).__name__}"
                 results.append({"run": number, **signature(result),
-                                "total_tokens": None if state is None else state.total_tokens,
-                                "prompt_tokens": None if state is None else state.prompt_tokens,
-                                "completion_tokens": None if state is None else state.completion_tokens,
+                                # Failed runs fall back to metered usage so partial cost/tokens stay visible.
+                                "total_tokens": meter.prompt_tokens + meter.completion_tokens if state is None else state.total_tokens,
+                                "prompt_tokens": meter.prompt_tokens if state is None else state.prompt_tokens,
+                                "completion_tokens": meter.completion_tokens if state is None else state.completion_tokens,
                                 "cost_cny": str(meter.run_cost_cny), "reason": reason,
                                 "replay_consistent": consistent, "outcome": observed})
-        report = {"runs": results, "cost_cny": str(meter.cost_cny), "budget_cny": str(meter.budget),
-                  "runtime_config": runtime_config}
-        args.report_dir.mkdir(parents=True, exist_ok=True)
-        docs_reports = Path("docs/reports")
-        docs_reports.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex
-        report_path = args.report_dir / f"coding-m1-{stamp}.json"
-        summary = comparison_summary(baseline_runs, results)
-        report["comparison"] = summary
-        report_path.write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
-        (docs_reports / f"m1_coding_comparison-{stamp}.md").write_text(_report_markdown(summary), encoding="utf-8")
-        print(json.dumps({"runs_saved": len(results), "cost_cny": str(meter.cost_cny),
-                          "report": str(report_path), "comparison_md": str(docs_reports / f"m1_coding_comparison-{stamp}.md")},
-                         ensure_ascii=False))
-        return 0 if len(results) == args.runs and all(summary["passed"].values()) else 1
-    except Exception as exc:
-        print(f"pending: recording/check failed ({type(exc).__name__}).")
-        return 1
-
+    except Exception as exc:  # noqa: BLE001 -- still write whatever runs completed
+        status = f"recording/check failed ({type(exc).__name__})"
+        print(f"pending: {status}.")
+    report = {"runs": results, "cost_cny": str(meter.cost_cny), "budget_cny": str(meter.budget),
+              "runtime_config": runtime_config, "partial": len(results) < args.runs or status is not None,
+              "error": status}
+    args.report_dir.mkdir(parents=True, exist_ok=True)
+    docs_reports = Path("docs/reports")
+    docs_reports.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex
+    report_path = args.report_dir / f"coding-m1-{stamp}.json"
+    summary = comparison_summary(baseline_runs, results)
+    report["comparison"] = summary
+    report_path.write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
+    (docs_reports / f"m1_coding_comparison-{stamp}.md").write_text(_report_markdown(summary), encoding="utf-8")
+    print(json.dumps({"runs_saved": len(results), "cost_cny": str(meter.cost_cny),
+                      "report": str(report_path), "comparison_md": str(docs_reports / f"m1_coding_comparison-{stamp}.md")},
+                     ensure_ascii=False))
+    return 0 if status is None and len(results) == args.runs and all(summary["passed"].values()) else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())
