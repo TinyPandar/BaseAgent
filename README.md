@@ -20,7 +20,8 @@
 | 代码 RAG 带引用 | 有 | test hybrid MRR 0.845；rerank 默认关 |
 | 流式 / 并行只读 / resume | 离线已接 | 付费冒烟未跑 |
 | 生成答案质量评测 | 离线管道 | 真实 80 题未跑 |
-| Watchdog / Router / Trigger | 未做 | 后续阶段 |
+| Watchdog | 有，默认关闭 | 任务级停滞 / 重复 / 预算 / 超时；不是调用前安全拦截 |
+| Router / Trigger | 未做 | 后续阶段 |
 | Docker 沙箱 | 未做 | LocalBackend 不是 OS 沙箱 |
 | Terminal-Bench | 未做 | 阶段 5 |
 | MCP 客户端 | 未做 | 不在本计划里 |

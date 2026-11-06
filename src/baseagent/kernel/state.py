@@ -25,6 +25,7 @@ class RunStatus(StrEnum):
     CANCELLED = "cancelled"
     RESERVATION_UNAVAILABLE = "reservation_unavailable"
     REQUEST_BOUND_VIOLATED = "request_bound_violated"
+    ABORTED_BY_WATCHDOG = "aborted_by_watchdog"
 
 
 @dataclass

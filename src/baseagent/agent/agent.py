@@ -77,6 +77,24 @@ def _parallel_config(state):
     return {"readonly": False, **state.metadata.get("parallel_config", {})}
 
 
+def _apply_watchdog(state, checkpoint, *, raise_stop=True, **kwargs):
+    from .watchdog import observe
+    decision = observe(state, **kwargs)
+    if not decision:
+        return
+    checkpoint("watchdog_decision", rule=decision["rule"], step=decision["step"], action=decision["action"],
+               evidence=decision["evidence"])
+    if decision["action"] != "stop":
+        if not any(message.get("role") == "system" and message.get("content") == decision["message"] for message in state.messages):
+            state.messages.append({"role": "system", "content": decision["message"]})
+        return
+    if not raise_stop:
+        return
+    state.status = RunStatus.ABORTED_BY_WATCHDOG
+    state.error = decision["message"]
+    raise TaskStopped()
+
+
 def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
     if not user_input.strip():
         raise ValueError("user input must not be blank")
@@ -162,6 +180,7 @@ def run_agent(
     guard_options = (runtime_config or {}).get("guards", {})
     stream_options = (runtime_config or {}).get("stream", {})
     parallel_options = (runtime_config or {}).get("parallel", {})
+    watchdog_options = (runtime_config or {}).get("watchdog", {})
     spill_threshold = spill_options.get("threshold_tokens")
     spill_head = spill_options.get("head_lines")
     spill_tail = spill_options.get("tail_lines")
@@ -170,7 +189,7 @@ def run_agent(
     from baseagent.tools.edit_policy import bind_edit_policy
     policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
-    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards", "stream", "parallel"}}
+    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards", "stream", "parallel", "watchdog"}}
               if isinstance(runtime_config, dict) else runtime_config)
     if subtasks is not None:
         config = {"runtime": config, "subtasks": subtasks.contract()}
@@ -247,6 +266,14 @@ def run_agent(
                 state.metadata["parallel_config"] = parallel_config
             if type(parallel_config["readonly"]) is not bool:
                 raise ValueError("parallel.readonly must be boolean")
+            if watchdog_options or state.metadata.get("watchdog_config"):
+                watchdog_config = {"enabled": False, "stall_steps": 3, "stall_abort_steps": 5, "repeat_abort": 4,
+                                   "max_steps": 0, "max_tokens": 0, "max_seconds": 0.0, "tool_timeout_seconds": 0.0,
+                                   **state.metadata.get("watchdog_config", {})}
+                watchdog_config.update({key: value for key, value in watchdog_options.items() if value is not None})
+                if type(watchdog_config["enabled"]) is not bool or any(type(watchdog_config[key]) is not int or watchdog_config[key] < 0 for key in ("stall_steps", "stall_abort_steps", "repeat_abort", "max_steps", "max_tokens")) or any(type(watchdog_config[key]) not in (int, float) or watchdog_config[key] < 0 for key in ("max_seconds", "tool_timeout_seconds")):
+                    raise ValueError("watchdog settings must be boolean or nonnegative")
+                state.metadata["watchdog_config"] = watchdog_config
             if compaction_max_chars is not None and (type(compaction_max_chars) is not int or compaction_max_chars < 0):
                 raise ValueError("compaction character budget must be a nonnegative integer (0 disables)")
             if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
@@ -518,6 +545,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             pipeline.before_agent(current)
 
         def before_model(self, current):
+            _apply_watchdog(state, checkpoint, phase="before_model")
             pipeline.before_model(current)
             compact_history(state, summarizer if summarizer is not None else TruncatingSummarizer(), checkpoint)
 
@@ -567,6 +595,12 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 checkpoint("approval_requested", call_id=request.call_id, name=request.name)
                 raise TaskStopped()
             state.metadata.pop("approval_request", None)
+            try:
+                parsed = json.loads(request.arguments or "{}")
+            except (ValueError, TypeError):
+                parsed = {}
+            _apply_watchdog(state, checkpoint, phase="before_tool", name=request.name,
+                            arguments=parsed if isinstance(parsed, dict) else {}, call_id=request.call_id)
             if store:
                 store.start_call(state, request.call_id)
             else:
@@ -637,6 +671,13 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 checkpoint("tool_completed", call_id=request.call_id, ok=result.ok, error_code=result.error.code if result.error else None)
             checkpoint("tool_call_finished", call_id=request.call_id, ok=result.ok,
                        error_code=result.error.code if result.error else None)
+            try:
+                parsed = json.loads(request.arguments or "{}")
+            except (ValueError, TypeError):
+                parsed = {}
+            _apply_watchdog(state, checkpoint, phase="after_tool", name=request.name,
+                            arguments=parsed if isinstance(parsed, dict) else {}, call_id=request.call_id, ok=result.ok,
+                            raise_stop=False)
             tool_prep.pop(request.call_id, None)
 
         def tool_returned(self, request, result, duration_seconds):

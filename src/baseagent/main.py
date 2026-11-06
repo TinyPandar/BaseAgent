@@ -189,6 +189,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
     parser.add_argument("--tool-package", action="append", choices=["coding", "memory", "shared-memory"], help="Select built-in tool packages; repeat to combine (default: all)")
     parser.add_argument("--skills-dir", action="append", type=Path, help="Explicit local skill package directory; repeat to combine")
+    parser.add_argument("--watchdog", action=argparse.BooleanOptionalAction, default=None, help="Enable task-level stall, repeat, budget and timeout inspection")
+    parser.add_argument("--watchdog-stall-steps", type=int, help="Hint after this many steps without a write or verify (0 disables; suggested 3)")
+    parser.add_argument("--watchdog-stall-abort-steps", type=int, help="Abort after this many stalled steps (0 disables; suggested 5)")
+    parser.add_argument("--watchdog-repeat-abort", type=int, help="Abort after this many equivalent tool calls (0 disables; suggested 4)")
+    parser.add_argument("--watchdog-max-steps", type=int, help="Task step budget enforced by Watchdog (0 disables)")
+    parser.add_argument("--watchdog-max-tokens", type=int, help="Task token budget enforced by Watchdog (0 disables)")
+    parser.add_argument("--watchdog-max-seconds", type=float, help="Task wall-clock budget enforced by Watchdog (0 disables)")
+    parser.add_argument("--watchdog-tool-timeout", type=float, help="Single-tool timeout in seconds (0 disables)")
     if configure_parser is not None:
         configure_parser(parser)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
@@ -464,6 +472,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             config["stream"] = {"enabled": bool(args.stream)}
         if args.parallel_readonly_tools is not None:
             config["parallel"] = {"readonly": bool(args.parallel_readonly_tools)}
+        watchdog_settings = {key: value for key, value in {
+            "enabled": args.watchdog, "stall_steps": args.watchdog_stall_steps,
+            "stall_abort_steps": args.watchdog_stall_abort_steps, "repeat_abort": args.watchdog_repeat_abort,
+            "max_steps": args.watchdog_max_steps, "max_tokens": args.watchdog_max_tokens,
+            "max_seconds": args.watchdog_max_seconds, "tool_timeout_seconds": args.watchdog_tool_timeout,
+        }.items() if value is not None}
+        if watchdog_settings:
+            config["watchdog"] = watchdog_settings
         if os.getenv("BASEAGENT_LLM_PROVIDER"):
             config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
         if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
