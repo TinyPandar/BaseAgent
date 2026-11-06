@@ -22,7 +22,7 @@
 | 生成答案质量评测 | 离线管道 | 真实 80 题未跑 |
 | Watchdog | 有，默认关闭 | 任务级停滞 / 重复 / 预算 / 超时；不是调用前安全拦截 |
 | Router / Worker | 有，默认不替换旧 CLI | qa 只读，coding 走原审批；不确定时不默认改代码 |
-| Trigger | 未做 | 后续阶段 |
+| Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
 | Docker 沙箱 | 未做 | LocalBackend 不是 OS 沙箱 |
 | Terminal-Bench | 未做 | 阶段 5 |
 | MCP 客户端 | 未做 | 不在本计划里 |
