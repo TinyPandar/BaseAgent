@@ -155,7 +155,7 @@ def load_runs(root=ROOT):
         for cassette in sorted((root / "tests/cassettes" / scenario).glob("run_*.json")):
             if cassette.name.endswith(".result.json"):
                 continue
-            result = json.loads(cassette.with_name(cassette.stem + ".result.json").read_text())
+            result = json.loads(cassette.with_name(cassette.stem + ".result.json").read_text(encoding="utf-8"))
             steps, calls, messages = parse_cassette(cassette)
             header = json.loads(cassette.read_text(encoding="utf-8").splitlines()[0])
             runs.append({"scenario": scenario, "run": result.get("run", cassette.stem),
