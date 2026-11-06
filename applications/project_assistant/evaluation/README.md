@@ -332,3 +332,19 @@ PYTHONPATH=.:src .venv/bin/python scripts/record_coding_scenario.py --replay
 ```
 
 录像请求绑定录制时的仓库绝对路径，需在原 checkout 路径下回放（其他路径如 git worktree 会在首个请求报 `CassetteMismatch`）。录像同时保留成功与失败的运行，`.result.json` 记录每次的验收结果，供失败分析。
+
+## Corpus rebind (2026-11-06)
+
+`corpus_version` moved from `bcedb75a2c4d17e8` to `4ff03469efdf66af` after README
+and evaluation docs/scripts were added. Every stored `evidence_sha256` still
+matched the cited line slice, and no gold range or answer summary was regenerated.
+Published hybrid MRR 0.845 remains the retained measurement; it was not recomputed.
+
+## Generated-answer scoring (offline)
+
+`python scripts/evaluate_answers.py --synthetic` scores the 80-question set with
+rule checks only: citations must cover every gold range, and no-answer items must
+refuse without citations. Tune and test stay in separate aggregates. A local
+`--judge` file is optional and does not call a model. `--live` prints the paid
+command and exits. The unified entry is `python scripts/evaluate_suite.py offline`.
+See [docs/eval.md](../../../docs/eval.md).

@@ -1,5 +1,40 @@
 # BaseAgent
 
+手写白盒 agent 框架，加上 Project Assistant（代码 RAG）。用来测、记指标、演示一个可控的编码 agent 怎么做。不声称比 Claude Code 或 Codex 更强。
+
+| 指标 | 数字 |
+| --- | --- |
+| 检索 hybrid MRR（80 题 test） | 0.845 |
+| coding 成功率 | 5/5（基线 2/3） |
+| 平均 token | 80780 → 36185.4（−55.2%） |
+
+三分钟演示：[docs/demo.md](docs/demo.md)。离线总评测：`python scripts/evaluate_suite.py offline`（费用 0）。安装、CLI 和库接口在下面。
+
+## 和 Claude Code / Codex 的对照
+
+只记当时做没做，不是排名。
+
+| 能力 | BaseAgent | 说明 |
+| --- | --- | --- |
+| 单任务循环、工具账本、审批、预算 | 有 | 白盒，可回放 |
+| 代码 RAG 带引用 | 有 | test hybrid MRR 0.845；rerank 默认关 |
+| 流式 / 并行只读 / resume | 离线已接 | 付费冒烟未跑 |
+| 生成答案质量评测 | 离线管道 | 真实 80 题未跑 |
+| Watchdog / Router / Trigger | 未做 | 后续阶段 |
+| Docker 沙箱 | 未做 | LocalBackend 不是 OS 沙箱 |
+| Terminal-Bench | 未做 | 阶段 5 |
+| MCP 客户端 | 未做 | 不在本计划里 |
+
+## 失败与取舍
+
+- rerank 默认关闭：R@5 从 0.782 降到 0.770，每次查询约 1.4 万 token，MRR 只高约 0.012。
+- hybrid MRR 只说明检索到了，不说明答对了。生成质量的离线打分已接上；真实 qwen 80 题未跑。
+- M1 对比是 2026-11-02 的 qwen-plus 录像：5/5，token −55.2%，五次 after 平均约 0.030 元。这次不重跑。
+- M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
+- LocalBackend 不是沙箱。宿主路径仍然可见。
+
+## 库与 CLI
+
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
 
 The library includes strict deterministic recording/replay and OpenAI-compatible/Anthropic adapters with retry and rate-limit middleware. The [Project Assistant](applications/project_assistant/README.md) now provides document/code ingestion, Chroma retrieval, and a `knowledge_search` tool package with source visibility, citation checks, redaction, and offline replay tests. Application modules run from a repository checkout; they are not built into the default coding CLI. Retrieval evaluation and a controlled coding scenario with recorded Bailian qwen-plus cassettes and offline replay are available; generated-answer quality evaluation remains future work. Runtime, concurrency admission, Redis/queues, and other framework extensions will follow demonstrated application needs. See [ARCHITECTURE.md](ARCHITECTURE.md) for current status, deferred milestones, and acceptance criteria.
