@@ -133,6 +133,8 @@ def main(argv=None, *, model_factory=None):
     status.add_argument("--corpus-root", type=Path, default=Path("."))
     status.add_argument("--index-dir", type=Path)
     commands.add_parser("ask", help="Ask with knowledge_search; see ask --help", add_help=False)
+    route_command = commands.add_parser("route", help="Classify a request for the qa or coding worker; the router does not edit")
+    route_command.add_argument("prompt")
     history = commands.add_parser("history", help="Read local Git history without a model or index")
     history_commands = history.add_subparsers(dest="history_command", required=True)
     for name in ("log", "show", "added"):
@@ -155,6 +157,10 @@ def main(argv=None, *, model_factory=None):
                             model_factory=model_factory, system_prompt=PROJECT_PROMPT)
     args = parser.parse_args(argv)
     try:
+        if args.command == "route":
+            from baseagent.agent.router import route
+            print(json.dumps(route(args.prompt), ensure_ascii=False, indent=2))
+            return 0
         if args.command == "index":
             return build_index(args)
         if args.command == "history":
