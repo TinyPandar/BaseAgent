@@ -335,7 +335,7 @@ PYTHONPATH=.:src .venv/bin/python scripts/record_coding_scenario.py --replay
 
 ## Corpus rebind (2026-11-06)
 
-`corpus_version` moved from `bcedb75a2c4d17e8` to `b42a70b6ab824955` after README, Watchdog, Router and Trigger sources
+`corpus_version` moved from `bcedb75a2c4d17e8` to `6ba9c48301161e36` after README, Watchdog, Router, Trigger and Docker sources
 and evaluation docs/scripts were added. Every stored `evidence_sha256` still
 matched the cited line slice, and no gold range or answer summary was regenerated.
 Published hybrid MRR 0.845 remains the retained measurement; it was not recomputed.

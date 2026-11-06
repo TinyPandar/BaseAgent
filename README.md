@@ -23,8 +23,8 @@
 | Watchdog | 有，默认关闭 | 任务级停滞 / 重复 / 预算 / 超时；不是调用前安全拦截 |
 | Router / Worker | 有，默认不替换旧 CLI | qa 只读，coding 走原审批；不确定时不默认改代码 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
-| Docker 沙箱 | 未做 | LocalBackend 不是 OS 沙箱 |
-| Terminal-Bench | 未做 | 阶段 5 |
+| Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
+| Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
 | MCP 客户端 | 未做 | 不在本计划里 |
 
 ## 失败与取舍
@@ -33,7 +33,7 @@
 - hybrid MRR 只说明检索到了，不说明答对了。生成质量的离线打分已接上；真实 qwen 80 题未跑。
 - M1 对比是 2026-11-02 的 qwen-plus 录像：5/5，token −55.2%，五次 after 平均约 0.030 元。这次不重跑。
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
-- LocalBackend 不是沙箱。宿主路径仍然可见。
+- LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
 ## 库与 CLI
 

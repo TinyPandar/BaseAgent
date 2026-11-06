@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "corpus_version": "b42a70b6ab824955",
+  "corpus_version": "6ba9c48301161e36",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
-  "corpus_version_note": "2026-11-06 reviewed rebind after phase 1-4 docs and sources. All evidence_sha256 values still matched the cited lines; gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
+  "corpus_version_note": "2026-11-06 reviewed rebind after phase 1-5 docs and sources. All evidence_sha256 values still matched the cited lines; gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",

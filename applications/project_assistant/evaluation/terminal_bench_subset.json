@@ -1,0 +1,27 @@
+{
+  "dataset": "terminal-bench@2.0",
+  "source": "https://github.com/laude-institute/harbor/blob/7367e809aeed7cc01060e6d23245fb46c3310089/registry.json",
+  "dataset_git": "https://github.com/laude-institute/terminal-bench-2.git",
+  "dataset_commit": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+  "selection": "first 18 task ids in alphabetical order from the Harbor terminal-bench 2.0 registry",
+  "task_ids": [
+    "adaptive-rejection-sampler",
+    "bn-fit-modify",
+    "break-filter-js-from-html",
+    "build-cython-ext",
+    "build-pmars",
+    "build-pov-ray",
+    "caffe-cifar-10",
+    "cancel-async-tasks",
+    "chess-best-move",
+    "circuit-fibsqrt",
+    "cobol-modernization",
+    "code-from-image",
+    "compile-compcert",
+    "configure-git-webserver",
+    "constraints-scheduling",
+    "count-dataset-tokens",
+    "crack-7z-hash",
+    "custom-memory-heap-crash"
+  ]
+}
