@@ -597,7 +597,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             state.metadata.pop("approval_request", None)
             try:
                 parsed = json.loads(request.arguments or "{}")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 parsed = {}
             _apply_watchdog(state, checkpoint, phase="before_tool", name=request.name,
                             arguments=parsed if isinstance(parsed, dict) else {}, call_id=request.call_id)
@@ -673,7 +673,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                        error_code=result.error.code if result.error else None)
             try:
                 parsed = json.loads(request.arguments or "{}")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 parsed = {}
             _apply_watchdog(state, checkpoint, phase="after_tool", name=request.name,
                             arguments=parsed if isinstance(parsed, dict) else {}, call_id=request.call_id, ok=result.ok,
