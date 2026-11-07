@@ -340,11 +340,57 @@ and evaluation docs/scripts were added. Every stored `evidence_sha256` still
 matched the cited line slice, and no gold range or answer summary was regenerated.
 Published hybrid MRR 0.845 remains the retained measurement; it was not recomputed.
 
+## Corpus rebind (2026-11-07)
+
+`corpus_version` moved from `16b7c2ee0e1a7056` to `454fbdbe5312f934` after the
+generated-answer scoring notes in `docs/eval.md`, `docs/demo.md`, and
+`docs/reports/phase1-eval.md` changed. Every stored `evidence_sha256` still
+matched the cited line slice. Gold ranges and answer summaries were not
+regenerated. Published hybrid MRR 0.845 was not recomputed.
+
+## Corpus rebind (2026-11-07, NLI notes)
+
+`corpus_version` moved from `454fbdbe5312f934` to `8c6d85921510b3dd` after
+`docs/eval.md` described the synthetic 1.000 pipeline proof and the transformers
+4.57.1 offline load. Every stored `evidence_sha256` still matched the cited
+line slice. Gold ranges and answer summaries were not regenerated. Published
+hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
-`python scripts/evaluate_answers.py --synthetic` scores the 80-question set with
-rule checks only: citations must cover every gold range, and no-answer items must
-refuse without citations. Tune and test stay in separate aggregates. A local
-`--judge` file is optional and does not call a model. `--live` prints the paid
-command and exits. The unified entry is `python scripts/evaluate_suite.py offline`.
+`python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
+separate layers. Tune and test stay in separate aggregates. Synthetic rows prove
+the pipeline; they are not model scores.
+
+Citation metrics use line-number sets per file: `citation_line_recall`,
+`citation_line_precision`, and `citation_span_hit` (every gold span must overlap
+at least one cited line). Answerable `citation_supported` requires a span hit and
+line recall ≥ 0.3 (`--line-recall-min`). A single overlapping line is not coverage
+1. `citation_coverage`, when present, is only the deprecated name of line recall.
+No-answer items pass only when the answer is a refusal and has no citations.
+
+`summary_token_f1` and `summary_rouge_l` compare an answerable answer with
+`answer_summary`. English is tokenized by words and code identifiers stay whole.
+`summary_match` is token F1 ≥ 0.25 or ROUGE-L ≥ 0.3. That is lexical overlap, not
+semantic correctness, and it is not a pass condition for no-answer items.
+
+Line precision's average skips items with no citations. Those rows store null and
+do not enter the denominator, so an average of 1.0 is not "every item cited gold".
+Synthetic answers restate `answer_summary` and cite every gold line, so the six
+primary metrics are 1.000. That is a pipeline proof, not a model score.
+
+`--nli` is off by default. `--nli-model base` is
+`cross-encoder/nli-deberta-v3-base` and `--nli-model large` is
+`cross-encoder/nli-deberta-v3-large`. Base and large results are stored separately.
+The loader targets transformers 4.57.1. On that release
+`pipeline(..., local_files_only=True)` does not reach `cached_file`, so the loader
+sets `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, then loads config, tokenizer,
+and weights with `local_files_only=True`. That transformers release needs
+huggingface-hub<1, which conflicts with this project's hub 1.x, so it is not a
+default dependency; use a separate environment for `--nli`. Missing
+weights skip the layer and the report says so. When NLI does not run, per-item
+JSON omits the faithfulness fields. Tests deny network at the load boundary.
+`--judge` reads a local file and does not call a model. `citation_and_refusal_pass`
+is a debug field, not answer accuracy. `--live` prints the paid command and exits.
+The unified entry is `python scripts/evaluate_suite.py offline`.
 See [docs/eval.md](../../../docs/eval.md).
