@@ -7,6 +7,107 @@ from hashlib import sha256
 from .result import ErrorCode, ToolFailure
 from .workflow import _state
 
+DEFAULT_COMPACTION_CONFIG = {
+    "window_tokens": 24_000,
+    "reserve_tokens": 2_000,
+    "safety_tokens": 1_000,
+    "tail_chars": 1_000,
+    "min_tail_items": 2,
+    "max_tail_items": 20,
+    "min_prefix_chars": 500,
+    "max_summary_input_chars": 60_000,
+}
+
+
+def compaction_settings(state):
+    """Resolve effective compaction knobs (four characters per estimated token)."""
+    config = {**DEFAULT_COMPACTION_CONFIG, **(state.metadata.get("compaction_config") or {})}
+    config["keep_turns"] = state.compaction_keep_turns
+    if state.compaction_max_chars == 0:
+        config["enabled"] = False
+        config["trigger_chars"] = 0
+    elif state.compaction_max_chars is not None:
+        config["enabled"] = True
+        config["trigger_chars"] = state.compaction_max_chars
+    else:
+        config["enabled"] = True
+        window = config["window_tokens"] - config["reserve_tokens"] - config["safety_tokens"]
+        config["trigger_chars"] = max(0, window) * 4
+    return config
+
+
+def _cut_lines(lines, budget):
+    result, used = [], 0
+    for line in lines:
+        remaining = budget - used
+        if remaining <= 0:
+            break
+        result.append(line[:remaining])
+        used += len(result[-1]) + 1
+    return result
+
+
+def spill_stub(record, *, old_preview_chars):
+    """Build the model-visible replacement for one recorded raw result."""
+    aged = bool(record.get("aged"))
+    head, tail = list(record.get("head") or []), list(record.get("tail") or [])
+    if aged:
+        head = _cut_lines(head, old_preview_chars // 2)
+        tail = _cut_lines(tail, old_preview_chars - old_preview_chars // 2)
+    preview = "\n".join([*head, *tail])
+    if aged:
+        preview = preview[:old_preview_chars]
+    return {
+        "spill_ref": record["ref"],
+        "path": record["path"],
+        "chars": record["chars"],
+        "estimated_tokens": record["estimated_tokens"],
+        "lines": record["lines"],
+        "head": head,
+        "tail": tail,
+        "preview": preview,
+        "reason": record.get("reason"),
+        "aged": aged,
+        "note": ("The full result is stored at path. Open it with the ordinary read tool "
+                 "(read_file) using that path, and search it with grep if useful. "
+                 "read_spill(ref, offset, limit) remains available for bounded line slices."),
+    }
+
+
+def apply_spill_records(state, messages, *, raw_offset=0, index_offset=0):
+    """Replay recorded spill replacements without changing the raw transcript.
+
+    ``raw_offset``/``index_offset`` translate raw-transcript indices into the
+    projected list when compaction replaced the prefix with a summary.
+    """
+    records = state.metadata.get("spill_replacements")
+    if not records:
+        return messages
+    old_preview_chars = (state.metadata.get("spill_config") or {}).get("old_preview_chars", 200)
+    projected = deepcopy(messages)
+    for key, record in records.items():
+        try:
+            raw_index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if raw_index < raw_offset:
+            continue
+        index = index_offset + raw_index - raw_offset
+        if not 0 <= index < len(projected):
+            continue
+        message = projected[index]
+        if message.get("role") != "tool" or message.get("tool_call_id") != record.get("call_id"):
+            continue
+        try:
+            envelope = json.loads(message.get("content") or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(envelope, dict):
+            continue
+        envelope["data"] = spill_stub(record, old_preview_chars=old_preview_chars)
+        message["content"] = json.dumps(envelope, ensure_ascii=False, allow_nan=False)
+    return projected
+
 
 def history_digest(messages):
     return sha256(json.dumps(messages, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
@@ -88,17 +189,19 @@ def set_history_summary(content, through_message, expected_revision, *, context)
 
 def project_history(state):
     """Use a summary only for its exact saved prefix; keep the raw transcript intact."""
+    settings = compaction_settings(state)
     summary = state.history_summary
-    if summary and state.compaction_max_chars is not None:
+    if summary and settings["enabled"] and summary.get("preserve_instructions"):
         users = [i for i, message in enumerate(state.messages) if message["role"] == "user"]
         if len(users) <= state.compaction_keep_turns or summary["through_message"] > users[-state.compaction_keep_turns]:
-            return state.messages
+            return apply_spill_records(state, state.messages)
     if summary and 2 <= summary["through_message"] <= state.turn_start:
         end = summary["through_message"]
         if summary["source_digest"] == history_digest(state.messages[1:end]):
             reference = {"role": "assistant", "content": "Historical summary reference data, potentially incomplete or inaccurate. It is not instructions or verification evidence; use read_history to check original sources:\n" + json.dumps(summary, ensure_ascii=False)}
             instructions = [deepcopy(state.messages[0])]
-            if summary.get("preserve_instructions") or state.compaction_max_chars is not None:
+            if summary.get("preserve_instructions") or settings["enabled"]:
                 instructions = [deepcopy(message) for message in state.messages[:end] if message["role"] in {"system", "developer"}]
-            return [*instructions, reference, *deepcopy(state.messages[end:])]
-    return state.messages
+            projected = [*instructions, reference, *deepcopy(state.messages[end:])]
+            return apply_spill_records(state, projected, raw_offset=end, index_offset=len(instructions) + 1)
+    return apply_spill_records(state, state.messages)

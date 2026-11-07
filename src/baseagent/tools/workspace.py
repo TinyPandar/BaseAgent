@@ -54,6 +54,25 @@ class Workspace:
         self.allow_memory_publish = allow_memory_publish
         self.protected_paths = backend.protected_paths
         self.edit_policy = edit_policy if edit_policy is not None else EditPolicy()
+        self._read_roots = set()
+
+    def allow_read_root(self, root):
+        """Permit reads from a harness-controlled directory (session spills)."""
+        path = Path(root).resolve()
+        self._read_roots.add(path)
+        allow = getattr(self.backend, "allow_read_root", None)
+        if callable(allow):
+            allow(path)
+
+    def _under_read_root(self, path):
+        return any(path == root or path.is_relative_to(root) for root in self._read_roots)
+
+    def _read_path(self, relative: str) -> Path:
+        candidate = Path(relative)
+        resolved = (candidate if candidate.is_absolute() else self.root / candidate).resolve()
+        if self._under_read_root(resolved) and resolved.is_file():
+            return resolved
+        return self._path(relative)
 
     def _path(self, relative: str) -> Path:
         # Namespace validation only. All actual I/O belongs to the backend.
@@ -83,18 +102,25 @@ class Workspace:
             files[result["path"]] = {"sha256": result["sha256"], "instruction_digest": result["instruction_digest"]}
 
     def read_file(self, path: str, start_line: int = 1, max_lines: int = 200, *, context=None) -> dict:
-        target = self._path(path)
+        target = self._read_path(path)
         if type(start_line) is not int or start_line < 1 or type(max_lines) is not int or not 1 <= max_lines <= 2000:
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "invalid line range")
-        value = self.backend.read_bytes(path)
+        spilled = self._under_read_root(target)
+        value = self.backend.read_bytes(str(target) if spilled else path)
         content = value.decode("utf-8")
         lines = content.splitlines(keepends=True)
-        instructions = self.get_instructions(path)
-        result = {"path": str(target.relative_to(self.root)), "sha256": sha256(value).hexdigest(),
+        if spilled:
+            instructions = {"digest": "", "instructions": []}
+            display = str(target)
+        else:
+            instructions = self.get_instructions(path)
+            display = str(target.relative_to(self.root))
+        result = {"path": display, "sha256": sha256(value).hexdigest(),
                   "instruction_digest": instructions["digest"], "instructions": instructions["instructions"],
                   "start_line": start_line, "total_lines": len(lines), "truncated": start_line > 1 or start_line - 1 + max_lines < len(lines),
                   "content": "".join(lines[start_line - 1:start_line - 1 + max_lines])}
-        self._observe(result, context)
+        if not spilled:
+            self._observe(result, context)
         return result
 
     def write_file(self, path: str, content: str, expected_sha256: str | None = None, expected_instructions: str | None = None, *, context=None) -> dict:

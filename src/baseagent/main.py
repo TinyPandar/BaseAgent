@@ -50,6 +50,9 @@ Use recall_memory/read_history to recover prior session decisions. Reference not
 and agent-authored summaries can be wrong; verify original sources and current
 files. Never store credentials in memory. Summaries may cover completed old turns
 only, and must preserve goals, constraints, decisions and remaining work.
+Oversized tool results may be replaced by a preview with a spill path. Open that
+path with read_file and search it with grep when you need the full result;
+read_spill remains available for bounded line slices.
 """
 
 
@@ -158,9 +161,23 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8; resume: preserve)")
     parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries (defaults to max-steps)")
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
-    parser.add_argument("--compaction-max-chars", type=int, help="Enable historical summaries above this JSON character budget (0 disables; resume: preserve)")
+    parser.add_argument("--compaction-max-chars", type=int, help="Legacy explicit JSON character trigger for summaries (0 disables compaction; resume: preserve)")
     parser.add_argument("--compaction-keep-turns", type=int, help="Recent user turns to preserve including the active turn (default 2)")
-    parser.add_argument("--spill-threshold-tokens", type=int, help="Spill large tool results above this estimated token count (0 disables; resume: preserve)")
+    parser.add_argument("--compaction-window-tokens", type=int, help="Estimated model window tokens; triggers near window-reserve-margin (default 24000)")
+    parser.add_argument("--compaction-reserve-tokens", type=int, help="Tokens reserved for the summary (default 2000)")
+    parser.add_argument("--compaction-safety-tokens", type=int, help="Safety margin tokens before the window limit (default 1000)")
+    parser.add_argument("--compaction-tail-chars", type=int, help="Minimum characters of recent raw tail to keep (default 1000)")
+    parser.add_argument("--compaction-min-tail-items", type=int, help="Minimum message items in the raw tail (default 2)")
+    parser.add_argument("--compaction-max-tail-items", type=int, help="Maximum message items in the raw tail (default 20)")
+    parser.add_argument("--compaction-min-prefix-chars", type=int, help="Skip when the summarizable prefix is shorter than this (default 500)")
+    parser.add_argument("--compaction-max-input-chars", type=int, help="Drop older turn-groups above this summarizer input size (default 60000)")
+    parser.add_argument("--spill", dest="spill_enabled", action=argparse.BooleanOptionalAction, default=None, help="Spill oversized tool results to session files (default on; --no-spill disables all budgets)")
+    parser.add_argument("--spill-threshold-tokens", type=int, help="Legacy single-result trigger in estimated tokens; 0 disables only that trigger")
+    parser.add_argument("--spill-single-chars", type=int, help="Spill one result above this many characters (default 50000)")
+    parser.add_argument("--spill-total-chars", type=int, help="Spill largest results until remaining full results fit this many characters (default 200000)")
+    parser.add_argument("--spill-max-age-turns", type=int, help="Cut previews for results older than this many turns (default 10)")
+    parser.add_argument("--spill-old-preview-chars", type=int, help="Preview characters for aged spill stubs (default 200)")
+    parser.add_argument("--spill-preview-chars", type=int, help="Preview characters in a fresh spill stub (default 2048)")
     parser.add_argument("--spill-head-lines", type=int, help="Lines to include at the start of spill previews (default 20)")
     parser.add_argument("--spill-tail-lines", type=int, help="Lines to include at the end of spill previews (default 10)")
     parser.add_argument("--wrapup-hint-steps", type=int, help="Inject a wrap-up hint at or below this many remaining steps (0 disables; recommended 3)")
@@ -263,6 +280,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("compaction character budget must be nonnegative")
     if args.compaction_keep_turns is not None and args.compaction_keep_turns < 1:
         parser.error("compaction keep turns must be positive")
+    for value in (args.compaction_window_tokens, args.compaction_reserve_tokens, args.compaction_safety_tokens,
+                  args.compaction_tail_chars, args.compaction_min_prefix_chars, args.spill_threshold_tokens,
+                  args.spill_single_chars, args.spill_total_chars, args.spill_max_age_turns,
+                  args.spill_old_preview_chars, args.spill_preview_chars, args.spill_head_lines,
+                  args.spill_tail_lines):
+        if value is not None and value < 0:
+            parser.error("compaction and spill budgets must be nonnegative")
+    for value in (args.compaction_min_tail_items, args.compaction_max_tail_items,
+                  args.compaction_max_input_chars):
+        if value is not None and value < 1:
+            parser.error("compaction counts and summarizer input limits must be positive")
     if args.max_total_tokens is not None and args.max_total_tokens < 1:
         parser.error("token budget must be positive")
     if args.max_duration_seconds is not None and (not math.isfinite(args.max_duration_seconds) or args.max_duration_seconds <= 0):
@@ -462,9 +490,22 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                   "model": args.model or os.getenv("BASEAGENT_LLM_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
                   "endpoint": os.getenv("BASEAGENT_LLM_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL"),
                   "context_policy_version": 1}
-        spill_settings = {"threshold_tokens": args.spill_threshold_tokens, "head_lines": args.spill_head_lines, "tail_lines": args.spill_tail_lines}
+        spill_settings = {
+            "enabled": args.spill_enabled, "threshold_tokens": args.spill_threshold_tokens,
+            "single_chars": args.spill_single_chars, "total_chars": args.spill_total_chars,
+            "max_age_turns": args.spill_max_age_turns, "old_preview_chars": args.spill_old_preview_chars,
+            "preview_chars": args.spill_preview_chars, "head_lines": args.spill_head_lines,
+            "tail_lines": args.spill_tail_lines}
         if any(value is not None for value in spill_settings.values()):
             config["spill"] = {key: value for key, value in spill_settings.items() if value is not None}
+        compaction_settings = {
+            "window_tokens": args.compaction_window_tokens, "reserve_tokens": args.compaction_reserve_tokens,
+            "safety_tokens": args.compaction_safety_tokens, "tail_chars": args.compaction_tail_chars,
+            "min_tail_items": args.compaction_min_tail_items, "max_tail_items": args.compaction_max_tail_items,
+            "min_prefix_chars": args.compaction_min_prefix_chars,
+            "max_summary_input_chars": args.compaction_max_input_chars}
+        if any(value is not None for value in compaction_settings.values()):
+            config["compaction"] = {key: value for key, value in compaction_settings.items() if value is not None}
         guard_settings = {key: value for key, value in {"wrapup_hint_steps": args.wrapup_hint_steps, "repeat_call_guard": args.repeat_call_guard, "dedupe_reads": args.dedupe_reads}.items() if value is not None}
         if any(value is not None for value in guard_settings.values()):
             config["guards"] = guard_settings

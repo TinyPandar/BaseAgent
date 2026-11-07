@@ -3,9 +3,9 @@
 import os
 from pathlib import Path
 
-from baseagent.tools.result import ErrorCode, ToolFailure, ToolResult
-from baseagent.tools.editing import atomic_write, read_bytes, file_hash
+from baseagent.tools.editing import atomic_write, file_hash, read_bytes
 from baseagent.tools.process import run_process
+from baseagent.tools.result import ErrorCode, ToolFailure
 
 
 class LocalBackend:
@@ -16,6 +16,19 @@ class LocalBackend:
         self.protected_paths = tuple(Path(path).resolve() for path in protected_paths)
         # Tool permission is enforced by Workspace, before backend invocation.
         self.allow_write = True
+        self.read_roots = set()
+
+    def allow_read_root(self, root):
+        """Grant read-only access to a harness-controlled directory (session spills)."""
+        self.read_roots.add(Path(root).resolve())
+
+    def _read_path(self, relative):
+        candidate = Path(relative)
+        if candidate.is_absolute():
+            path = candidate.resolve()
+            if any(path == root or path.is_relative_to(root) for root in self.read_roots):
+                return path
+        return self._path(relative)
 
     def contract(self):
         return {"kind": "local", "version": 1, "root": str(self.root),
@@ -25,7 +38,7 @@ class LocalBackend:
         return self._path(relative)
 
     def read_bytes(self, path, limit=200_000):
-        return read_bytes(self._path(path), limit)
+        return read_bytes(self._read_path(path), limit)
 
     def file_hash(self, path):
         return file_hash(self._path(path))

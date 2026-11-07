@@ -30,13 +30,13 @@ from baseagent.middleware import (
 )
 from baseagent.session.compatibility import check_contract, runtime_contract
 from baseagent.tools.context import ToolContext
-from baseagent.tools.memory import project_history
+from baseagent.tools.memory import compaction_settings, project_history
 from baseagent.tools.policy import ToolPolicy, request_digest
 from baseagent.tools.registry import ToolRegistry
 from baseagent.tools.result import ErrorCode, ToolResult
 
 from .cancellation import CancellationToken, Cancelled
-from .compaction import Summarizer, TruncatingSummarizer, compact_history
+from .compaction import StructuredSummarizer, Summarizer, compact_history
 from .context import ContextLimitExceeded, ContextPolicy
 from .errors import BudgetExceeded, TaskPaused, WorkspaceChanged
 from .events import event
@@ -61,7 +61,24 @@ def _set_limits(state: State, max_steps: int | None, max_model_calls: int | None
 
 
 def _spill_config(state):
-    return {"threshold_tokens": 0, "head_lines": 20, "tail_lines": 10, **state.metadata.get("spill_config", {})}
+    from .spill import DEFAULT_CONFIG
+    metadata = state.metadata.get("spill_config", {})
+    config = {**DEFAULT_CONFIG, **metadata}
+    if "single_chars" not in metadata and metadata.get("threshold_tokens") is not None:
+        # Legacy sessions persisted only the token threshold.
+        config["single_chars"] = metadata["threshold_tokens"] * 4
+    return config
+
+
+def _bind_spill_read_root(tools, root):
+    """Let an ordinary workspace read tool open this session's spill files."""
+    seen = set()
+    for _, handler, _ in getattr(tools, "_tools", {}).values():
+        owner = getattr(handler, "__self__", None)
+        allow = getattr(owner, "allow_read_root", None)
+        if callable(allow) and id(owner) not in seen:
+            allow(root)
+            seen.add(id(owner))
 
 
 def _guard_config(state):
@@ -181,15 +198,15 @@ def run_agent(
     stream_options = (runtime_config or {}).get("stream", {})
     parallel_options = (runtime_config or {}).get("parallel", {})
     watchdog_options = (runtime_config or {}).get("watchdog", {})
-    spill_threshold = spill_options.get("threshold_tokens")
-    spill_head = spill_options.get("head_lines")
-    spill_tail = spill_options.get("tail_lines")
+    compaction_options = (runtime_config or {}).get("compaction", {})
+    spill_keys = ("enabled", "threshold_tokens", "single_chars", "total_chars", "max_age_turns",
+                  "old_preview_chars", "preview_chars", "head_lines", "tail_lines")
     if subtasks is not None:
         tools = subtasks.bind_tools(tools)
     from baseagent.tools.edit_policy import bind_edit_policy
     policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
     # Preserve legacy contracts for the default permissive policy.
-    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "guards", "stream", "parallel", "watchdog"}}
+    config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "compaction", "guards", "stream", "parallel", "watchdog"}}
               if isinstance(runtime_config, dict) else runtime_config)
     if subtasks is not None:
         config = {"runtime": config, "subtasks": subtasks.contract()}
@@ -232,17 +249,38 @@ def run_agent(
             if max_tool_context_bytes is not None:
                 state.max_tool_context_bytes = max_tool_context_bytes
             if compaction_max_chars is not None:
-                state.compaction_max_chars = compaction_max_chars or None
+                # 0 is the explicit disable sentinel; None means pressure-triggered defaults.
+                state.compaction_max_chars = compaction_max_chars
             if compaction_keep_turns is not None:
                 state.compaction_keep_turns = compaction_keep_turns
+            compaction_config = {
+                "window_tokens": 24_000, "reserve_tokens": 2_000, "safety_tokens": 1_000,
+                "tail_chars": 1_000, "min_tail_items": 2, "max_tail_items": 20,
+                "min_prefix_chars": 500, "max_summary_input_chars": 60_000,
+                **state.metadata.get("compaction_config", {})}
+            compaction_config.update({key: value for key, value in compaction_options.items()
+                                      if value is not None})
+            if state.metadata.get("compaction_config") or compaction_options:
+                state.metadata["compaction_config"] = compaction_config
+            if (type(compaction_config["window_tokens"]) is not int
+                    or type(compaction_config["reserve_tokens"]) is not int
+                    or type(compaction_config["safety_tokens"]) is not int
+                    or any(type(compaction_config[key]) is not int or compaction_config[key] < 0
+                           for key in ("window_tokens", "reserve_tokens", "safety_tokens", "tail_chars",
+                                       "min_prefix_chars", "max_summary_input_chars"))
+                    or any(type(compaction_config[key]) is not int or compaction_config[key] < 1
+                           for key in ("min_tail_items", "max_tail_items"))):
+                raise ValueError("compaction window, reserve, margin and tail settings must be nonnegative integers")
             spill_config = _spill_config(state)
-            if spill_threshold is not None:
-                spill_config["threshold_tokens"] = spill_threshold
-            if spill_head is not None:
-                spill_config["head_lines"] = spill_head
-            if spill_tail is not None:
-                spill_config["tail_lines"] = spill_tail
-            if state.metadata.get("spill_config") or any(value is not None for value in (spill_threshold, spill_head, spill_tail)):
+            for key in ("enabled", "threshold_tokens", "single_chars", "total_chars", "max_age_turns",
+                        "old_preview_chars", "preview_chars", "head_lines", "tail_lines"):
+                if key in spill_options and spill_options[key] is not None:
+                    spill_config[key] = spill_options[key]
+            if spill_options.get("single_chars") is None and spill_options.get("threshold_tokens") is not None:
+                # Legacy token threshold: 0 disables only this single-result trigger.
+                spill_config["single_chars"] = spill_options["threshold_tokens"] * 4
+            if state.metadata.get("spill_config") or any(
+                    key in spill_options and spill_options[key] is not None for key in spill_keys):
                 state.metadata["spill_config"] = spill_config
             guard_config = _guard_config(state)
             for key, value in guard_options.items():
@@ -279,10 +317,17 @@ def run_agent(
             if type(state.compaction_keep_turns) is not int or state.compaction_keep_turns < 1:
                 raise ValueError("compaction keep turns must be a positive integer")
             ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes)
-            if any(type(value) is not int or value < 0 for value in spill_config.values()):
+            if type(spill_config["enabled"]) is not bool:
+                raise ValueError("spill.enabled must be boolean")
+            if any(value is not None and (type(value) is not int or value < 0)
+                   for key, value in spill_config.items() if key != "enabled"):
                 raise ValueError("spill settings must be nonnegative integers")
-            if spill_config["threshold_tokens"]:
-                register_read_spill(tools, spill_store)
+            if spill_config["enabled"]:
+                _bind_spill_read_root(tools, spill_store.root_path(state))
+                if spill_config["threshold_tokens"] is not None:
+                    # Legacy reader remains available when the old threshold is
+                    # explicitly configured; ordinary read is the default path.
+                    register_read_spill(tools, spill_store)
             state.metadata["runtime_contract"] = runtime_contract(tools, state.messages[0]["content"], config)
             return state
 
@@ -299,8 +344,11 @@ def run_agent(
                 raise ValueError("finish or reconcile the current turn before appending a new prompt")
             _new_turn(existing, user_input, max_steps, max_model_calls, max_tool_calls)
         elif existing.status != RunStatus.COMPLETED:
-            if _spill_config(existing)["threshold_tokens"]:
-                register_read_spill(tools, spill_store)
+            existing_spill = _spill_config(existing)
+            if existing_spill["enabled"]:
+                _bind_spill_read_root(tools, spill_store.root_path(existing))
+                if existing_spill["threshold_tokens"] is not None:
+                    register_read_spill(tools, spill_store)
             check_contract(existing.metadata.get("runtime_contract"), runtime_contract(tools, existing.messages[0]["content"], config), accept_changes=accept_config_changes)
             _set_limits(existing, max_steps, max_model_calls, max_tool_calls)
             existing.status = RunStatus.RUNNING
@@ -335,6 +383,13 @@ def run_agent(
 
 
 def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None, spill_store=None) -> State:
+    from .spill import SpillStore
+    if spill_store is None:
+        # Derived worker sessions (including node views) use the same
+        # session-scoped rules and spill root as their parent.
+        spill_store = SpillStore(store)
+    if _spill_config(state)["enabled"]:
+        _bind_spill_read_root(tools, spill_store.root_path(state))
     scope = execution_scope or ExecutionScope(state)
     if scope.state is not state:
         raise ValueError("execution scope must own the active state")
@@ -395,7 +450,8 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         if completion_policy is not None:
             messages = deepcopy(messages)
             messages.insert(1, {"role": "system", "content": json.dumps(completion_policy.instructions(), ensure_ascii=False)})
-        view = ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes).build(messages, request.tools, preserve_turns=state.compaction_max_chars is not None)
+        view = ContextPolicy(state.max_context_bytes, state.max_tool_context_bytes).build(
+            messages, request.tools, preserve_turns=compaction_settings(state)["enabled"])
         state.metadata["context"] = {"input_bytes": view.input_bytes, "removed_messages": view.removed_messages,
                                      "clipped_tool_results": view.clipped_tool_results}
         check_budgets()
@@ -442,6 +498,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 response = model.complete_reserved(view.messages, deepcopy(request.tools), reservation=reservation, cancellation=cancellation, timeout=remaining)
             elif can_stream:
                 import sys
+
                 from baseagent.llm.streaming import StreamDelta
                 if hasattr(model, "complete_stream_with_control"):
                     generator = model.complete_stream_with_control(
@@ -547,7 +604,8 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         def before_model(self, current):
             _apply_watchdog(state, checkpoint, phase="before_model")
             pipeline.before_model(current)
-            compact_history(state, summarizer if summarizer is not None else TruncatingSummarizer(), checkpoint)
+            spill_store.apply(state, _spill_config(state), checkpoint)
+            compact_history(state, summarizer if summarizer is not None else StructuredSummarizer(), checkpoint)
 
         def model_started(self):
             # Actual dispatch events are still recorded inside execute_model.
@@ -650,10 +708,6 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                     if repeat == "warn":
                         data = result.data if isinstance(result.data, dict) else {"result": result.data}
                         result = ToolResult(data={**data, "guard_warning": "identical call repeated; result may be unchanged; change approach"})
-                spill_config = _spill_config(state)
-                if spill_config["threshold_tokens"]:
-                    result = spill_store.spill(state, request.call_id, request.name, result,
-                        spill_config["threshold_tokens"], spill_config["head_lines"], spill_config["tail_lines"], checkpoint)
                 return result
             except ModelTimeoutError:
                 check_budgets()
