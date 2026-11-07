@@ -11,6 +11,7 @@ from pathlib import Path
 from baseagent.agent import run_agent
 from baseagent.agent.compaction import (
     ModelSummarizer,
+    StructuredSummarizer,
     TruncatingSummarizer,
     compact_history,
 )
@@ -119,16 +120,24 @@ class CompactionTests(unittest.TestCase):
             def summarize(self, messages):
                 messages.clear()
                 raise RuntimeError("secret text")
-        for summary in (Broken(), ModelSummarizer(Model([{"content": ""}]))):
-            before = self.state.to_dict()
+        before_messages = deepcopy(self.state.messages)
+        before_summary = deepcopy(self.state.history_summary)
+        for failures, summary in enumerate((Broken(), ModelSummarizer(Model([{"content": ""}]))), start=1):
             self.compact(summary)
-            self.assertEqual(self.state.to_dict(), before)
-            self.assertEqual(self.events[-1], ("context_compaction_failed", {"error_type": "RuntimeError" if isinstance(summary, Broken) else "ValueError"}))
+            self.assertEqual(self.state.messages, before_messages)
+            self.assertEqual(self.state.history_summary, before_summary)
+            self.assertEqual(self.events[-1][0], "context_compaction_failed")
+            self.assertEqual(self.events[-1][1]["error_type"],
+                             "RuntimeError" if isinstance(summary, Broken) else "ValueError")
+            self.assertEqual(self.events[-1][1]["failures"], failures)
+            self.assertFalse(self.events[-1][1]["breaker_tripped"])
+            self.assertEqual(self.state.metadata["compaction_breaker"]["failures"], failures)
 
     def test_no_eligible_turn_and_nonshrinking_summary_leave_history(self):
         self.state.compaction_keep_turns = 3
         self.compact()
-        self.assertFalse(self.events)
+        self.assertEqual(self.events[-1][0], "context_compaction_skipped")
+        self.assertEqual(self.events[-1][1]["reason"], "no-complete-turn")
         self.state.compaction_keep_turns = 2
         self.compact(TruncatingSummarizer(100_000))
         self.assertEqual(self.events[-1][0], "context_compaction_failed")
@@ -170,7 +179,8 @@ class CompactionTests(unittest.TestCase):
             self.assertEqual(sum(e["type"] == "context_compacted" for e in events), 2)
             model = Model([{"content": "done"}])
             state = run_agent(model, "disabled", tools=tools, store=store, session_id="s", compaction_max_chars=0)
-            self.assertIsNone(state.compaction_max_chars)
+            self.assertEqual(state.compaction_max_chars, 0)
+            self.assertEqual(sum(e["type"] == "context_compacted" for e in store.events("s")), 2)
 
 
     def test_failed_summarizer_falls_back_in_run_agent(self):
@@ -187,6 +197,102 @@ class CompactionTests(unittest.TestCase):
             self.assertEqual(model.seen[0], [*before, {"role": "user", "content": "current"}])
             self.assertIsNone(state.history_summary)
             self.assertTrue(any(e["type"] == "context_compaction_failed" for e in store.events("s")))
+
+    def test_pressure_window_triggers_without_legacy_max_chars(self):
+        state = State(messages=history(), turn_start=8,
+                      metadata={"compaction_config": {"window_tokens": 1000, "reserve_tokens": 100,
+                                                      "safety_tokens": 100}})
+        summary, events = RecordingSummary(), []
+        compact_history(state, summary, lambda kind, **data: events.append((kind, data)))
+        self.assertEqual(len(summary.seen), 1)
+        self.assertEqual(events[0][0], "context_compacted")
+
+    def test_short_prefix_is_skipped_without_calling_summarizer(self):
+        state = State(messages=[{"role": "system", "content": "rules"},
+                                {"role": "user", "content": "old"},
+                                {"role": "assistant", "content": "done"},
+                                {"role": "user", "content": "current"}],
+                      turn_start=3, compaction_max_chars=10, compaction_keep_turns=1)
+        summary, events = RecordingSummary(), []
+        compact_history(state, summary, lambda kind, **data: events.append((kind, data)))
+        self.assertEqual(summary.seen, [])
+        self.assertEqual(events[-1][0], "context_compaction_skipped")
+        self.assertEqual(events[-1][1]["reason"], "prefix-too-short")
+
+    def test_breaker_trips_after_three_consecutive_failures(self):
+        class Broken:
+            def summarize(self, messages):
+                raise RuntimeError("boom")
+
+        events = []
+        for _ in range(4):
+            compact_history(self.state, Broken(), lambda kind, **data: events.append((kind, data)))
+        self.assertEqual([event[0] for event in events], ["context_compaction_failed"] * 3)
+        self.assertEqual([event[1]["failures"] for event in events], [1, 2, 3])
+        self.assertTrue(events[-1][1]["breaker_tripped"])
+        self.assertTrue(self.state.metadata["compaction_breaker"]["disabled"])
+        # A tripped breaker stops auto-compaction silently for the rest of the session.
+        self.compact(Broken())
+        self.assertEqual(len(events), 3)
+
+    def test_structured_summary_sections_and_recent_read_paths(self):
+        state = State(messages=[
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "Implement the parser and keep the public API stable. " + "constraint " * 500},
+            {"role": "assistant", "tool_calls": [
+                {"id": "a", "function": {"name": "read_file", "arguments": '{"path": "src/parser.py"}'}}]},
+            {"role": "tool", "tool_call_id": "a", "content": '{"ok":true,"data":"source","error":null}'},
+            {"role": "assistant", "content": "Which delimiter should be accepted?"},
+            {"role": "user", "content": "recent" * 300},
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": "current"}],
+            turn_start=7, compaction_max_chars=1000, compaction_keep_turns=2,
+            metadata={"compaction_config": {"tail_chars": 0, "min_tail_items": 2,
+                                            "min_prefix_chars": 0}})
+        events = []
+        compact_history(state, StructuredSummarizer(), lambda kind, **data: events.append((kind, data)))
+        self.assertEqual(events[0][0], "context_compacted")
+        content = state.history_summary["content"]
+        for heading in ("Task goal:", "Steps already taken:", "Key files/paths:",
+                        "Open questions:", "User constraints:"):
+            self.assertIn(heading, content)
+        self.assertIn("src/parser.py", content)
+        self.assertTrue(content.startswith("Recently read files: "), content[:80])
+
+    def test_oversized_summarizer_input_drops_older_turn_groups(self):
+        messages = [{"role": "system", "content": "rules"}]
+        for index in range(5):
+            messages.extend([{"role": "user", "content": f"old-{index}-" + "x" * 300},
+                             {"role": "assistant", "content": f"answer-{index}"}])
+        messages.extend([{"role": "user", "content": "recent" * 100},
+                         {"role": "assistant", "content": "answer"},
+                         {"role": "user", "content": "current"}])
+        state = State(messages=messages, turn_start=len(messages) - 1, compaction_max_chars=1000,
+                      compaction_keep_turns=2,
+                      metadata={"compaction_config": {"tail_chars": 0, "min_tail_items": 2,
+                                                      "max_summary_input_chars": 400}})
+        summary, events = RecordingSummary(), []
+        compact_history(state, summary, lambda kind, **data: events.append((kind, data)))
+        self.assertTrue(any(event[0] == "context_compaction_input_trimmed" for event in events))
+        self.assertLess(len(json.dumps(summary.seen[0])), len(json.dumps(messages[1:1 + len(messages)])))
+        _exchanges(project_history(state))
+
+    def test_projection_shrinks_context_but_retains_recent_raw_pair(self):
+        messages = [{"role": "system", "content": "rules"},
+                    {"role": "user", "content": "old" * 1500},
+                    {"role": "assistant", "content": "old answer"},
+                    {"role": "user", "content": "recent task"},
+                    {"role": "assistant", "tool_calls": [call("a"), call("b")]},
+                    reply("b"), reply("a"),
+                    {"role": "assistant", "content": "done"},
+                    {"role": "user", "content": "current"}]
+        state = State(messages=messages, turn_start=8, compaction_max_chars=1000,
+                      compaction_keep_turns=2, metadata={"compaction_config": {"tail_chars": 0}})
+        compact_history(state, RecordingSummary(), lambda kind, **data: None)
+        projected = project_history(state)
+        self.assertLess(len(json.dumps(projected)), len(json.dumps(messages)))
+        self.assertEqual(projected[-5:], messages[-5:])
+        _exchanges(projected)
 
     def test_config_cli_override_and_default_offline_summarizer(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -216,7 +322,8 @@ class CompactionTests(unittest.TestCase):
     def test_increasing_retained_turns_restores_raw_history(self):
         self.state.compaction_keep_turns = 1
         self.compact()
-        self.assertEqual(self.state.history_summary["through_message"], 8)
+        # The tail floor pulls in the previous turn; tool pairs stay whole.
+        self.assertEqual(self.state.history_summary["through_message"], 6)
         self.state.compaction_keep_turns = 3
         self.assertEqual(project_history(self.state), self.state.messages)
         self.state.compaction_keep_turns = 2

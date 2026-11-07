@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "corpus_version": "8c6d85921510b3dd",
+  "corpus_version": "078776ee87118513",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
-  "corpus_version_note": "2026-11-07 reviewed rebind after the NLI-load and synthetic-score notes in docs/eval.md. All evidence_sha256 values still matched the cited lines; gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
+  "corpus_version_note": "2026-11-07 rebind after the three-tier context-memory README and source edits. All evidence_sha256 values still matched the cited lines (none of the cited files changed); gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",
@@ -104,7 +104,7 @@
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
     "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89",
-    "src/baseagent/main.py:190-191": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
+    "src/baseagent/main.py:207-208": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
   },
   "questions": [
     {
@@ -414,7 +414,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:190-191",
+        "src/baseagent/main.py:207-208",
         "applications/project_assistant/tools.py:104-116"
       ]
     },

@@ -58,7 +58,7 @@ Tool REVIEW uses BaseAgent's exact-call approval flow; prompt BLOCK stops the ru
 - **检索缓存**：评测支持 embedding 与 rerank 的本地 SQLite 缓存，复用命中结果；见[缓存说明](applications/project_assistant/evaluation/CACHE.md)。
 - **应用 CLI 与历史**：`python -m applications.project_assistant` 提供 `index`、`status`、`ask` 和 `history log/show/added`；只读 `git_log`、`git_show`、`git_pickaxe` 工具用于历史查询。见[应用说明](applications/project_assistant/README.md)。
 - **受控 coding 场景**：临时夹具中检索约定、修改代码、运行验证并写报告；附百炼 qwen-plus 录像与离线回放入口。见[场景说明](applications/project_assistant/evaluation/README.md#受控-coding-离线验收phase-3-第-3-项)。
-- **上下文压缩（opt-in）**：保留原始会话，以摘要替换模型输入中的旧轮次；默认摘要器不调用模型。见[上下文压缩](#context-compactionopt-in)。
+- **三层上下文内存（默认启用）**：热上下文保留近期对话与工具配对；超大工具结果溢出到会话文件并以可读路径加预览替代；接近窗口上限时自动摘要旧轮次并保留近期原始尾部。原始会话不被改写，默认摘要器不调用模型。见[三层上下文内存](#three-tier-context-memoryspill--compaction)。
 - **成功率提示（opt-in）**：`--wrapup-hint-steps N` 在剩余步骤较少时提示收尾；`--repeat-call-guard` 警告并阻止第三次完全相同的工具调用；`--dedupe-reads` 对文件未变化的重复读取返回简短引用。三项默认关闭，也可在版本化配置的 `run` 区域设置。
 - **测试修复循环（opt-in）**：编辑后在完成前运行配置的测试命令，失败时向模型反馈，达到迭代上限则停止。见[测试修复循环](#test-and-fix-loopopt-in)。
 - **通用编辑策略**：`EditPolicy` 支持路径允许/拒绝规则、大改动审批及编辑后检查失败回滚。见[编辑策略](#edit-policy)。
@@ -944,13 +944,31 @@ backend 实现是可信扩展，负责字节读取限额、受保护路径/搜�
 
 参数在 tune 上选择，test 使用固定参数。qwen 重排默认关闭，需显式向 `retrieve` 传入 reranker；实验脚本使用 `--allow-rerank-api --max-rerank-tokens N` 启用。完整参数与回退分数语义见[应用配置说明](applications/project_assistant/README.md#配置)。评测 embedding/rerank 缓存见 [CACHE.md](applications/project_assistant/evaluation/CACHE.md)。
 
-## Context compaction（opt-in）
+## Three-tier context memory（spill + compaction）
 
-Automatic history compaction is opt-in: `--compaction-max-chars 24000 --compaction-keep-turns 2`, or `run.compaction_max_chars` / `run.compaction_keep_turns` in harness JSON. The budget counts JSON characters of the projected messages, excluding tool schemas; recent turns include the active user turn. Settings persist across session recovery; `--compaction-max-chars 0` disables future automatic summaries. The default summarizer is deterministic truncation with a 1000-character excerpt and makes no model calls. Python callers can supply `summarizer=ModelSummarizer(adapter)` or any `Summarizer` implementation from `baseagent.agent.compaction`; that explicit adapter owns its controls and usage accounting.
+The harness kernel keeps three tiers. **Hot** context is the system prompt, recent dialogue and paired tool calls/results. **Warm** context is the full text of oversized tool results written to `<db parent>/spill/<session id>/`; the model window keeps a readable path plus a preview. **Compacted** context is a structured summary of older turns plus a recent raw tail. Both mechanisms are session-scoped, apply to derived worker sessions, and persist their settings and state on resume. They never rewrite the authoritative `state.messages`.
 
-Large tool results can be spilled to `<db parent>/spill/<session id>/` and replaced in model context by a short preview. Enable with `--spill-threshold-tokens 2000`; `0` disables spilling (the default, to preserve existing transcripts). Configure preview lines with `--spill-head-lines` and `--spill-tail-lines`. The model can fetch at most 200 lines per call with `read_spill(ref, offset, limit)`. Memory sessions use a private temporary directory for the run. JSON content is estimated at four characters per token; settings persist on resume.
+### Tool-result spill（default on）
 
-Compaction extends the existing provenance-bound `history_summary` projection, leaving the raw transcript and message indices intact. It preserves system/developer instructions and the latest N whole user turns, validates tool call/result pairs, and feeds the previous summary into subsequent compactions. Summaries remain assistant reference data. Empty, failed, or nonshrinking summaries leave history unchanged and record `context_compaction_failed`; successful replacements record `context_compacted` without message content. The character budget is a soft trigger: protected turns may exceed it. When enabled, the hard context byte limit may clip tool previews but cannot remove turns; if the protected input still cannot fit, the run stops with `context_limit_exceeded`.
+Spill is on by default with three independent budgets:
+
+| Budget | Default | Trigger |
+| --- | ---: | --- |
+| single | 50,000 chars | one result exceeds `--spill-single-chars` |
+| aggregate | 200,000 chars | all still-full results exceed `--spill-total-chars`; largest are spilled until the remainder fits |
+| age | 10 turns | older results get their preview cut to `--spill-old-preview-chars` (200) |
+
+Fresh stubs keep about 2 KB (`--spill-preview-chars 2048`) using `--spill-head-lines` / `--spill-tail-lines`. Every replacement records `tool_result_spilled` with a stable `reason`: `single`, `total`, or `age`. The raw result stays in the transcript and tool ledger; projection replays recorded stubs, so scripted/cassette model inputs are byte-identical for the same recording and effective configuration.
+
+The stub `path` is workspace-relative when the spill directory is inside the workspace (for example `.baseagent/spill/<session>/<ref>.txt`) and absolute otherwise; either form can be opened with the ordinary `read_file` tool, then searched with `grep`. `read_spill(ref, offset, limit)` remains registered for compatibility when the legacy `--spill-threshold-tokens` option is explicitly set; it is not the primary retrieval path. The legacy threshold maps to four characters per estimated token; `--spill-threshold-tokens 0` disables only the single-result trigger. Use `--no-spill` / `run.spill_enabled: false` to disable all budgets. Harness JSON also accepts `spill_single_chars`, `spill_total_chars`, `spill_max_age_turns`, `spill_old_preview_chars`, `spill_preview_chars`, `spill_head_lines` and `spill_tail_lines`. Memory-only sessions use a private temporary spill root; settings persist in `metadata.spill_config`.
+
+### Pressure-triggered keep-tail compaction
+
+Compaction runs automatically near the window limit. The trigger is `(window - summary reserve - safety margin)` estimated tokens, converted at four characters per token, so tests can use a tiny fake window. Knobs: `--compaction-window-tokens` (24000), `--compaction-reserve-tokens` (2000), `--compaction-safety-tokens` (1000), plus `run.compaction_*` equivalents. `--compaction-max-chars` remains a legacy explicit character trigger; `0` disables compaction, and `options.compaction_max_chars = 0` does the same from Python.
+
+Only completed turns before the active prompt are summarized. The recent raw tail honors `--compaction-tail-chars` (1000), `--compaction-min-tail-items` (2) and `--compaction-max-tail-items` (20), and boundaries are user-turn starts, so a tool call is never split from its results. Prefixes shorter than `--compaction-min-prefix-chars` (500) are skipped without calling a summarizer. Oversized summarizer input drops older turn-groups once (`--compaction-max-input-chars`, 60000). The deterministic `StructuredSummarizer` covers task goal, steps taken, key files/paths, open questions and user constraints, and prefixes recently read file paths; it makes no model calls. `ModelSummarizer` remains an optional explicit adapter.
+
+Events are white-box: `context_compacted` (success), `context_compaction_skipped` (reason such as `prefix-too-short` or `no-complete-turn`), `context_compaction_failed` (with `failures` and `breaker_tripped`), and `context_compaction_input_trimmed`. Three consecutive failures open a persisted circuit breaker for the rest of the session; spill budgets still apply. Summaries remain assistant reference data under the existing provenance-bound `history_summary`; raw messages and indices are unchanged. The hard context byte limit still clips tool previews and cannot remove protected turns; if the protected input cannot fit, the run stops with `context_limit_exceeded`.
 
 ## Test-and-fix loop（opt-in）
 
