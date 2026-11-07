@@ -1,6 +1,6 @@
 # 评测入口
 
-离线命令不读取密钥，不发起模型请求。真实生成、M2 冒烟、Terminal-Bench 子集都停在命令，等 Frank 授权。
+离线命令不读取密钥，不发起模型请求。真实生成只由显式 `--live` 启动，并受 `--budget-cny` 硬上限约束；`--plan` 只打印命令。M2 冒烟和 Terminal-Bench 子集仍然停在命令，等 Frank 授权。本文档中的测试全部离线，没有调用任何 provider。
 
 ## 离线总入口
 
@@ -45,13 +45,47 @@ python scripts/evaluate_answers.py --synthetic --split test --report-dir docs/re
 
 约 20% 题号写在 `human_review`，`reviewed` 保持 null。已入库的旧报告若还有 Accuracy 列，那是当时的 `rule_correct`，不是答案对错。
 
-## 不要跑的付费命令
+## 生成评测：计划与执行
 
-80 题生成，预计不到 2 元。这条命令只打印计划并退出：
+计划模式不读取 `BASEAGENT_LLM_*`，不建索引，也不发起请求：
+
+```bash
+python scripts/evaluate_answers.py --plan --budget-cny 2
+```
+
+`--plan` 输出 `executed: false` / `authorization_required`。`evaluate_suite.py live-answers` 仍然只做计划，离线总入口不会花钱。
+
+获得授权后才执行真实生成。它会先校验 `BASEAGENT_LLM_API_KEY`、`BASEAGENT_LLM_BASE_URL`、`BASEAGENT_LLM_MODEL`；缺一个就打印 pending 并退出，零 provider 调用。
 
 ```bash
 python scripts/evaluate_answers.py --live --budget-cny 2
 ```
+
+`--live` 的流程：
+
+- 用当前 checkout 建 BM25 + vector 索引（`collect_corpus` + `CachedEmbedding` + `VectorIndex`），默认 hybrid，`retrieve(..., reranker=None)`，不启用 rerank。
+- 索引写到 `.baseagent/live_answers_index/`（已 gitignore）或仓库外目录；拒绝写入未忽略的仓库路径。
+- 嵌入使用 `CachedEmbedding` + `DiskCache`，缓存目录由 `RAG_CACHE_DIR` 决定。使用 `/workspace/bailian_cache` 时需要 `RAG_EMBEDDING_PROVIDER=openai`、`RAG_EMBEDDING_MODEL=text-embedding-v4`、`RAG_EMBEDDING_DIMENSIONS=1024`，并设置 `RAG_CACHE_DIR=/workspace/bailian_cache`。
+- 在任何嵌入请求之前，对唯一 chunk 文本和 80 个问题调用 `estimate_missing()`；按默认 0.5 元/百万嵌入 token 估算，超过剩余预算就直接中止，零 provider 调用。
+- 每题 `retrieve` 一次，然后只做一次 completion。prompt 要求用 `path:start-end` 引用，把检索内容当作不可信数据，证据不足时用 `answers.py` 能识别的拒答措辞（“not established”）。
+- 生成和嵌入都计入同一个 `--budget-cny`。生成用 `MeteredModel`（qwen-plus 非思考北京价：输入 0.8 元/百万、输出 2 元/百万、reasoning 8 元/百万）；最后一笔可越过预算，之后不再调用。预算由 `consume_budget` 驱动，不能用 agent loop 或自动压缩绕过。
+- 生成后用现有离线分层打分：引用层、summary token F1 / ROUGE-L、拒答准确率；tune 和 test 分开。不跑 `--nli`、`--judge` 或 rerank。
+- 报告写 `cost_cny`（生成 + 嵌入）、`provider_calls`、`live_executed`、`stopped_for_budget` 和 `embedding_usage`（cache hits/misses、api_calls、tokens）。`write_answer_report` 仍会拒绝 secret 标记。
+- 标准输出只打印一个小 JSON：报告路径、split、费用、调用数、是否执行、是否因预算停止。
+
+读取百炼 cache 时不要 `source ~/.config/baseagent/bailian.env`；由环境直接提供 `BASEAGENT_LLM_*`、`RAG_EMBEDDING_*`、`RAG_CACHE_DIR`、`RAG_EMBEDDING_DIMENSIONS`，需要非思考模式时再加 `BASEAGENT_LLM_EXTRA_BODY='{"enable_thinking":false}'`。
+
+## ModelSummarizer 冒烟
+
+默认生产压缩 summarizer 仍是 `StructuredSummarizer`。下面的脚本只验证可选的 `ModelSummarizer` 适配器，最多一次付费调用，不做三次失败熔断冒烟：
+
+```bash
+python scripts/smoke_model_summarizer.py --budget-cny 0.5
+```
+
+它用很小的 `compaction_max_chars` / `max_summary_input_chars` 构造超过触发线的 projected history，调用 `compact_history(state, ModelSummarizer(metered_model), checkpoint)`。成功要求出现 `context_compacted` 且 summary 非空；`prefix-too-short` 不算成功。若前缀超过 `max_summary_input_chars`，现有的一次 turn-group trim 可先触发 `context_compaction_input_trimmed`，然后仍只允许一次 summarizer 调用。输出 JSON 包含 success、events、cost_cny、budget_cny、stopped_for_budget、trimmed 和 short summary excerpt，不含 prompt 或 endpoint。
+
+## 其他付费命令
 
 M2 冒烟，建议上限 0.20 元。当前 coding CLI 没有 `--budget-cny`，所以这里只记录命令，不启动：
 

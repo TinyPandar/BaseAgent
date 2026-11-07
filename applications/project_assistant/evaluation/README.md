@@ -356,6 +356,14 @@ regenerated. Published hybrid MRR 0.845 was not recomputed.
 line slice. Gold ranges and answer summaries were not regenerated. Published
 hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-08, live path)
+
+`corpus_version` moved from `078776ee87118513` to `8a95ceeeee940fb0` after the
+live-answer CLI, the ModelSummarizer smoke script, and `docs/eval.md` changed.
+Every stored `evidence_sha256` still matched the cited line slice. Gold ranges
+and answer summaries were not regenerated. Published hybrid MRR 0.845 was not
+recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
@@ -391,6 +399,42 @@ default dependency; use a separate environment for `--nli`. Missing
 weights skip the layer and the report says so. When NLI does not run, per-item
 JSON omits the faithfulness fields. Tests deny network at the load boundary.
 `--judge` reads a local file and does not call a model. `citation_and_refusal_pass`
-is a debug field, not answer accuracy. `--live` prints the paid command and exits.
+is a debug field, not answer accuracy. `--plan` prints the paid command and exits.
+`--live` actually generates through a metered provider and then scores offline.
 The unified entry is `python scripts/evaluate_suite.py offline`.
 See [docs/eval.md](../../../docs/eval.md).
+
+### Paid generation path (`--live`)
+
+`python scripts/evaluate_answers.py --live --budget-cny 2` requires
+`BASEAGENT_LLM_API_KEY`, `BASEAGENT_LLM_BASE_URL`, and `BASEAGENT_LLM_MODEL`;
+missing configuration prints pending and makes zero provider calls.
+
+The path builds a BM25 + vector index over the current checkout with
+`collect_corpus`, `CachedEmbedding`, and `VectorIndex` into
+`.baseagent/live_answers_index` (gitignored) or another non-repository directory.
+Retrieval stays hybrid and calls `retrieve(..., reranker=None)`; rerank is never
+enabled. Embeddings use `RAG_CACHE_DIR` (default `.baseagent/cache`). To reuse the
+warm `/workspace/bailian_cache` cache, set `RAG_EMBEDDING_PROVIDER=openai`,
+`RAG_EMBEDDING_MODEL=text-embedding-v4`, `RAG_EMBEDDING_DIMENSIONS=1024`, and
+`RAG_CACHE_DIR=/workspace/bailian_cache`. `estimate_missing()` runs over the
+unique chunk texts and the 80 questions before any embedding request; if the
+estimated embedding cost exceeds the budget, the command aborts without a call.
+
+Each question is retrieved once and answered with exactly one completion.
+Generation and embedding usage share the same hard `--budget-cny`; the meter uses
+the qwen-plus non-thinking Beijing rates (input 0.8 CNY/M, output 2 CNY/M,
+reasoning 8 CNY/M) and embedding tokens default to 0.5 CNY/M
+(`--embedding-cny-per-million` overrides it). The crossing call may be billed;
+later calls are refused. `consume_budget` drives the loop, so an agent loop or
+automatic compaction cannot bypass the meter. Generated answers are then scored
+by the existing offline layers; `--nli`, `--judge`, and rerank stay off. Tune and
+test remain separate. The report records actual cost (generation + embeddings),
+real provider calls, `live_executed`, `stopped_for_budget`, and embedding cache
+hits/misses/api_calls/tokens. `evaluate_suite.py live-answers` remains plan-only.
+
+`python scripts/smoke_model_summarizer.py --budget-cny 0.5` exercises only the
+optional `ModelSummarizer` adapter with at most one paid call. It builds a small
+history above the compaction trigger, reports `context_compacted`,
+`context_compaction_input_trimmed` and cost, and never runs a three-failure
+breaker smoke. Production compaction still defaults to `StructuredSummarizer`.

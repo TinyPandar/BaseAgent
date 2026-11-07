@@ -1,4 +1,4 @@
-"""Score generated answers offline, or print the paid live command and stop."""
+"""Score answers offline, preview the paid live command with --plan, or run it with --live."""
 
 import sys
 from pathlib import Path

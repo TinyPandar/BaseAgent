@@ -2,7 +2,7 @@
 
 Layers stay separate. Nothing here is an answer-accuracy number.
 Synthetic answers prove the report pipeline. They are not a model-quality claim.
-Live provider calls are printed as a command and are not dispatched here.
+This module never dispatches provider calls; the CLI does that through a meter.
 Faithfulness uses an injected backend. The default local DeBERTa loader never downloads.
 """
 
@@ -676,12 +676,12 @@ def planned_live(budget_cny="2"):
         "status": "authorization_required",
         "budget_cny": str(budget),
         "command": LIVE_COMMAND.replace("--budget-cny 2", f"--budget-cny {budget}"),
-        "note": "Real 80-question generation is not dispatched. Stop and wait for Frank.",
+        "note": "Plan only. The real command is dispatched by --live after authorization.",
     }
 
 
 def consume_budget(questions, ask_fn, budget_cny):
-    """Stop once accumulated cost reaches the budget. Used by tests; CLI does not call providers."""
+    """Stop once accumulated cost reaches the budget. The live CLI drives this loop."""
     budget = Decimal(str(budget_cny))
     if not budget.is_finite() or budget <= 0:
         raise ValueError("budget must be positive")

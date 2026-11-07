@@ -305,7 +305,7 @@ def main(argv=None):
     offline.add_argument("--min-coding-success", type=float)
     offline.add_argument("--min-citation-support", type=float)
     offline.add_argument("--require-live-answers", action="store_true")
-    live = commands.add_parser("live-answers", help="Print the paid generation command and stop")
+    live = commands.add_parser("live-answers", help="Print the paid generation command and stop; use evaluate_answers.py --live to execute")
     live.add_argument("--budget-cny", default="2")
     commands.add_parser("m2-smoke", help="Print M2 smoke commands and stop")
     commands.add_parser("cassette-replay", help="Replay recorded coding cassettes; no new provider calls")

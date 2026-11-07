@@ -400,11 +400,11 @@ class AnswerScoringTests(unittest.TestCase):
             self.assertNotIn("tune", json.loads(text)["splits"])
             self.assertNotIn("api_key", text.lower())
             self.assertNotIn("sk-", text.lower())
-            live = io.StringIO()
-            with redirect_stdout(live):
-                self.assertEqual(answers_main(["--live", "--budget-cny", "2"]), 0)
-            self.assertIn("authorization_required", live.getvalue())
-            self.assertNotIn("provider.invalid", live.getvalue())
+            plan = io.StringIO()
+            with redirect_stdout(plan):
+                self.assertEqual(answers_main(["--plan", "--budget-cny", "2"]), 0)
+            self.assertIn("authorization_required", plan.getvalue())
+            self.assertNotIn("provider.invalid", plan.getvalue())
             nli_out = io.StringIO()
             with redirect_stdout(nli_out):
                 code = answers_main(["--synthetic", "--nli", "--nli-model", str(directory / "missing-nli"),
