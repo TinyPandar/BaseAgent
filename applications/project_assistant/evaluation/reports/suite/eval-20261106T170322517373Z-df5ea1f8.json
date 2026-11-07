@@ -1,0 +1,272 @@
+{
+  "format": "baseagent.eval_suite",
+  "version": 1,
+  "offline": true,
+  "provider_calls": 0,
+  "cost_cny": 0,
+  "coding_harness": {
+    "kind": "offline_scripted_harness",
+    "passed": true,
+    "success_rate": 1.0,
+    "passed_count": 6,
+    "case_count": 6,
+    "usage_kind": "synthetic",
+    "mean_total_tokens": 135.0,
+    "cost_cny": 0,
+    "cases": [
+      {
+        "name": "coding",
+        "passed": true
+      },
+      {
+        "name": "approval",
+        "passed": true
+      },
+      {
+        "name": "recovery",
+        "passed": true
+      },
+      {
+        "name": "cancellation",
+        "passed": true
+      },
+      {
+        "name": "memory",
+        "passed": true
+      },
+      {
+        "name": "delegation",
+        "passed": true
+      }
+    ]
+  },
+  "coding_retained": {
+    "source": "docs/reports/m1_coding_comparison-20261102T111829Z-b21f9bdd6a3745a4b572a5e3dcf309e1.md",
+    "baseline_success_rate": 0.667,
+    "success_rate": 1.0,
+    "runs": 5,
+    "mean_total_tokens_before": 80780.0,
+    "mean_total_tokens_after": 36185.4,
+    "token_reduction": 0.552,
+    "mean_cost_cny_after": 0.03,
+    "comparison_cost_cny_note": "five after-runs at 0.030 CNY average, about 0.15 CNY",
+    "cost_cny_this_run": 0,
+    "note": "Retained qwen-plus comparison. Not recomputed here."
+  },
+  "retrieval": {
+    "published": {
+      "source": "applications/project_assistant/evaluation/reports/bailian-80q-summary-2026-10-21.md",
+      "split": "test",
+      "answerable": 28,
+      "no_answer": 8,
+      "vector_mrr": 0.678,
+      "bm25_mrr": 0.759,
+      "hybrid_mrr": 0.845,
+      "hybrid_r_at_5": 0.782,
+      "hybrid_rerank_mrr": 0.857,
+      "hybrid_rerank_r_at_5": 0.77,
+      "rerank_default": false,
+      "rerank_reason": "R@5 drops from 0.782 to 0.770 and each query costs about 14k tokens",
+      "cost_cny_this_run": 0,
+      "note": "Retained measurement. This suite does not recompute hybrid MRR and does not rebind gold."
+    },
+    "bound_corpus_version": "bcedb75a2c4d17e8",
+    "current_corpus_version": "d6797ac437e935e9",
+    "cost_cny": 0,
+    "provider_calls": 0,
+    "repro": {
+      "status": "skipped",
+      "reason": "corpus_version_mismatch",
+      "note": "Gold set was not rebound. Published hybrid MRR stays 0.845."
+    }
+  },
+  "answers": {
+    "format": "baseagent.answer_evaluation",
+    "version": 1,
+    "model_kind": "synthetic",
+    "usage_kind": "synthetic",
+    "live_executed": false,
+    "provider_calls": 0,
+    "cost_cny": 0.0,
+    "total_tokens": 0.0,
+    "latency_ms_mean": 0.0,
+    "scoring_duration_seconds": 0.00455160002456978,
+    "splits": {
+      "tune": {
+        "count": 44,
+        "answerable_count": 36,
+        "no_answer_count": 8,
+        "accuracy": 1.0,
+        "accuracy_source": "rules",
+        "rule_accuracy": 1.0,
+        "citation_support_rate": 1.0,
+        "refusal_rate": 1.0,
+        "answerable_false_refusal_rate": 0.0,
+        "latency_ms_mean": 0.0,
+        "total_tokens": 0.0,
+        "mean_total_tokens": 0.0,
+        "cost_cny": 0.0
+      },
+      "test": {
+        "count": 36,
+        "answerable_count": 28,
+        "no_answer_count": 8,
+        "accuracy": 1.0,
+        "accuracy_source": "rules",
+        "rule_accuracy": 1.0,
+        "citation_support_rate": 1.0,
+        "refusal_rate": 1.0,
+        "answerable_false_refusal_rate": 0.0,
+        "latency_ms_mean": 0.0,
+        "total_tokens": 0.0,
+        "mean_total_tokens": 0.0,
+        "cost_cny": 0.0
+      }
+    },
+    "judge_cross_table": null,
+    "human_review": [
+      {
+        "id": "concept-01",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "concept-06",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "concept-11",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "concept-16",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "cross_file-05",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "cross_file-10",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "cross_file-15",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "exact_identifier-04",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "exact_identifier-09",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "exact_identifier-14",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "no_answer-03",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "no_answer-08",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "no_answer-13",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "stale-02",
+        "split": "test",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "stale-07",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      },
+      {
+        "id": "stale-12",
+        "split": "tune",
+        "reviewed": null,
+        "reviewer": null,
+        "notes": null
+      }
+    ],
+    "question_set_sha256": "cda3dfdc43b821fa75aff01d1b73ceb376475c33c1e59c6ad2ab883bad4170be",
+    "report": "answers-20261106T170321682607Z-33e877fef0244239824f3a52991d4c7e.json"
+  },
+  "answer_preview": "# Generated-answer evaluation",
+  "live_answers": {
+    "executed": false,
+    "provider_calls": 0,
+    "cost_cny": 0,
+    "status": "authorization_required",
+    "budget_cny": "2",
+    "command": "python scripts/evaluate_answers.py --live --budget-cny 2 --questions applications/project_assistant/evaluation/questions.json",
+    "note": "Real 80-question generation is not dispatched. Stop and wait for Frank."
+  },
+  "m2_smoke": {
+    "executed": false,
+    "budget_cny": "0.20",
+    "commands": [
+      "python -m baseagent --stream --root \"$PWD\" --session demo-stream --follow-events 30 -- \"Summarize README in one sentence\"",
+      "python -m baseagent --parallel-readonly-tools --root \"$PWD\" --session demo-par -- \"Read README.md and pyproject.toml then compare their titles\"",
+      "python -m baseagent --root \"$PWD\" --session demo-resume --resume"
+    ],
+    "cost_cny": 0
+  },
+  "cassette_replay": {
+    "executed": false,
+    "command": "python scripts/record_coding_scenario.py --replay",
+    "note": "Path-bound cassettes are a separate subcommand, not a default failure.",
+    "cost_cny": 0
+  },
+  "report_dir": "reports",
+  "timestamp": "2026-11-06T17:03:22.517373+00:00"
+}
