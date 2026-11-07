@@ -189,12 +189,32 @@ def render_suite(summary):
         lines.append("Offline BM25 repro (not hybrid): "
                      f"tune MRR {_fmt(repro['tune_mrr'])}, test MRR {_fmt(repro['test_mrr'])}. {repro['note']}")
     lines += ["", "## Generated answers", ""]
+    if answers.get("usage_kind") == "synthetic" or answers.get("model_kind") == "synthetic":
+        lines.append("Synthetic answers prove the scoring pipeline. They are not model scores.")
+    lines.append("Span hit, line recall, line precision, refusal accuracy, summary_token_f1 "
+                 "and summary_rouge_l are separate. Lexical overlap is not semantic correctness.")
+    nli = answers.get("nli") or {}
+    if nli.get("status") == "ran":
+        lines.append(f"Faithfulness/NLI ran with `{nli.get('model')}` ({nli.get('variant')}). "
+                     "Base and large results stay in separate fields.")
+    else:
+        lines.append(f"Faithfulness/NLI: skipped ({nli.get('reason') or 'nli disabled'}).")
     for split, metrics in answers.get("splits", {}).items():
-        lines.append(
-            f"- {split}: accuracy {_fmt(metrics['accuracy'])} ({metrics['accuracy_source']}), "
-            f"citation support {_fmt(metrics['citation_support_rate'])}, "
-            f"refusal {_fmt(metrics['refusal_rate'])}, tokens {metrics['total_tokens']}, "
-            f"cost {_fmt(metrics['cost_cny'])} CNY, mean latency {_fmt(metrics['latency_ms_mean'])} ms")
+        line = (
+            f"- {split}: span hit {_fmt(metrics.get('span_hit_rate'))}, "
+            f"line recall {_fmt(metrics.get('line_recall'))}, "
+            f"line precision {_fmt(metrics.get('line_precision'))}, "
+            f"refusal accuracy {_fmt(metrics.get('refusal_accuracy'))}, "
+            f"summary_token_f1 {_fmt(metrics.get('summary_token_f1'))}, "
+            f"summary_rouge_l {_fmt(metrics.get('summary_rouge_l'))}, "
+            f"tokens {metrics.get('total_tokens')}, cost {_fmt(metrics.get('cost_cny'))} CNY, "
+            f"mean latency {_fmt(metrics.get('latency_ms_mean'))} ms")
+        if "faithfulness" in metrics:
+            line += f", faithfulness/{metrics.get('nli_variant')} {_fmt(metrics.get('faithfulness'))}"
+        if "judge_faithful_rate" in metrics or "judge_equivalent_rate" in metrics:
+            line += (f", judge faithful {_fmt(metrics.get('judge_faithful_rate'))}, "
+                     f"judge equivalent {_fmt(metrics.get('judge_equivalent_rate'))}")
+        lines.append(line)
     lines += ["", "Human review ids (reviewed=null): "
               + ", ".join(item["id"] for item in answers.get("human_review", [])),
               "",

@@ -16,7 +16,7 @@ python -m baseagent --eval-harness
 
 - 跑六个脚本化 harness 场景，记下成功率。token 是合成用量，不是账单。
 - 引用已入库的 hybrid MRR 0.845。语料版本对不上时跳过 BM25 复现，不重新绑定金标。
-- 用合成答案跑生成质量打分，tune / test 分开。正确率来自规则，不是 LLM judge。
+- 用合成答案跑生成质量打分，tune / test 分开。合成答案只证明打分管道，不是模型分数。指标分层，不合成一个分数。
 - 写 `docs/reports/eval-<timestamp>.md`。费用 0。
 
 退出码：harness 失败则非零。没跑真实 80 题生成评测默认不算失败。
@@ -34,9 +34,16 @@ python scripts/evaluate_suite.py offline --require-live-answers
 python scripts/evaluate_answers.py --synthetic --split test --report-dir docs/reports/answers
 ```
 
-可选本地 judge 文件，不联网：`{"judgments": {"exact_identifier-01": {"correct": true, "reason": "manual"}}}`. 用 `--judge FILE`。没有这个文件时不打 judge。
+可选本地 judge 文件，不联网，也不调用模型：`{"judgments": {"exact_identifier-01": {"faithful": true, "equivalent": false, "reason": "manual"}}}`. 用 `--judge FILE`。没有这个文件时不打 judge。旧的 `correct` 只进调试对照，不当作答案对错。若以后授权真 judge，只问两句：是否忠实于所引原文，是否与 `answer_summary` 等价。
 
-规则项：可答题的引用必须盖住全部标注行号；无答案题必须拒答且不附引用。约 20% 题号写在 `human_review`，`reviewed` 保持 null。
+分层指标，分开报告。`citation_and_refusal_pass` 是调试字段，不是答案对错，报告表头也不再把它写成主指标。
+
+- 引用层按文件行号集合计算。`citation_line_recall` = |引用行 ∩ 金标行| / |金标行|，`citation_line_precision` = |引用行 ∩ 金标行| / |引用行|。`citation_span_hit` 要求每个 `expected_evidence` span 至少有一行被引用。可答题要 span 全中，且行召回 ≥ 0.3（`--line-recall-min`，默认 0.3）才算 `citation_supported`。不要求金标行被引用盖满。`citation_coverage` 若还在，只是行召回的旧名，一行重叠不会写成 1.0。
+- 无答案题必须拒答且不附引用。这条不用 summary F1 当通过条件。
+- 词面重叠层只对可答题，把答案和 `answer_summary` 算 `summary_token_f1`、`summary_rouge_l`。英文按词切，代码标识符整段保留。`summary_match` 是 token F1 ≥ 0.25 或 ROUGE-L ≥ 0.3（`--summary-f1-min`、`--summary-rouge-min`）。这是词面重叠，不是语义正确。
+- 忠实度默认关。`--nli` 才读取引用行，用本地 DeBERTa-v3 MNLI（默认 `cross-encoder/nli-deberta-v3-base`）。`--nli-model` 可换 large，例如 `cross-encoder/nli-deberta-v3-large`。base 和 large 分字段存放，不混成一个分数。没装模型或没加 `--nli` 就跳过，并在报告里写明。加载使用 `local_files_only`，单元测试不下载权重，只注入假后端。
+
+约 20% 题号写在 `human_review`，`reviewed` 保持 null。已入库的旧报告若还有 Accuracy 列，那是当时的 `rule_correct`，不是答案对错。
 
 ## 不要跑的付费命令
 

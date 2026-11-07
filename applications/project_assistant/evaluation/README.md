@@ -340,11 +340,37 @@ and evaluation docs/scripts were added. Every stored `evidence_sha256` still
 matched the cited line slice, and no gold range or answer summary was regenerated.
 Published hybrid MRR 0.845 remains the retained measurement; it was not recomputed.
 
+## Corpus rebind (2026-11-07)
+
+`corpus_version` moved from `16b7c2ee0e1a7056` to `454fbdbe5312f934` after the
+generated-answer scoring notes in `docs/eval.md`, `docs/demo.md`, and
+`docs/reports/phase1-eval.md` changed. Every stored `evidence_sha256` still
+matched the cited line slice. Gold ranges and answer summaries were not
+regenerated. Published hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
-`python scripts/evaluate_answers.py --synthetic` scores the 80-question set with
-rule checks only: citations must cover every gold range, and no-answer items must
-refuse without citations. Tune and test stay in separate aggregates. A local
-`--judge` file is optional and does not call a model. `--live` prints the paid
-command and exits. The unified entry is `python scripts/evaluate_suite.py offline`.
+`python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
+separate layers. Tune and test stay in separate aggregates. Synthetic rows prove
+the pipeline; they are not model scores.
+
+Citation metrics use line-number sets per file: `citation_line_recall`,
+`citation_line_precision`, and `citation_span_hit` (every gold span must overlap
+at least one cited line). Answerable `citation_supported` requires a span hit and
+line recall ≥ 0.3 (`--line-recall-min`). A single overlapping line is not coverage
+1. `citation_coverage`, when present, is only the deprecated name of line recall.
+No-answer items pass only when the answer is a refusal and has no citations.
+
+`summary_token_f1` and `summary_rouge_l` compare an answerable answer with
+`answer_summary`. English is tokenized by words and code identifiers stay whole.
+`summary_match` is token F1 ≥ 0.25 or ROUGE-L ≥ 0.3. That is lexical overlap, not
+semantic correctness, and it is not a pass condition for no-answer items.
+
+`--nli` is off by default. It reads cited lines and scores sentence faithfulness
+with a local DeBERTa-v3 MNLI model (`--nli-model`, base by default). Base and large
+results are stored separately. Missing weights skip the layer and the report says
+so. The loader uses `local_files_only` and does not download. Tests inject a fake
+backend. `--judge` reads a local file and does not call a model. `citation_and_refusal_pass`
+is a debug field, not answer accuracy. `--live` prints the paid command and exits.
+The unified entry is `python scripts/evaluate_suite.py offline`.
 See [docs/eval.md](../../../docs/eval.md).

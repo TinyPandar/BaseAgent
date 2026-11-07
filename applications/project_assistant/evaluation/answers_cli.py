@@ -13,6 +13,11 @@ for _path in (ROOT, ROOT / "src"):
         sys.path.insert(0, str(_path))
 
 from applications.project_assistant.evaluation.answers import (  # noqa: E402
+    DEFAULT_LINE_RECALL_MIN,
+    DEFAULT_NLI_BASE,
+    DEFAULT_SUMMARY_F1_MIN,
+    DEFAULT_SUMMARY_ROUGE_L_MIN,
+    LocalDebertaNLI,
     attach_judge,
     evaluate_answers,
     load_answers,
@@ -28,9 +33,18 @@ def main(argv=None):
     parser.add_argument("--questions", type=Path, default=QUESTION_SET)
     parser.add_argument("--answers", type=Path, help="Fixture or recorded answers JSON")
     parser.add_argument("--synthetic", action="store_true", help="Score gold-shaped fake answers; cost 0")
-    parser.add_argument("--judge", type=Path, help="Optional local judge JSON {id: {correct, reason}}; no network")
+    parser.add_argument("--judge", type=Path,
+                        help="Optional local JSON {id: {faithful, equivalent, reason}}; no network and no model")
     parser.add_argument("--split", choices=("tune", "test", "all"), default="all")
     parser.add_argument("--report-dir", type=Path)
+    parser.add_argument("--corpus-root", type=Path, default=ROOT)
+    parser.add_argument("--line-recall-min", type=float, default=DEFAULT_LINE_RECALL_MIN)
+    parser.add_argument("--summary-f1-min", type=float, default=DEFAULT_SUMMARY_F1_MIN)
+    parser.add_argument("--summary-rouge-min", type=float, default=DEFAULT_SUMMARY_ROUGE_L_MIN)
+    parser.add_argument("--nli", action="store_true",
+                        help="Optional local NLI faithfulness. Off by default; never downloads weights")
+    parser.add_argument("--nli-model", default=DEFAULT_NLI_BASE,
+                        help="Local DeBERTa-v3 MNLI id. A large id is stored apart from base")
     parser.add_argument("--live", action="store_true", help="Print the paid command and stop")
     parser.add_argument("--budget-cny", default="2")
     args = parser.parse_args(argv)
@@ -49,7 +63,21 @@ def main(argv=None):
         judge = payload.get("judgments", payload)
     if judge:
         records = attach_judge(records, judge)
-    report = evaluate_answers(dataset, records, judge=judge)
+    nli = None
+    nli_skip_reason = "nli disabled"
+    if args.nli:
+        try:
+            nli = LocalDebertaNLI(args.nli_model)
+            nli.load()
+        except Exception as exc:
+            # Missing weights, a missing package, or a local-files failure must not
+            # discard the citation and lexical layers, and must not download a model.
+            nli = None
+            nli_skip_reason = "nli model unavailable: " + type(exc).__name__
+    report = evaluate_answers(
+        dataset, records, judge=judge, nli=nli, corpus_root=args.corpus_root,
+        nli_skip_reason=nli_skip_reason, line_recall_min=args.line_recall_min,
+        summary_f1_min=args.summary_f1_min, summary_rouge_l_min=args.summary_rouge_min)
     path = write_answer_report(report, args.report_dir)
     print(json.dumps({"report": path.name, "splits": list(report["splits"]),
                       "cost_cny": report["cost_cny"], "provider_calls": 0,
