@@ -27,6 +27,13 @@ baseagent-ui = "baseagent.ui.launch:main"
 ui = [
     "chainlit>=2.9,<3",
 ]
+# Faithfulness loader target: transformers==4.57.1. Not a default dependency.
+# On that release, pipeline(local_files_only=True) does not reach cached_file.
+# The loader forces HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE, then passes
+# local_files_only into config, tokenizer, and weight loads.
+# transformers 4.57.1 requires huggingface-hub<1, which conflicts with this
+# project's hub 1.x, so it is not an install extra. Use a separate environment
+# when running --nli. Unit tests mock that release and do not download weights.
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13.0"]

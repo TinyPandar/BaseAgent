@@ -43,8 +43,8 @@ def main(argv=None):
     parser.add_argument("--summary-rouge-min", type=float, default=DEFAULT_SUMMARY_ROUGE_L_MIN)
     parser.add_argument("--nli", action="store_true",
                         help="Optional local NLI faithfulness. Off by default; never downloads weights")
-    parser.add_argument("--nli-model", default=DEFAULT_NLI_BASE,
-                        help="Local DeBERTa-v3 MNLI id. A large id is stored apart from base")
+    parser.add_argument("--nli-model", default="base",
+                        help="base, large, or a local model id. base and large map to the documented DeBERTa-v3 ids")
     parser.add_argument("--live", action="store_true", help="Print the paid command and stop")
     parser.add_argument("--budget-cny", default="2")
     args = parser.parse_args(argv)

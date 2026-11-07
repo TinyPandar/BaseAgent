@@ -13,6 +13,7 @@ import math
 import re
 import time
 from collections import Counter
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -50,9 +51,12 @@ LIVE_COMMAND = (
 DEFAULT_LINE_RECALL_MIN = 0.3
 DEFAULT_SUMMARY_F1_MIN = 0.25
 DEFAULT_SUMMARY_ROUGE_L_MIN = 0.3
-# A common MNLI fine-tune of DeBERTa-v3. Large is selected only with --nli-model.
+# A common MNLI fine-tune of DeBERTa-v3. `--nli-model base|large` selects these ids.
 DEFAULT_NLI_BASE = "cross-encoder/nli-deberta-v3-base"
 DEFAULT_NLI_LARGE = "cross-encoder/nli-deberta-v3-large"
+NLI_MODEL_ALIASES = {"base": DEFAULT_NLI_BASE, "large": DEFAULT_NLI_LARGE}
+# pipeline(..., local_files_only=True) does not reach cached_file on this release.
+SUPPORTED_TRANSFORMERS = "4.57.1"
 JUDGE_QUESTIONS = (
     "Is the answer faithful to the cited source?",
     "Is the answer equivalent to answer_summary?",
@@ -188,9 +192,15 @@ def split_sentences(answer):
     return sentences
 
 
+def resolve_nli_model(model_name):
+    """Map the base and large aliases to the documented model ids."""
+    text = str(model_name or "").strip()
+    return NLI_MODEL_ALIASES.get(text.lower(), text)
+
+
 def nli_variant(model_name):
     """Keep base and large results apart. A name that contains neither is custom."""
-    lowered = (model_name or "").lower()
+    lowered = resolve_nli_model(model_name).lower()
     if "large" in lowered:
         return "large"
     if "base" in lowered:
@@ -198,15 +208,71 @@ def nli_variant(model_name):
     return "custom"
 
 
-def _load_local_nli(model_name):
-    """Load a local classifier. local_files_only blocks weight downloads."""
+@contextmanager
+def _local_hub_only(tf_hub, hub_constants):
+    """Force cache-only hub lookups. Restores the previous flags on exit.
+
+    transformers 4.57.1 snapshots HF_HUB_OFFLINE into transformers.utils.hub at
+    import, and pipeline() resolves config.json before model_kwargs apply.
+    Setting both flags makes cached_file force local_files_only.
+    """
+    import os
+    names = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    saved_env = {name: os.environ.get(name) for name in names}
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    had_tf = hasattr(tf_hub, "_is_offline_mode")
+    saved_tf = getattr(tf_hub, "_is_offline_mode", None)
+    tf_hub._is_offline_mode = True
+    saved_hub = getattr(hub_constants, "HF_HUB_OFFLINE", None) if hub_constants is not None else None
+    if hub_constants is not None:
+        hub_constants.HF_HUB_OFFLINE = True
     try:
-        from transformers import pipeline
+        yield
+    finally:
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        if had_tf:
+            tf_hub._is_offline_mode = saved_tf
+        elif hasattr(tf_hub, "_is_offline_mode"):
+            delattr(tf_hub, "_is_offline_mode")
+        if hub_constants is not None:
+            hub_constants.HF_HUB_OFFLINE = saved_hub
+
+
+def _load_local_nli(model_name):
+    """Load config, tokenizer, and weights from the local cache only.
+
+    Supported target is transformers 4.57.1. A top-level
+    pipeline(..., local_files_only=True) does not reach cached_file and can
+    still resolve the repo over the network. Offline flags are set first, then
+    each piece is loaded with local_files_only=True. pipeline() receives the
+    loaded objects, not a repo id.
+    """
+    try:
+        from transformers import (
+            AutoConfig,
+            AutoModelForSequenceClassification,
+            AutoTokenizer,
+            pipeline,
+        )
+        import transformers.utils.hub as tf_hub
     except ImportError as exc:
         raise RuntimeError("transformers is not installed") from exc
     try:
-        return pipeline("text-classification", model=model_name, tokenizer=model_name,
-                        local_files_only=True)
+        import huggingface_hub.constants as hub_constants
+    except ImportError:
+        hub_constants = None
+    local = {"local_files_only": True}
+    try:
+        with _local_hub_only(tf_hub, hub_constants):
+            config = AutoConfig.from_pretrained(model_name, **local)
+            tokenizer = AutoTokenizer.from_pretrained(model_name, **local)
+            model = AutoModelForSequenceClassification.from_pretrained(model_name, **local)
+            return pipeline("text-classification", model=model, tokenizer=tokenizer, config=config)
     except Exception as exc:
         raise RuntimeError(f"local NLI weights unavailable for {model_name}") from exc
 
@@ -215,10 +281,11 @@ class LocalDebertaNLI:
     """Injectable local MNLI backend. Construction does not load or download weights."""
 
     def __init__(self, model_name=DEFAULT_NLI_BASE):
-        if not str(model_name or "").strip():
+        resolved = resolve_nli_model(model_name)
+        if not resolved:
             raise ValueError("nli model name is required")
-        self.model_name = str(model_name)
-        self.variant = nli_variant(self.model_name)
+        self.model_name = resolved
+        self.variant = nli_variant(resolved)
         self._pipe = None
 
     def load(self):
@@ -341,7 +408,7 @@ def score_record(question, record, *, line_recall_min=DEFAULT_LINE_RECALL_MIN,
     judge = record.get("judge") or {}
     faithful = faithfulness_score(answer, citations, nli, read_source)
     variant = getattr(nli, "variant", None) if nli is not None else None
-    return {
+    row = {
         "id": question["id"],
         "split": question["split"],
         "category": question["category"],
@@ -357,10 +424,6 @@ def score_record(question, record, *, line_recall_min=DEFAULT_LINE_RECALL_MIN,
         "summary_token_f1": token_f1,
         "summary_rouge_l": rouge_l,
         "summary_match": summary_match,
-        "faithfulness": faithful,
-        "faithfulness_base": faithful if variant == "base" else None,
-        "faithfulness_large": faithful if variant == "large" else None,
-        "nli_variant": variant,
         "judge_correct": None if "correct" not in judge else bool(judge.get("correct")),
         "judge_faithful": None if "faithful" not in judge else bool(judge.get("faithful")),
         "judge_equivalent": None if "equivalent" not in judge else bool(judge.get("equivalent")),
@@ -369,6 +432,12 @@ def score_record(question, record, *, line_recall_min=DEFAULT_LINE_RECALL_MIN,
         "cost_cny": _number(record.get("cost_cny"), 0),
         "source": record.get("source", "fixture"),
     }
+    if nli is not None:
+        row["faithfulness"] = faithful
+        row["faithfulness_base"] = faithful if variant == "base" else None
+        row["faithfulness_large"] = faithful if variant == "large" else None
+        row["nli_variant"] = variant
+    return row
 
 
 def _number(value, default):
@@ -687,6 +756,9 @@ def render_markdown(report):
               "Answerable citation_supported requires a span hit and "
               f"line recall >= {thresholds.get('line_recall_min', DEFAULT_LINE_RECALL_MIN)}. "
               "Unanswerable items pass only on a refusal with no citations.",
+              "Line precision averages only items that cite at least one line. "
+              "Items with no citations have precision null and stay out of the average, "
+              "so 1.000 does not mean every item cited the gold lines.",
               "summary_match is lexical: token F1 >= "
               f"{thresholds.get('summary_f1_min', DEFAULT_SUMMARY_F1_MIN)} or ROUGE-L >= "
               f"{thresholds.get('summary_rouge_l_min', DEFAULT_SUMMARY_ROUGE_L_MIN)}. "

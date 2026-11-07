@@ -348,6 +348,14 @@ generated-answer scoring notes in `docs/eval.md`, `docs/demo.md`, and
 matched the cited line slice. Gold ranges and answer summaries were not
 regenerated. Published hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-07, NLI notes)
+
+`corpus_version` moved from `454fbdbe5312f934` to `8c6d85921510b3dd` after
+`docs/eval.md` described the synthetic 1.000 pipeline proof and the transformers
+4.57.1 offline load. Every stored `evidence_sha256` still matched the cited
+line slice. Gold ranges and answer summaries were not regenerated. Published
+hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
@@ -366,11 +374,23 @@ No-answer items pass only when the answer is a refusal and has no citations.
 `summary_match` is token F1 ≥ 0.25 or ROUGE-L ≥ 0.3. That is lexical overlap, not
 semantic correctness, and it is not a pass condition for no-answer items.
 
-`--nli` is off by default. It reads cited lines and scores sentence faithfulness
-with a local DeBERTa-v3 MNLI model (`--nli-model`, base by default). Base and large
-results are stored separately. Missing weights skip the layer and the report says
-so. The loader uses `local_files_only` and does not download. Tests inject a fake
-backend. `--judge` reads a local file and does not call a model. `citation_and_refusal_pass`
+Line precision's average skips items with no citations. Those rows store null and
+do not enter the denominator, so an average of 1.0 is not "every item cited gold".
+Synthetic answers restate `answer_summary` and cite every gold line, so the six
+primary metrics are 1.000. That is a pipeline proof, not a model score.
+
+`--nli` is off by default. `--nli-model base` is
+`cross-encoder/nli-deberta-v3-base` and `--nli-model large` is
+`cross-encoder/nli-deberta-v3-large`. Base and large results are stored separately.
+The loader targets transformers 4.57.1. On that release
+`pipeline(..., local_files_only=True)` does not reach `cached_file`, so the loader
+sets `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, then loads config, tokenizer,
+and weights with `local_files_only=True`. That transformers release needs
+huggingface-hub<1, which conflicts with this project's hub 1.x, so it is not a
+default dependency; use a separate environment for `--nli`. Missing
+weights skip the layer and the report says so. When NLI does not run, per-item
+JSON omits the faithfulness fields. Tests deny network at the load boundary.
+`--judge` reads a local file and does not call a model. `citation_and_refusal_pass`
 is a debug field, not answer accuracy. `--live` prints the paid command and exits.
 The unified entry is `python scripts/evaluate_suite.py offline`.
 See [docs/eval.md](../../../docs/eval.md).

@@ -52,6 +52,7 @@ class SuiteTests(unittest.TestCase):
             self.assertIn("span hit", text)
             self.assertIn("summary_token_f1", text)
             self.assertIn("Faithfulness/NLI: skipped", text)
+            self.assertIn("no citations", text.lower())
             self.assertNotIn("正确率", text)
             self.assertNotIn("(rules)", text)
             self.assertNotIn("| Accuracy |", text)

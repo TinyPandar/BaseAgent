@@ -193,6 +193,8 @@ def render_suite(summary):
         lines.append("Synthetic answers prove the scoring pipeline. They are not model scores.")
     lines.append("Span hit, line recall, line precision, refusal accuracy, summary_token_f1 "
                  "and summary_rouge_l are separate. Lexical overlap is not semantic correctness.")
+    lines.append("Line precision leaves out items with no citations (precision is null and "
+                 "they do not enter the average), so 1.000 is not a claim that every item cited gold.")
     nli = answers.get("nli") or {}
     if nli.get("status") == "ran":
         lines.append(f"Faithfulness/NLI ran with `{nli.get('model')}` ({nli.get('variant')}). "

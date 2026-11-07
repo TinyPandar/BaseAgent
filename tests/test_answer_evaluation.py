@@ -7,7 +7,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from applications.project_assistant.evaluation.answers import (
+    DEFAULT_NLI_BASE,
+    DEFAULT_NLI_LARGE,
     LocalDebertaNLI,
+    _load_local_nli,
     consume_budget,
     evaluate_answers,
     human_review_sample,
@@ -16,6 +19,7 @@ from applications.project_assistant.evaluation.answers import (
     nli_variant,
     planned_live,
     render_markdown,
+    resolve_nli_model,
     score_record,
     synthetic_answers,
     tokenize,
@@ -112,7 +116,10 @@ class AnswerScoringTests(unittest.TestCase):
         self.assertNotIn("accuracy", report["splits"]["tune"])
         self.assertNotIn("rule_accuracy", report["splits"]["tune"])
         self.assertEqual(report["nli"]["status"], "skipped")
-        self.assertIsNone(report["questions"][0]["faithfulness"])
+        self.assertNotIn("faithfulness", report["questions"][0])
+        self.assertNotIn("faithfulness_base", report["questions"][0])
+        self.assertNotIn("faithfulness_large", report["questions"][0])
+        self.assertNotIn("nli_variant", report["questions"][0])
         self.assertEqual(report["splits"]["tune"]["citation_support_rate"], 1)
         self.assertEqual(report["splits"]["test"]["refusal_rate"], 1)
         text = render_markdown(report)
@@ -120,6 +127,7 @@ class AnswerScoringTests(unittest.TestCase):
         self.assertNotIn("| Accuracy |", text)
         self.assertNotIn("rule_correct", text)
         self.assertIn("Synthetic rows only prove scoring", text)
+        self.assertIn("no citations", text.lower())
         self.assertEqual(report["cost_cny"], 0)
         self.assertEqual(report["provider_calls"], 0)
         self.assertFalse(report["live_executed"])
@@ -204,6 +212,10 @@ class AnswerScoringTests(unittest.TestCase):
         self.assertIsNone(skipped["nli"]["base"])
         self.assertIsNone(skipped["nli"]["large"])
         self.assertNotIn("faithfulness", skipped["splits"]["tune"])
+        self.assertNotIn("faithfulness", skipped["questions"][0])
+        self.assertNotIn("faithfulness_base", skipped["questions"][0])
+        self.assertNotIn("faithfulness_large", skipped["questions"][0])
+        self.assertNotIn("nli_variant", skipped["questions"][0])
         self.assertEqual(skipped["splits"]["tune"]["span_hit_rate"], 1)
         self.assertGreater(skipped["splits"]["tune"]["summary_token_f1"], 0.5)
         self.assertIn("skipped", render_markdown(skipped))
@@ -243,6 +255,108 @@ class AnswerScoringTests(unittest.TestCase):
         self.assertEqual(large_report["questions"][0]["faithfulness_large"], 0)
         self.assertIn("Faithfulness (large)", render_markdown(large_report))
         self.assertNotIn("Faithfulness (base)", render_markdown(large_report))
+
+    def test_nli_model_aliases_map_to_documented_ids(self):
+        self.assertEqual(resolve_nli_model("base"), DEFAULT_NLI_BASE)
+        self.assertEqual(resolve_nli_model("LARGE"), DEFAULT_NLI_LARGE)
+        self.assertEqual(resolve_nli_model(" custom/id "), "custom/id")
+        large = LocalDebertaNLI("large")
+        self.assertEqual(large.model_name, DEFAULT_NLI_LARGE)
+        self.assertEqual(large.variant, "large")
+        self.assertIsNone(large._pipe)
+        self.assertEqual(LocalDebertaNLI("base").model_name, DEFAULT_NLI_BASE)
+        self.assertEqual(LocalDebertaNLI("base").variant, "base")
+
+    def test_nli_load_blocks_network_on_transformers_457(self):
+        """transformers 4.57.1 ignores pipeline(local_files_only=True). The loader must not download."""
+        import socket
+        import sys
+        from types import ModuleType
+        from unittest.mock import patch
+
+        hub_calls = []
+        downloads = []
+        pipeline_models = []
+        sockets = []
+        tf_hub = ModuleType("transformers.utils.hub")
+        tf_hub._is_offline_mode = False
+        hub_constants = ModuleType("huggingface_hub.constants")
+        hub_constants.HF_HUB_OFFLINE = False
+
+        def cached_file(repo, filename, local_files_only=False, **kwargs):
+            forced = bool(local_files_only or tf_hub._is_offline_mode or hub_constants.HF_HUB_OFFLINE)
+            hub_calls.append({
+                "filename": filename,
+                "local_files_only": bool(local_files_only),
+                "tf_offline": bool(tf_hub._is_offline_mode),
+                "hub_offline": bool(hub_constants.HF_HUB_OFFLINE),
+            })
+            if not forced:
+                downloads.append((repo, filename))
+                raise FileNotFoundError("would have downloaded " + filename)
+            return filename
+
+        class _Piece:
+            def __init__(self, filename):
+                self.filename = filename
+
+            def from_pretrained(self, name, local_files_only=False, **kwargs):
+                cached_file(name, self.filename, local_files_only=local_files_only, **kwargs)
+                return object()
+
+        def pipeline(task, model=None, tokenizer=None, config=None, **kwargs):
+            pipeline_models.append(isinstance(model, str))
+            if isinstance(model, str):
+                # The 4.57.1 pipeline resolves config.json without local_files_only.
+                cached_file(model, "config.json", local_files_only=False)
+            return object()
+
+        transformers = ModuleType("transformers")
+        transformers.AutoConfig = _Piece("config.json")
+        transformers.AutoTokenizer = _Piece("tokenizer.json")
+        transformers.AutoModelForSequenceClassification = _Piece("model.safetensors")
+        transformers.pipeline = pipeline
+        utils = ModuleType("transformers.utils")
+        utils.hub = tf_hub
+        saved = {}
+        for name, module in {
+            "transformers": transformers,
+            "transformers.utils": utils,
+            "transformers.utils.hub": tf_hub,
+            "huggingface_hub.constants": hub_constants,
+        }.items():
+            saved[name] = sys.modules.get(name)
+            sys.modules[name] = module
+
+        def blocked(*args, **kwargs):
+            sockets.append(args)
+            raise OSError("network denied")
+
+        try:
+            with self.assertRaises(FileNotFoundError):
+                pipeline("text-classification", model=DEFAULT_NLI_BASE, local_files_only=True)
+            self.assertEqual(downloads, [(DEFAULT_NLI_BASE, "config.json")])
+            downloads.clear()
+            hub_calls.clear()
+            pipeline_models.clear()
+            with patch.object(socket.socket, "connect", blocked), patch("socket.create_connection", blocked):
+                loaded = _load_local_nli(DEFAULT_NLI_BASE)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(downloads, [])
+            self.assertEqual(sockets, [])
+            self.assertEqual([call["filename"] for call in hub_calls],
+                             ["config.json", "tokenizer.json", "model.safetensors"])
+            self.assertTrue(all(call["local_files_only"] and call["tf_offline"] and call["hub_offline"]
+                                for call in hub_calls))
+            self.assertEqual(pipeline_models, [False])
+            self.assertFalse(tf_hub._is_offline_mode)
+            self.assertFalse(hub_constants.HF_HUB_OFFLINE)
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
     def test_source_reader_stays_inside_the_checkout(self):
         import tempfile
@@ -303,6 +417,13 @@ class AnswerScoringTests(unittest.TestCase):
             self.assertIsNone(saved["nli"]["large"])
             self.assertIn("span_hit_rate", saved["splits"]["test"])
             self.assertNotIn("faithfulness", saved["splits"]["test"])
+            self.assertTrue(saved["questions"])
+            for row in saved["questions"]:
+                self.assertNotIn("faithfulness", row)
+                self.assertNotIn("faithfulness_base", row)
+                self.assertNotIn("faithfulness_large", row)
+                self.assertNotIn("nli_variant", row)
+            self.assertIn("no citations", render_markdown(saved).lower())
 
 
 if __name__ == "__main__":
