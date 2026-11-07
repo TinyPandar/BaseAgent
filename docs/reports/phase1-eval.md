@@ -16,7 +16,7 @@ Retained test hybrid MRR: 0.845 (vector 0.678, BM25 0.759, hybrid+rerank 0.857).
 
 ## Generated answers
 
-Synthetic pipeline only. Tune and test are scored separately. Rule accuracy, citation support and no-answer refusal are 1.000 on the fake answers. Tokens 0, cost 0, provider calls 0. This is not a qwen accuracy claim.
+Synthetic pipeline only. Tune and test are scored separately. On the fake answers, span hit, line recall, line precision and no-answer refusal accuracy are 1.000. `summary_token_f1` and `summary_rouge_l` are lexical overlap with `answer_summary`, not semantic correctness. Faithfulness/NLI was not run. Tokens 0, cost 0, provider calls 0. This is not a model score.
 
 Human review sample is listed in the machine report. `reviewed` stays null.
 
