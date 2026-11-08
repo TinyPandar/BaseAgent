@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "8a95ceeeee940fb0",
+  "corpus_version": "678a5c812dba4b89",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "corpus_version_note": "2026-11-08 rebind after the live-eval CLI, ModelSummarizer smoke, and docs/eval.md edits. All evidence_sha256 values still matched the cited lines (none of the cited files changed); gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
