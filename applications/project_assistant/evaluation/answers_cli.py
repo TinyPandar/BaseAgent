@@ -27,10 +27,12 @@ from applications.project_assistant.evaluation.answers import (  # noqa: E402
     write_answer_report,
 )
 from applications.project_assistant.evaluation.live_answers import (  # noqa: E402
+    DEFAULT_CHECKPOINT,
     DEFAULT_INDEX_DIR,
     DEFAULT_TOP_K,
     EMBEDDING_CNY_PER_MILLION,
     LiveSetupError,
+    prepare_checkpoint,
     prepare_live_retrieval,
     run_live_answers,
 )
@@ -57,6 +59,11 @@ def _run_live(args, dataset):
         print(json.dumps({"status": "pending", "reason": str(exc)}, ensure_ascii=False))
         return 2
     try:
+        payload, _checkpoint = prepare_checkpoint(args.checkpoint, resume=args.resume)
+    except LiveSetupError as exc:
+        print(json.dumps({"status": "pending", "reason": str(exc)}, ensure_ascii=False))
+        return 2
+    try:
         model_configuration(generic_only=True)
     except ValueError:
         print("pending: complete BASEAGENT_LLM_* configuration required; no provider calls made.")
@@ -78,18 +85,26 @@ def _run_live(args, dataset):
                                  ensure_ascii=False))
                 return 1
             remaining = budget - setup["embedding_cost_cny"]
+            done_ids = {row["id"] for row in payload.get("records") or []}
+            pending_n = sum(1 for question in dataset["questions"] if question["id"] not in done_ids)
+            checkpoint_kwargs = {
+                "checkpoint_path": args.checkpoint,
+                "resume": args.resume,
+            }
             if remaining > 0:
                 meter = MeteredModel(client, budget_cny=remaining,
-                                     max_calls=len(dataset["questions"]) + 1)
+                                     max_calls=max(pending_n, 0) + 1)
                 result = run_live_answers(
                     dataset, retriever=setup["retriever"], meter=meter, budget_cny=budget,
                     embedding_cost_cny=setup["embedding_cost_cny"],
-                    embedding_usage=setup["embedding_usage"], report_dir=args.report_dir)
+                    embedding_usage=setup["embedding_usage"], report_dir=args.report_dir,
+                    **checkpoint_kwargs)
             else:
                 result = run_live_answers(
                     dataset, retriever=setup["retriever"], meter=None, budget_cny=budget,
                     embedding_cost_cny=setup["embedding_cost_cny"],
-                    embedding_usage=setup["embedding_usage"], report_dir=args.report_dir)
+                    embedding_usage=setup["embedding_usage"], report_dir=args.report_dir,
+                    **checkpoint_kwargs)
     except Exception as exc:  # noqa: BLE001 -- never expose credentials or provider payloads
         print(json.dumps({"status": "pending", "error": type(exc).__name__}, ensure_ascii=False))
         return 1
@@ -125,6 +140,10 @@ def main(argv=None):
     parser.add_argument("--index-dir", type=Path, default=DEFAULT_INDEX_DIR,
                         help="Live index directory; must be gitignored or outside the repository")
     parser.add_argument("--max-completion-tokens", type=int, default=512)
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
+                        help="Per-question live checkpoint; written after each question")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip question ids already recorded in --checkpoint; do not retry failures")
     args = parser.parse_args(argv)
     if args.plan:
         print(json.dumps(planned_live(args.budget_cny), ensure_ascii=False, indent=2))

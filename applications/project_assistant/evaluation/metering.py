@@ -67,18 +67,18 @@ class MeteredModel:
             else:
                 response = self.client.complete(messages, tools)
         except Exception:  # noqa: BLE001 -- never expose provider diagnostics
-            self.stopped = True
             self.reason = "model request failed"
+            self.last_cost_cny = Decimal(0)
             raise UsageUnavailable(self.reason) from None
         if response.usage is None:
-            self.stopped = True
             self.reason = "model usage unavailable"
+            self.last_cost_cny = Decimal(0)
             raise UsageUnavailable(self.reason)
         usage = response.usage
         reasoning = response.reasoning_tokens
         if reasoning > usage.completion_tokens:
-            self.stopped = True
             self.reason = "model usage unavailable"
+            self.last_cost_cny = Decimal(0)
             raise UsageUnavailable(self.reason)
         # OpenAI completion_tokens includes reasoning; avoid charging it twice.
         cost = (usage.prompt_tokens * self.input_rate

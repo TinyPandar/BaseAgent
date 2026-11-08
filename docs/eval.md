@@ -61,6 +61,12 @@ python scripts/evaluate_answers.py --plan --budget-cny 2
 python scripts/evaluate_answers.py --live --budget-cny 2
 ```
 
+续跑只补没有检查点记录的题（已成功或已失败的题都不会再生成，避免重复扣费）：
+
+```bash
+python scripts/evaluate_answers.py --live --budget-cny 2 --resume
+```
+
 `--live` 的流程：
 
 - 用当前 checkout 建 BM25 + vector 索引（`collect_corpus` + `CachedEmbedding` + `VectorIndex`），默认 hybrid，`retrieve(..., reranker=None)`，不启用 rerank。
@@ -68,10 +74,12 @@ python scripts/evaluate_answers.py --live --budget-cny 2
 - 嵌入使用 `CachedEmbedding` + `DiskCache`，缓存目录由 `RAG_CACHE_DIR` 决定。使用 `/workspace/bailian_cache` 时需要 `RAG_EMBEDDING_PROVIDER=openai`、`RAG_EMBEDDING_MODEL=text-embedding-v4`、`RAG_EMBEDDING_DIMENSIONS=1024`，并设置 `RAG_CACHE_DIR=/workspace/bailian_cache`。
 - 在任何嵌入请求之前，对唯一 chunk 文本和 80 个问题调用 `estimate_missing()`；按默认 0.5 元/百万嵌入 token 估算，超过剩余预算就直接中止，零 provider 调用。
 - 每题 `retrieve` 一次，然后只做一次 completion。prompt 要求用 `path:start-end` 引用，把检索内容当作不可信数据，证据不足时用 `answers.py` 能识别的拒答措辞（“not established”）。
+- 每题结束后原子写入检查点（默认 `.baseagent/live_answers_checkpoint.json`，可用 `--checkpoint` 改路径），记录答案、花费、`ok`/`failed` 和安全的失败原因（例如 `UsageUnavailable`），不含 provider 原文或密钥。`UsageUnavailable` 只让这一题失败，后面的题继续跑。预算耗尽仍会停止，但已经写下的题会留在检查点里。
+- `--resume` 会跳过检查点里已有记录的题号，包括失败题，避免对同一题重复扣费。没有记录的题才会再生成。检查点已存在且未传 `--resume` 时会直接退出，不会覆盖；`--resume` 但检查点不存在时也会退出，两者都不会发起 provider 调用。
 - 生成和嵌入都计入同一个 `--budget-cny`。生成用 `MeteredModel`（qwen-plus 非思考北京价：输入 0.8 元/百万、输出 2 元/百万、reasoning 8 元/百万）；最后一笔可越过预算，之后不再调用。预算由 `consume_budget` 驱动，不能用 agent loop 或自动压缩绕过。
-- 生成后用现有离线分层打分：引用层、summary token F1 / ROUGE-L、拒答准确率；tune 和 test 分开。不跑 `--nli`、`--judge` 或 rerank。
-- 报告写 `cost_cny`（生成 + 嵌入）、`provider_calls`、`live_executed`、`stopped_for_budget` 和 `embedding_usage`（cache hits/misses、api_calls、tokens）。`write_answer_report` 仍会拒绝 secret 标记。
-- 标准输出只打印一个小 JSON：报告路径、split、费用、调用数、是否执行、是否因预算停止。
+- 生成后用现有离线分层打分：引用层、summary token F1 / ROUGE-L、拒答准确率；tune 和 test 分开。不跑 `--nli`、`--judge` 或 rerank。失败题按空答案计分，所以 tune/test 报告仍会写出。
+- 报告写 `cost_cny`（生成 + 嵌入）、`provider_calls`、`live_executed`、`stopped_for_budget`、`embedding_usage`（cache hits/misses、api_calls、tokens），以及检查点路径和 `questions_ok` / `questions_failed` / `questions_remaining`。`write_answer_report` 仍会拒绝 secret 标记。
+- 标准输出只打印一个小 JSON：报告路径、split、费用、调用数、是否执行、是否因预算停止，以及检查点统计。
 
 读取百炼 cache 时不要 `source ~/.config/baseagent/bailian.env`；由环境直接提供 `BASEAGENT_LLM_*`、`RAG_EMBEDDING_*`、`RAG_CACHE_DIR`、`RAG_EMBEDDING_DIMENSIONS`，需要非思考模式时再加 `BASEAGENT_LLM_EXTRA_BODY='{"enable_thinking":false}'`。
 

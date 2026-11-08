@@ -422,6 +422,14 @@ unique chunk texts and the 80 questions before any embedding request; if the
 estimated embedding cost exceeds the budget, the command aborts without a call.
 
 Each question is retrieved once and answered with exactly one completion.
+After each question the runner atomically writes a checkpoint (default
+`.baseagent/live_answers_checkpoint.json`, override with `--checkpoint`) that
+stores the answer, cost, `ok`/`failed` status, and a safe error name such as
+`UsageUnavailable`. A per-question `UsageUnavailable` does not abort the run.
+`--resume` skips question ids that already have a record, including failures, so
+a later authorized top-up does not re-bill them. An existing checkpoint without
+`--resume`, or `--resume` without a readable checkpoint, exits before any
+provider call.
 Generation and embedding usage share the same hard `--budget-cny`; the meter uses
 the qwen-plus non-thinking Beijing rates (input 0.8 CNY/M, output 2 CNY/M,
 reasoning 8 CNY/M) and embedding tokens default to 0.5 CNY/M
@@ -430,8 +438,8 @@ later calls are refused. `consume_budget` drives the loop, so an agent loop or
 automatic compaction cannot bypass the meter. Generated answers are then scored
 by the existing offline layers; `--nli`, `--judge`, and rerank stay off. Tune and
 test remain separate. The report records actual cost (generation + embeddings),
-real provider calls, `live_executed`, `stopped_for_budget`, and embedding cache
-hits/misses/api_calls/tokens. `evaluate_suite.py live-answers` remains plan-only.
+real provider calls, `live_executed`, `stopped_for_budget`, embedding cache
+hits/misses/api_calls/tokens, and checkpoint counts. `evaluate_suite.py live-answers` remains plan-only.
 
 `python scripts/smoke_model_summarizer.py --budget-cny 0.5` exercises only the
 optional `ModelSummarizer` adapter with at most one paid call. It builds a small
