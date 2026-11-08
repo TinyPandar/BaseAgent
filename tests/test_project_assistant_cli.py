@@ -167,3 +167,37 @@ def test_non_path_policy_refused_explicitly(project, capsys):
     assert main(ask_args(root, index, db, "Question", "--tool-policy", str(policy)), model_factory=factory) == 1
     assert "path-only read_file policy" in capsys.readouterr().err
     factory.assert_not_called()
+
+
+def test_chat_main_agent_worker_inherits_knowledge_tools(project, capsys):
+    root, index, db = project
+    assert build(root, index) == 0
+    capsys.readouterr()
+    seen = []
+
+    def complete(messages, tools):
+        names = [t["function"]["name"] for t in tools]
+        seen.append(names)
+        if len(seen) == 1:
+            response = {"tool_calls": [{"id": "d1", "type": "function", "function": {
+                "name": "delegate_task", "arguments": '{"task":"Explain the kernel with citations"}'}}]}
+        elif len(seen) == 2:
+            response = {"tool_calls": [{"id": "search-1", "type": "function", "function": {
+                "name": "knowledge_search", "arguments": '{"query":"kernel"}'}}]}
+        elif len(seen) == 3:
+            evidence = json.loads(messages[-1]["content"])["data"]["evidence"]
+            response = {"content": "The kernel executes tools. " + evidence[0]["citation"]}
+        else:
+            response = {"content": "Answer from the worker report."}
+        return ModelResponse(response, TokenUsage(3, 2, 5))
+
+    model = type("ChatModel", (), {"complete": staticmethod(complete)})()
+    with patch("builtins.input", side_effect=["Explain kernel", "/exit"]):
+        assert main(["ask", "--root", str(root), "--index-dir", str(index), "--db", str(db),
+                     "--mock-embedding", "--session", "chat"], model_factory=lambda args: model) == 0
+    assert "Answer from the worker report." in capsys.readouterr().out
+    assert seen[0] == ["delegate_task"] and seen[3] == ["delegate_task"]
+    assert {"knowledge_search", "git_log", "git_show", "git_pickaxe"} <= set(seen[1])
+    assert not {"write_file", "edit_file", "run_command", "delegate_task"} & set(seen[1])
+    nodes = SessionStore(db).task_tree("chat")["nodes"]
+    assert [node["name"] for node in nodes] == ["worker"]

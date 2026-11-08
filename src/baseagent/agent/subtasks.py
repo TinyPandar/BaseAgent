@@ -90,6 +90,8 @@ class IntersectionPolicy:
 
 
 class SubtaskRuntime:
+    tool_name = "run_subtask"
+
     def __init__(self, definitions, *, max_depth=4, max_nodes=32):
         definitions = tuple(definitions)
         if not definitions or len({item.name for item in definitions}) != len(definitions):
@@ -144,7 +146,7 @@ class SubtaskRuntime:
         if not record or record["status"] != "running" or not record["terminal_request_json"]:
             return False
         actual = json.loads(record["terminal_request_json"])
-        if actual["name"] != "run_subtask":
+        if actual["name"] != self.tool_name:
             return False
         owner, root, parent = self._owner(context)
         return any(node["parent_task_id"] == parent and node["spawn_call_id"] == record["call_id"] and node["state"]["metadata"].get("delegate_version") == 1 for node in owner.task_tree(root.session_id, root.turn_id)["nodes"])
@@ -158,13 +160,32 @@ class SubtaskRuntime:
         return self.execute(context=context, **json.loads(actual["arguments"]))
 
     def execute(self, name, prompt, *, context):
+        return self._execute(name, prompt, context, {})
+
+    def _child_tools(self, context, definition, options):
+        return context.tools.subset(tool for tool in definition.tool_names if tool in context.tools._tools)
+
+    def _child_policy(self, context, definition, tools):
+        return IntersectionPolicy(context.policy, definition.policy or ToolPolicy())
+
+    def _configure_child(self, child, context):
+        """Adjust a newly created child state before it is persisted."""
+
+    def _unfinished(self, view, child, context):
+        raise TaskPaused(view.task_id, child.status)
+
+    def _result(self, view, child):
+        answer = (child.final_answer or "").encode("utf-8")
+        return ToolResult(data={"task_id": view.task_id, "status": child.status, "answer": answer[:8000].decode("utf-8", errors="ignore"), "answer_truncated": len(answer) > 8000})
+
+    def _execute(self, name, prompt, context, options):
         from .agent import _new_turn, _run_loop
         owner, root, parent_id = self._owner(context)
         definition = self.definitions[name]
         if not prompt.strip():
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "subtask prompt must not be blank")
-        tools = context.tools.subset(tool for tool in definition.tool_names if tool in context.tools._tools)
-        policy = IntersectionPolicy(context.policy, definition.policy or ToolPolicy())
+        tools = self._child_tools(context, definition, options)
+        policy = self._child_policy(context, definition, tools)
         config = {"delegation": self.contract(), "definition": definition.contract(), "policy": policy.contract()}
         contract = runtime_contract(tools, definition.system_prompt, config)
         nodes = owner.task_tree(root.session_id, root.turn_id)["nodes"]
@@ -181,6 +202,7 @@ class SubtaskRuntime:
             for key in ("max_total_tokens", "max_duration_seconds", "max_context_bytes", "max_tool_context_bytes", "preauthorize_model"):
                 setattr(child, key, getattr(definition, key))
             child.metadata.update(runtime_contract=contract, delegate_version=1)
+            self._configure_child(child, context)
             existing = owner.create_task(root, parent_task_id=parent_id, call_id=context.call_id, name=name, state=child, max_depth=self.max_depth, max_nodes=self.max_nodes)
         elif existing["name"] != name or existing["state"]["messages"][1]["content"] != prompt:
             raise TaskPaused(existing["task_id"], RunStatus.NEEDS_RECOVERY)
@@ -210,7 +232,6 @@ class SubtaskRuntime:
         context.state.metadata["active_subtask"] = view.task_id
         context.checkpoint("subtask_returned", task_id=view.task_id, status=child.status)
         if child.status != RunStatus.COMPLETED:
-            raise TaskPaused(view.task_id, child.status)
+            return self._unfinished(view, child, context)
         context.state.metadata.pop("active_subtask", None)
-        answer = (child.final_answer or "").encode("utf-8")
-        return ToolResult(data={"task_id": view.task_id, "status": child.status, "answer": answer[:8000].decode("utf-8", errors="ignore"), "answer_truncated": len(answer) > 8000})
+        return self._result(view, child)

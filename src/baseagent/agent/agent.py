@@ -363,7 +363,10 @@ def run_agent(
     with store.exclusive(session_id):
         existing = store.load(session_id)
         if existing is not None:
-            unfinished = [node for node in store.task_tree(session_id, existing.turn_id)["nodes"] if node["state"]["status"] != RunStatus.COMPLETED]
+            # A worker node closed by its parent already returned a failure
+            # result to the parent ledger; it is final, not pending recovery.
+            unfinished = [node for node in store.task_tree(session_id, existing.turn_id)["nodes"]
+                          if node["state"]["status"] != RunStatus.COMPLETED and not node["state"]["metadata"].get("closed_by_parent")]
             if unfinished and subtasks is not None and existing.status == RunStatus.COMPLETED:
                 raise ValueError("completed root has unfinished child tasks; inspect and reconcile the inconsistent execution tree")
             if unfinished and subtasks is None:

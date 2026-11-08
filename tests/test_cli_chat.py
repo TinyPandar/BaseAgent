@@ -154,7 +154,7 @@ class ChatTests(ChatTestCase):
             {"content": "done"},
         ])
         code, stdout, stderr = self.invoke(
-            self.chat_args("--allow-write", "--tool-policy", str(policy)),
+            self.chat_args("--no-main-agent", "--allow-write", "--tool-policy", str(policy)),
             model,
             ["write a file", "y", "/exit"],
         )
@@ -173,7 +173,7 @@ class ChatTests(ChatTestCase):
             {"content": "done"},
         ])
         code, stdout, _ = self.invoke(
-            self.chat_args("--allow-write", "--tool-policy", str(policy)),
+            self.chat_args("--no-main-agent", "--allow-write", "--tool-policy", str(policy)),
             model,
             ["write a file", "n", "/exit"],
         )
@@ -208,7 +208,7 @@ class ChatTests(ChatTestCase):
             {"content": "done"},
         ])
         code, stdout, stderr = self.invoke(
-            self.chat_args("--tool-policy", str(policy)),
+            self.chat_args("--no-main-agent", "--tool-policy", str(policy)),
             model,
             ["run it", "y", "/exit"],
         )
@@ -251,7 +251,7 @@ class ChatUxTests(ChatTestCase):
 
     def test_projected_prompt_answers_greetings_without_state_tools(self):
         model = Model([{"content": "hello"}])
-        code, _, _ = self.invoke(self.chat_args(), model, ["hi", "/exit"])
+        code, _, _ = self.invoke(self.chat_args("--no-main-agent"), model, ["hi", "/exit"])
         self.assertEqual(code, 0)
         system = model.seen[0][0]["content"].replace("\n", " ")
         self.assertIn("Answer greetings, small talk and general questions that do not depend on earlier "
@@ -269,7 +269,7 @@ class ChatUxTests(ChatTestCase):
             {"tool_calls": [tool_call("g2", "glob", {"pattern": "file0*.txt"})]},
             {"content": "listed"},
         ])
-        code, _, stderr = self.invoke(self.chat_args(), model, ["list files", "/exit"])
+        code, _, stderr = self.invoke(self.chat_args("--no-main-agent"), model, ["list files", "/exit"])
         self.assertEqual(code, 0)
         self.assertIn("tool result: 12 items (tool stopped at max_results=12; more may exist); "
                       "preview shows first 10, 2 more not shown", stderr)

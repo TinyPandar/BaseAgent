@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from baseagent.agent import run_agent
 from baseagent.agent.completion import CompletionPolicy
+from baseagent.agent.router import MAIN_AGENT_PROMPT, WorkerRuntime, is_main_agent_session
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
@@ -218,7 +219,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--result-file", type=Path, help="Verified ToolResult JSON for --resolve-tool")
     parser.add_argument("--approval-digest", help="Reviewed request digest from --inspect-session")
     parser.add_argument("--tool-policy", type=Path, help="JSON tool/parameter policy with allow/deny/ask actions")
-    parser.add_argument("--subtasks-config", type=Path, help="Explicitly enable named sequential subtasks from a JSON configuration; requires durable sessions")
+    parser.add_argument("--subtasks-config", type=Path, help="Debugging/library entry: named sequential subtasks from a JSON configuration (not used by the main agent)")
+    parser.add_argument("--main-agent", action=argparse.BooleanOptionalAction, default=None, help="Interactive chat as a main agent that only talks and delegates to one generic worker (default on for new chat sessions; existing sessions keep their mode)")
     parser.add_argument("--request-bound-profile", choices=["deepseek-context-v1"], help="Explicit conservative whole-context bound for official DeepSeek Flash/Pro; requires --preauthorize-model")
     parser.add_argument("--max-completion-tokens", type=int, default=4096, help="Output cap for strict or estimated reservations (default: 4096)")
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
@@ -322,6 +324,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             args.wrapup_hint_steps = CHAT_WRAPUP_HINT_STEPS
     if (args.eval_report or args.eval_case) and not args.eval_harness:
         parser.error("evaluation report/cases require --eval-harness")
+    if args.main_agent and not interactive:
+        parser.error("--main-agent applies to interactive chat; one-shot prompts stay single-agent")
+    if args.main_agent and args.subtasks_config:
+        parser.error("--subtasks-config is a named-subtask debugging entry; use it with --no-main-agent")
     if args.eval_harness and (args.prompt is not None or args.session or args.root):
         parser.error("evaluation uses isolated fixtures; omit prompt, session and root")
     if args.list_tool_packages and (args.prompt is not None or args.session):
@@ -532,6 +538,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             policy = ToolPolicy.from_dict(read_json_object(args.tool_policy, max_bytes=20_000, label="tool policy"), workspace=workspace)
         completion = None
         subtasks = None
+        # Existing sessions keep the mode they started with; new chats default to the main agent.
+        main_agent = is_main_agent_session(existing) if existing else (interactive and args.main_agent is not False and not args.subtasks_config)
+        if interactive and existing and args.main_agent is not None and args.main_agent != main_agent:
+            print("Note: this session was started " + ("with" if main_agent else "without")
+                  + " the main agent and keeps that mode.", file=sys.stderr)
+        if main_agent and args.subtasks_config:
+            raise ValueError("--subtasks-config cannot be combined with a main-agent session")
         if args.subtasks_config:
             from baseagent.agent.subtasks import SubtaskRuntime
             configuration = read_json_object(args.subtasks_config, max_bytes=32000, label="subtask configuration")
@@ -625,12 +638,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
         model = model_factory(args) if model_factory is not None else LazyModel()
         session = {"id": args.session}
+        prompt = system_prompt
+        if main_agent:
+            # The worker gets exactly the entry's tools and prompt; the main agent only delegates.
+            subtasks = WorkerRuntime(tools, system_prompt=system_prompt)
+            prompt = MAIN_AGENT_PROMPT
 
         def run_turn(user_input):
             state = run_agent(
                 model, user_input, tools=tools,
                 middleware=layers,
-                system_prompt=system_prompt, max_steps=args.max_steps,
+                system_prompt=prompt, max_steps=args.max_steps,
                 max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
                 store=store, session_id=session["id"], workspace_root=workspace.root,
                 compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
@@ -647,7 +665,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
         if interactive:
             from baseagent.cli_chat import run_chat
-            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace)
+            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace, main_agent=main_agent)
         state = run_turn(args.prompt)
     except KeyboardInterrupt:
         return 130
