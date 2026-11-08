@@ -43,6 +43,107 @@ The library includes strict deterministic recording/replay and OpenAI-compatible
 
 For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
 
+## 施工中：连续对话实测问题（本段合并进 master 前必须删除）
+
+> 这是产品方案和验收标准，不是实现说明。请只在本 branch `plan/cli-chat-ux` 上开发；不要另开 branch，不要把本段方案带进 master。功能做完、测试通过后，删除本段，并同步更新 README 里面向用户的对应说明（连续对话、`--max-steps` / `--max-model-calls` / `--model-retries` / `--wrapup-hint-steps`、`--list-sessions`）。
+>
+> 原则：最小改动、白盒可解释。不要抄 mewcode，不要改 Chainlit WebUI，不要把 Project Assistant 的 `ask` 接到默认 coding CLI，不要动三层上下文 / spill / compaction / Router-Worker 架构。
+
+来源：作者在 Windows 上用连续对话（以及随后的 `--resume`）亲自跑出来的问题。一次做完下面 6 项。
+
+### 1. 寒暄不应先翻任务状态和记忆
+
+**现象：** 连续对话里只说 `hi`，模型在回答前调用了 `get_task_state`、`recall_memory`，并对当前回合多次 `read_history`。
+
+**方案：** 不要写死 `hi` 关键词表。强化 coding CLI / 连续对话投影给模型的任务说明：问候、寒暄、以及不依赖历史的一般闲聊，应直接回答；不要为此调用 `get_task_state`、`recall_memory`、`read_history`。用户明确提到先前任务、计划、记忆或对话内容时，才使用这些工具。README 里 WebUI 已有 “General questions should be answered directly”，连续对话应对齐同一条约束。
+
+**验收：**
+
+- 投影给模型的系统 / 任务说明里，有上述约束（用测试检查投影文本，不要只靠线上模型碰运气）。
+- 不新增专用「问候工具」，不因此关掉 memory / history 工具包。
+- 用户问「上次做到哪了」「你还记得…」时，这些工具仍可用。
+
+### 2. 工具结果预览截得太狠，看不出列表全貌
+
+**现象：** 连续对话里 `glob` 匹配 `"*"` 时，终端预览只显示到根目录某个文件后出现 `...`。看不出后面还有没有匹配、子目录有没有被搜到、是预览截断还是工具自己的 `max_results`（默认 200）截断。
+
+**方案：** 只改连续对话（以及同样的 CLI 工具预览）展示层，不改 `glob` / `grep` 的搜索语义（`*` 仍按现有一层匹配，不要改成默认递归）。列表类结果的预览必须让人判断：总共多少条、这次显示了多少条、剩余被预览省略了多少、工具是否因 `max_results` / `max_matches` 截断。
+
+**验收：**
+
+- 预览不再在列表中间突然 `...` 而不说明省略了多少。
+- 能区分「预览截断」和「工具结果本身截断」。
+- 不把 `*` 说成递归全仓库；需要递归时应使用现有的 `**/*` 等写法（文档里如有提及一并写清）。
+- 超长单条文本仍可截断，但列表类结果至少能看到条数信息。
+
+### 3. 模型传输超时应自动重试（有额外 API 费用）
+
+**现象：** 连续对话和 `--resume` 都会在约 30 秒 HTTP 传输超时时抛出 `ModelTimeoutError: model transport timed out` 并停住。README 写明 `--model-retries` 默认是 0；开启后可覆盖传输失败和 408/409/429/500/502/503/504。作者需要超时自动重试，否则只能手动一次次 `--resume`。每次失败仍会计入 `model attempts`，超时时没有官方用量则会增加 `unknown usage calls`。
+
+**方案：** 把 `--model-retries` 的默认值改为 2（允许范围仍是 0–4）。重试范围保持现状：传输超时 / 上述状态码；不要重试鉴权失败或普通业务/编程错误。用户显式传入 `--model-retries` 时以用户为准。
+
+**费用：** 每次重试都是一次付费模型请求（例如百炼 qwen），并且计入 `--max-model-calls`（失败也计次）。默认 2 意味着同一步最多 3 次实际请求。有 token 预算且超时报了未知用量时，沿用现有「未知用量需核对后才能继续」的规则，不要绕过核对协议；但报错文案要写清楚为什么没能接着重试。
+
+**验收：**
+
+- 未传 `--model-retries` 时，传输超时会自动重试，而不是第一次超时就停。
+- `--model-retries 0` 仍可关闭自动重试。
+- 鉴权错误等非瞬时失败不会被重试。
+- README 写明默认值从 0 改为 2，以及费用和计数影响。
+- 有针对默认值和超时重试路径的测试（优先离线 / 伪造传输失败，不要为测这个打付费 API）。
+
+### 4. 触达步数 / 模型次数上限时，错误信息要能看懂、知道怎么继续
+
+**现象：** 连续对话里说「继续」后出现 `Model-call limit reached: no error detail was recorded`。默认 `--max-steps` 为 8，`--max-model-calls` 默认等于 `--max-steps`，工具偏多的回合很容易用尽。提示更像一次性 CLI 的 `--resume`，没有已用/上限，也没说在对话里如何继续。`--resume` 是接着同一未完成回合，已用计数不清零；只提高上限才会允许继续。新用户输入只有在上一回合完成后才会开新回合并重置计数。
+
+**方案：**
+
+- 报错必须写明撞上的是哪条限制（`max-steps` / `max-model-calls` / `max-tool-calls`）、已用/上限，不要再出现 “no error detail was recorded”。
+- 说明：`--resume` 继续同一回合且保留已用计数；需要把对应上限提高到已用值之上（例如 `--resume --max-steps 16 --max-model-calls 16`）。
+- 连续对话里用同样清楚的中文/英文提示（与现有 CLI 语言风格一致），并提醒可用 `/status` 查看会话 ID。
+- 连续对话在用户未显式传入时，将 `--max-steps` 与 `--max-model-calls` 默认改为 16；一次性 `baseagent "task"` 仍保持 8，避免改掉脚本行为。
+- `/status` 如尚未展示已用步数/模型次数/上限，一并补上。
+
+**费用：** 连续对话默认上限从 8 提到 16，成功跑满时最多大约多一倍模型调用。一次性命令不受影响。
+
+**验收：**
+
+- 用尽上限时的输出含限制名称和已用/上限，不再是空的 “no error detail was recorded”。
+- 连续对话默认 16/16，一次性命令默认仍为 8；用户显式传参时以用户为准。
+- 文档说明 resume 保留计数、以及连续对话与一次性命令的默认差异。
+
+### 5. 连续对话接近上限时应提示收尾
+
+**现象：** `--wrapup-hint-steps N` 在剩余步骤较少时提示模型收尾，但默认关闭。作者原以为接近上限会自动提醒，连续对话里没有发生。
+
+**方案：** 连续对话在用户未显式传入时，默认 `--wrapup-hint-steps 2`（剩余不超过 2 步时提示收尾）。一次性 CLI 保持默认关闭（0），以免改变现有脚本。用户显式传参时以用户为准。不要新写一套收尾提示，复用现有 `--wrapup-hint-steps` 机制。
+
+**验收：**
+
+- 连续对话默认会在接近步数上限时发出已有的收尾提示。
+- `baseagent "task"` 默认仍不提示，除非传入 `--wrapup-hint-steps`。
+- README「成功率提示（opt-in）」一条改为如实描述：连续对话默认开启（N=2），一次性命令仍默认关闭。
+
+### 6. 会话列表时间戳要带时区
+
+**现象：** `--list-sessions` 的 `updated_at` 形如 `2026-11-08 15:27:12`，没有 `Z` 或 `+00:00`。实际按 UTC 理解与北京时间（UTC+8）对得上（需加 8 小时），但很容易被当成本地时间。
+
+**方案：** 对外展示的会话时间（至少 `updated_at`，若还有 `created_at` 等同类字段则一起改）改为带时区的 ISO 8601，例如 `2026-11-08T15:27:12+00:00`，或明确后缀 `UTC`。不要悄悄改成北京时间，以免破坏按 UTC 解析的调用方。README 的 `--list-sessions` 说明里写明这些时间是 UTC。
+
+**验收：**
+
+- `--list-sessions` 输出里的时间带时区或 UTC 标记，不再是无时区的空格分隔时间。
+- 文档写明时区。
+- 有测试锁定时间格式。
+
+### 不要做
+
+- 不实现 Textual TUI，不改 WebUI 流式输出。
+- 不把 RAG `ask` 接到默认连续对话。
+- 不改 `glob "*"` 的匹配范围去「顺便递归」。
+- 不绕过未知用量核对协议。
+- 不把本段施工说明合并进 master。
+
 ## HarnessKnight 安全服务对接 (可选)
 
 BaseAgent can send prompt and tool events to HarnessKnight for ALLOW, REVIEW, or BLOCK decisions.
