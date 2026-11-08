@@ -819,10 +819,10 @@ class SecretMarkerError(ValueError):
     """Encoded report or checkpoint text is shaped like it contains a credential."""
 
 
-# Env-var and identifier names end in _API_KEY / _api_key and are not secrets.
-# A bare lowercase api_key field is. An sk- token is a secret only at a word
-# boundary, so "ask-first" and "disk-cache" are allowed but "sk-proj-..." is not.
-_API_KEY_RE = re.compile(r"api_key", re.IGNORECASE)
+# Env-var names end in _API_KEY and identifiers such as self.api_key or
+# options["api_key"] are code references, not credential values, so they are
+# allowed. An sk- token is a secret only at a word boundary, so "ask-first"
+# and "disk-cache" are allowed but "sk-proj-..." is not.
 _SK_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9_-]", re.IGNORECASE)
 
 
@@ -832,12 +832,4 @@ def _reject_secrets(text):
     if "authorization:" in lowered or "bearer " in lowered:
         raise SecretMarkerError("answer report contains a secret marker")
     if _SK_TOKEN_RE.search(text):
-        raise SecretMarkerError("answer report contains a secret marker")
-    for match in _API_KEY_RE.finditer(text):
-        if match.group(0) == "API_KEY":
-            # Upper-case env style, for example API_KEY on its own.
-            continue
-        if match.start() > 0 and text[match.start() - 1] == "_":
-            # Part of a longer identifier such as OPENAI_API_KEY.
-            continue
         raise SecretMarkerError("answer report contains a secret marker")

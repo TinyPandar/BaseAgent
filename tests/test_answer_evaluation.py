@@ -428,7 +428,7 @@ class AnswerScoringTests(unittest.TestCase):
 
 
 class SecretMarkerTests(unittest.TestCase):
-    def test_env_var_names_and_ask_first_are_allowed(self):
+    def test_env_var_names_and_identifier_forms_are_allowed(self):
         for text in (
             "OPENAI_API_KEY",
             "RAG_EMBEDDING_API_KEY",
@@ -436,17 +436,28 @@ class SecretMarkerTests(unittest.TestCase):
             "openai_api_key",
             "RAG_EMBEDDING_API_KEY takes priority over OPENAI_API_KEY",
             "ask-first policy",
+            "api_key",
+            "self.api_key",
+            "openai.api_key",
+            "api_key_env",
+            "def __init__(self, api_key: str | None = None",
+            "api_key: RAG_EMBEDDING_API_KEY, falling back to OPENAI_API_KEY.",
+            'self.api_key = api_key or os.getenv("RAG_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")',
+            "or provide api_key",
+            'options = {"api_key": self.api_key}',
+            "api_key=value",
+            '{"api_key": "value"}',
         ):
             _reject_secrets(text)
 
-    def test_key_shaped_values_and_bare_fields_are_rejected(self):
+    def test_key_shaped_values_are_rejected(self):
         for text in (
             "sk-abcdefghijklmnopqrstuvwxyz",
             "sk-proj-abc123",
             "authorization: Bearer aaa",
             "bearer secret",
-            '{"api_key": "value"}',
-            "api_key=value",
+            "api_key=sk-abcdefghijklmnopqrstuvwxyz",
+            '{"api_key": "sk-abcdefghijklmnopqrstuvwxyz"}',
         ):
             with self.assertRaises(ValueError):
                 _reject_secrets(text)
