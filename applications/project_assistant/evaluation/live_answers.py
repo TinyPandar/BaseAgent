@@ -18,6 +18,7 @@ from pathlib import Path
 from applications.project_assistant.config import RAGConfig
 from applications.project_assistant.corpus import collect_corpus
 from applications.project_assistant.evaluation.answers import (
+    SecretMarkerError,
     _reject_secrets,
     consume_budget,
     evaluate_answers,
@@ -332,7 +333,25 @@ def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cn
         _upsert_record(payload["records"], record)
         new_records.append(record)
         if path is not None:
-            save_checkpoint(path, payload)
+            try:
+                save_checkpoint(path, payload)
+            except SecretMarkerError:
+                # The generated answer tripped the scanner. Keep its usage so the
+                # budget stays honest, but persist only a sanitized failed row and
+                # let later questions continue. Other save failures still abort.
+                sanitized = _answer_record(
+                    question, answer="", citations=[],
+                    latency_ms=record.get("latency_ms", 0),
+                    total_tokens=record.get("total_tokens", 0),
+                    cost_cny=record.get("cost_cny", 0),
+                    status="failed", error="secret_marker")
+                for position, row in enumerate(payload["records"]):
+                    if row.get("id") == record["id"]:
+                        payload["records"][position] = sanitized
+                        break
+                new_records[new_records.index(record)] = sanitized
+                save_checkpoint(path, payload)
+                record = sanitized
         if record.get("status") == "failed" and record.get("error") == "UsageUnavailable":
             # The failure is already persisted. Unknown usage must not keep
             # spending, so no later question is sent to the provider this run.

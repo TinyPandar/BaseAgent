@@ -11,6 +11,7 @@ from applications.project_assistant.evaluation.answers import (
     DEFAULT_NLI_LARGE,
     LocalDebertaNLI,
     _load_local_nli,
+    _reject_secrets,
     consume_budget,
     evaluate_answers,
     human_review_sample,
@@ -424,6 +425,31 @@ class AnswerScoringTests(unittest.TestCase):
                 self.assertNotIn("faithfulness_large", row)
                 self.assertNotIn("nli_variant", row)
             self.assertIn("no citations", render_markdown(saved).lower())
+
+
+class SecretMarkerTests(unittest.TestCase):
+    def test_env_var_names_and_ask_first_are_allowed(self):
+        for text in (
+            "OPENAI_API_KEY",
+            "RAG_EMBEDDING_API_KEY",
+            "API_KEY",
+            "openai_api_key",
+            "RAG_EMBEDDING_API_KEY takes priority over OPENAI_API_KEY",
+            "ask-first policy",
+        ):
+            _reject_secrets(text)
+
+    def test_key_shaped_values_and_bare_fields_are_rejected(self):
+        for text in (
+            "sk-abcdefghijklmnopqrstuvwxyz",
+            "sk-proj-abc123",
+            "authorization: Bearer aaa",
+            "bearer secret",
+            '{"api_key": "value"}',
+            "api_key=value",
+        ):
+            with self.assertRaises(ValueError):
+                _reject_secrets(text)
 
 
 if __name__ == "__main__":

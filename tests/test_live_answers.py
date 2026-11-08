@@ -358,6 +358,98 @@ class LiveAnswerTests(unittest.TestCase):
         initialize.assert_not_called()
         prepare.assert_not_called()
 
+    def test_env_var_names_in_generated_answers_persist_as_ok(self):
+        class EnvNameClient:
+            def __init__(self):
+                self.calls = 0
+
+            def complete(self, messages, tools=None):
+                self.calls += 1
+                question = messages[-1]["content"].splitlines()[1]
+                content = ("RAG_EMBEDDING_API_KEY takes priority over OPENAI_API_KEY "
+                           f"for {question}. src/a.py:1-1")
+                return ModelResponse({"content": content}, TokenUsage(100, 50, 150))
+
+        config = RAGConfig(embedding_provider="mock", retrieval_mode="hybrid")
+        client = EnvNameClient()
+        with patch.object(live_answers, "retrieve",
+                          return_value=[SimpleNamespace(citation="src/a.py:1-1",
+                                                        content="evidence")]):
+            retriever = retriever_for("index", config, top_k=5)
+            meter = MeteredModel(client, budget_cny=Decimal("1"),
+                                 input_rate=1, output_rate=1, reasoning_rate=1)
+            with tempfile.TemporaryDirectory() as folder:
+                folder = Path(folder)
+                checkpoint = folder / "checkpoint.json"
+                result = run_live_answers(
+                    dataset(), retriever=retriever, meter=meter, budget_cny="1",
+                    embedding_cost_cny="0",
+                    embedding_usage={"api_calls": 0, "total_tokens": 0},
+                    report_dir=folder / "reports", checkpoint_path=checkpoint)
+                saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+                self.assertTrue(result["path"].exists())
+
+        self.assertEqual(client.calls, 4)
+        self.assertEqual([row["id"] for row in saved["records"]], ["a", "b", "c", "d"])
+        self.assertTrue(all(row["status"] == "ok" for row in saved["records"]))
+        self.assertIn("RAG_EMBEDDING_API_KEY", saved["records"][0]["answer"])
+        self.assertEqual(result["summary"]["questions_ok"], 4)
+        self.assertEqual(result["summary"]["questions_failed"], 0)
+
+    def test_secret_in_generated_answer_is_persisted_as_sanitized_failure(self):
+        class SecretClient:
+            def __init__(self):
+                self.asked = []
+
+            def complete(self, messages, tools=None):
+                question = messages[-1]["content"].splitlines()[1]
+                self.asked.append(question)
+                if question == "beta":
+                    content = "Here is the token sk-abcdefghijklmnopqrstuvwxyz for beta."
+                else:
+                    content = f"Answer for {question}. src/a.py:1-1"
+                return ModelResponse({"content": content}, TokenUsage(100, 50, 150))
+
+        config = RAGConfig(embedding_provider="mock", retrieval_mode="hybrid")
+        client = SecretClient()
+        with patch.object(live_answers, "retrieve",
+                          return_value=[SimpleNamespace(citation="src/a.py:1-1",
+                                                        content="evidence")]):
+            retriever = retriever_for("index", config, top_k=5)
+            meter = MeteredModel(client, budget_cny=Decimal("1"),
+                                 input_rate=1, output_rate=1, reasoning_rate=1)
+            with tempfile.TemporaryDirectory() as folder:
+                folder = Path(folder)
+                checkpoint = folder / "checkpoint.json"
+                result = run_live_answers(
+                    dataset(), retriever=retriever, meter=meter, budget_cny="1",
+                    embedding_cost_cny="0",
+                    embedding_usage={"api_calls": 0, "total_tokens": 0},
+                    report_dir=folder / "reports", checkpoint_path=checkpoint)
+                saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+                checkpoint_text = checkpoint.read_text(encoding="utf-8")
+                report_text = result["path"].read_text(encoding="utf-8")
+                self.assertTrue(result["path"].exists())
+
+        # The scan failure is per-question: later questions still run.
+        self.assertEqual(client.asked, ["alpha", "beta", "gamma", "delta"])
+        self.assertEqual([row["id"] for row in saved["records"]], ["a", "b", "c", "d"])
+        by_id = {row["id"]: row for row in saved["records"]}
+        self.assertEqual(by_id["b"]["status"], "failed")
+        self.assertEqual(by_id["b"]["error"], "secret_marker")
+        self.assertEqual(by_id["b"]["answer"], "")
+        self.assertEqual(by_id["b"]["citations"], [])
+        # Usage is preserved so budget accounting stays honest.
+        self.assertEqual(by_id["b"]["total_tokens"], 150)
+        self.assertAlmostEqual(by_id["b"]["cost_cny"], 0.00015)
+        self.assertEqual(by_id["a"]["status"], "ok")
+        self.assertEqual(by_id["c"]["status"], "ok")
+        self.assertEqual(by_id["d"]["status"], "ok")
+        self.assertNotIn("sk-", checkpoint_text.lower())
+        self.assertNotIn("sk-", report_text.lower())
+        self.assertEqual(result["summary"]["questions_ok"], 3)
+        self.assertEqual(result["summary"]["questions_failed"], 1)
+
     def test_budget_stop_still_persists_earlier_questions(self):
         config = RAGConfig(embedding_provider="mock", retrieval_mode="hybrid")
         client = FakeClient()

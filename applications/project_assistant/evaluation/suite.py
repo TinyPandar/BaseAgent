@@ -20,6 +20,7 @@ for _path in (ROOT, ROOT / "src"):
         sys.path.insert(0, str(_path))
 
 from applications.project_assistant.evaluation.answers import (  # noqa: E402
+    _reject_secrets,
     evaluate_answers,
     planned_live,
     render_markdown as render_answers,
@@ -270,9 +271,8 @@ def write_suite_report(summary, directory):
     payload = directory / f"{stem}.json"
     text = render_suite(summary)
     data = json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    for marker in ("api_key", "authorization:", "bearer ", "sk-"):
-        if marker in data.lower() or marker in text.lower():
-            raise ValueError("suite report contains a secret marker")
+    _reject_secrets(data)
+    _reject_secrets(text)
     with markdown.open("x", encoding="utf-8") as handle:
         handle.write(text)
     with payload.open("x", encoding="utf-8") as handle:
