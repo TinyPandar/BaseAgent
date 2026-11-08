@@ -85,17 +85,35 @@ def initialize_model(model_name=None, *, generic_only=False, **kwargs):
     return Model(**model_configuration(model_name, generic_only=generic_only), **kwargs)
 
 
+def _trace_preview(value, limit):
+    text = value if isinstance(value, str) else repr(value)
+    text = text.replace("\r", "").replace("\n", "\\n")
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
 class TraceMiddleware(AgentMiddleware):
+    def __init__(self, *, preview_chars=0, steps=True):
+        self.preview_chars = preview_chars
+        self.steps = steps
+
     def before_model(self, state):
-        print(f"model step {state.step + 1}/{state.max_steps}", file=sys.stderr)
+        if self.steps:
+            print(f"model step {state.step + 1}/{state.max_steps}", file=sys.stderr)
 
     def wrap_tool_call(self, request, handler):
         print(f"tool: {request.name}", file=sys.stderr)
+        if self.preview_chars:
+            print(f"tool args: {_trace_preview(request.arguments, self.preview_chars)}", file=sys.stderr)
         result = handler(request)
         if not result.ok:
-            print(f"tool result: {result.error.code}", file=sys.stderr)
+            if self.preview_chars:
+                detail = f"{result.error.code}: {result.error.message}"
+                print(f"tool result: {_trace_preview(detail, self.preview_chars)}", file=sys.stderr)
+            else:
+                print(f"tool result: {result.error.code}", file=sys.stderr)
         else:
-            print("tool result: ok", file=sys.stderr)
+            print(f"tool result: {_trace_preview(result.data, self.preview_chars)}" if self.preview_chars
+                  else "tool result: ok", file=sys.stderr)
         return result
 
 
@@ -241,6 +259,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     session_operation = args.resume or args.inspect_session or args.task_tree or args.acknowledge_task_bound or args.resolve_tool is not None or args.approve_tool is not None or args.deny_tool is not None or args.cancel_session or args.clear_cancel is not None or args.events or args.follow_events is not None or args.prune_events is not None or args.shared_memory or args.resolve_usage is not None or args.export_session is not None or args.delete_session
     database_operation = args.list_sessions or args.backup_db is not None or args.cleanup_days is not None
     operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages
+    interactive = not operation and args.prompt is None
     if (args.eval_report or args.eval_case) and not args.eval_harness:
         parser.error("evaluation report/cases require --eval-harness")
     if args.eval_harness and (args.prompt is not None or args.session or args.root):
@@ -271,8 +290,6 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("--event-page requires --events")
     if args.event_prune_digest and args.prune_events is None:
         parser.error("--event-prune-digest requires --prune-events")
-    if not operation and args.prompt is None:
-        parser.error("supply a prompt or a session operation")
     for value in (args.max_context_bytes, args.max_tool_context_bytes):
         if value is not None and value < 256:
             parser.error("context byte limits must be >= 256")
@@ -478,7 +495,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         estimating = args.estimate_model or bool(existing and existing.estimate_model)
         if estimating and (args.preauthorize_model or args.request_bound_profile):
             raise ValueError("estimated and strict budgets cannot be combined")
-        cached = bool(existing and existing.status == "completed" and args.prompt is None)
+        cached = bool(existing and existing.status == "completed" and args.prompt is None and not interactive)
         if (estimating and not args.tokenizer_file and not cached) or (args.tokenizer_file and not estimating):
             raise ValueError("estimated budgets require --tokenizer-file; tokenizer-file requires estimated mode")
         if estimating and not 1 <= args.max_completion_tokens <= 393216:
@@ -540,25 +557,38 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                  else assemble_capabilities(workspace, packages=args.tool_package, skills=skills))
         if skills is not None:
             layers.append(SkillMiddleware(skills))
-        if args.trace:
+        if interactive:
+            layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
+        elif args.trace:
             layers.append(TraceMiddleware())
         if args.model_retries or args.tool_retries:
             layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
-        state = run_agent(
-            model_factory(args) if model_factory is not None else LazyModel(), args.prompt, tools=tools,
-            middleware=layers,
-            system_prompt=system_prompt, max_steps=args.max_steps,
-            max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
-            store=store, session_id=args.session, workspace_root=workspace.root,
-            compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
-            max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
-            runtime_config=config, accept_config_changes=args.accept_config_changes,
-            max_total_tokens=args.max_total_tokens, max_duration_seconds=args.max_duration_seconds,
-            tool_policy=policy,
-            completion_policy=completion,
-            estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model, accept_request_bound_violation=args.accept_request_bound_violation,
-            subtasks=subtasks,
-        )
+        model = model_factory(args) if model_factory is not None else LazyModel()
+        session = {"id": args.session}
+
+        def run_turn(user_input):
+            state = run_agent(
+                model, user_input, tools=tools,
+                middleware=layers,
+                system_prompt=system_prompt, max_steps=args.max_steps,
+                max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
+                store=store, session_id=session["id"], workspace_root=workspace.root,
+                compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
+                max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
+                runtime_config=config, accept_config_changes=args.accept_config_changes,
+                max_total_tokens=args.max_total_tokens, max_duration_seconds=args.max_duration_seconds,
+                tool_policy=policy,
+                completion_policy=completion,
+                estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model, accept_request_bound_violation=args.accept_request_bound_violation,
+                subtasks=subtasks,
+            )
+            session["id"] = state.session_id or session["id"]
+            return state
+
+        if interactive:
+            from baseagent.cli_chat import run_chat
+            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace)
+        state = run_turn(args.prompt)
     except KeyboardInterrupt:
         return 130
     except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:

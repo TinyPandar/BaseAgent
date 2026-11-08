@@ -150,6 +150,22 @@ uv run baseagent --eval-harness
 
 会话默认存于 `.baseagent/sessions.sqlite3`（`--db` 可改）。`--allow-command` 不是沙箱。可选 UI：`uv run --extra ui baseagent-ui`，打开 `http://127.0.0.1:8000`。
 
+不带任务直接运行 `baseagent` 会进入连续对话：每行输入开始一轮，自动创建并复用同一个会话，无需每轮传 `--session`。`baseagent "task"` 仍是一次性命令，脚本和现有调用不变；指定 `--session demo` 时交互模式复用该会话。输入 `/exit` 或 `/quit` 退出，`/status` 查看会话 ID、状态、令牌和工作区。`Ctrl+C` 只取消当前轮并回到输入提示（空闲提示符下再按一次退出）；工具调用会显示名称、截断的参数和结果预览。需要批准的工具调用在终端询问 `Allow ...? [y/N]`，批准/拒绝沿用 `--tool-policy` 和 `--allow-write` / `--allow-command` 的能力边界，批准不会授予工作区未开启的能力。
+
+```bash
+# bash
+uv run baseagent --root . --allow-write      # 进入交互对话（自动建会话）
+uv run baseagent --root . --session demo     # 进入交互对话并复用 demo
+# 退出：/exit 或 /quit；Ctrl+C 取消当前轮
+```
+
+```powershell
+# PowerShell
+uv run baseagent --root . --allow-write
+.\.venv\Scripts\python.exe -m baseagent --root . --session demo
+# 退出：/exit 或 /quit；Ctrl+C 取消当前轮
+```
+
 ### 4. Project Assistant（RAG）离线演示
 
 应用模块需从仓库根目录运行（脚本自行把仓库根加入 `sys.path`）。
@@ -461,6 +477,8 @@ Every CLI run uses a SQLite session. The default database is `.baseagent/session
 ```
 
 A new prompt starts a new turn only after the previous one completes. Turn counters reset for a new prompt; recovery preserves counters and unspecified limits. Write/command permissions must be granted explicitly on each invocation, including recovery. Tools and middleware are supplied again by the caller; the database stores state, not Python objects or provider credentials. Full archived history remains intact; the model receives a bounded projection with optional history summaries.
+
+For an interactive terminal that creates and reuses one session across turns, run `baseagent` with no prompt (see 运行 CLI above). It is a thin frontend over these same session and approval rules; `baseagent "task"` remains one-shot.
 
 The checkpoint includes the transcript, outcome, workspace, turn ID, and budgets. The tool ledger records `pending → running → completed`, original requests, actual dispatch attempts, the latest dispatched request and terminal result, and the final middleware result. The assistant message and its pending calls commit together; a completed tool result and its transcript reply also commit together. A per-session OS file lock rejects concurrent writers and is released when the process exits.
 
