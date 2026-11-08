@@ -424,12 +424,23 @@ estimated embedding cost exceeds the budget, the command aborts without a call.
 Each question is retrieved once and answered with exactly one completion.
 After each question the runner atomically writes a checkpoint (default
 `.baseagent/live_answers_checkpoint.json`, override with `--checkpoint`) that
-stores the answer, cost, `ok`/`failed` status, and a safe error name such as
-`UsageUnavailable`. A per-question `UsageUnavailable` does not abort the run.
-`--resume` skips question ids that already have a record, including failures, so
-a later authorized top-up does not re-bill them. An existing checkpoint without
-`--resume`, or `--resume` without a readable checkpoint, exits before any
-provider call.
+stores the answer, citations, usage/cost, `ok`/`failed` status, and a safe error
+name such as `UsageUnavailable`; it never stores provider payloads, keys, or
+endpoints. `UsageUnavailable` (missing usage, unmeterable usage, or a failed
+model request) records that question as failed, persists the checkpoint
+immediately, and stops further generation for the run so unknown usage cannot
+keep spending. Earlier questions stay on disk and the final answer report is
+still written from the persisted rows. `BudgetReached` stops as before, and a
+billed empty answer remains a per-question `empty_answer` failure that does not
+halt the run.
+`--resume` treats only successful (`status == "ok"`) rows as finished: failed
+rows, including a previous `UsageUnavailable`, and ids with no record are sent
+to the model again. Retried ids are upserted in place, so the checkpoint never
+contains duplicate ids and successful rows are never overwritten. Add
+`--skip-failed` to also skip recorded failures and avoid re-billing them. An
+existing checkpoint without `--resume`, or `--resume` without a readable
+checkpoint, exits before any provider call. Resume still requires
+`--budget-cny` and keeps the hard cap.
 Generation and embedding usage share the same hard `--budget-cny`; the meter uses
 the qwen-plus non-thinking Beijing rates (input 0.8 CNY/M, output 2 CNY/M,
 reasoning 8 CNY/M) and embedding tokens default to 0.5 CNY/M

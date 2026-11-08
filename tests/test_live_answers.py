@@ -167,7 +167,7 @@ class LiveAnswerTests(unittest.TestCase):
         self.assertNotIn("fake-private-key", str(raised.exception))
         index.assert_not_called()
 
-    def test_usage_unavailable_is_recorded_and_later_questions_continue(self):
+    def test_usage_unavailable_records_question_and_stops_run(self):
         class SelectiveClient:
             def __init__(self):
                 self.calls = 0
@@ -202,19 +202,23 @@ class LiveAnswerTests(unittest.TestCase):
                 saved = json.loads(checkpoint.read_text(encoding="utf-8"))
                 self.assertTrue(result["path"].exists())
 
-        self.assertEqual(client.asked, ["alpha", "beta", "gamma", "delta"])
+        # beta fails, so no later question is sent to the provider this run.
+        self.assertEqual(client.asked, ["alpha", "beta"])
         statuses = {row["id"]: (row["status"], row.get("error")) for row in saved["records"]}
+        self.assertEqual([row["id"] for row in saved["records"]], ["a", "b"])
         self.assertEqual(statuses["a"], ("ok", None))
         self.assertEqual(statuses["b"], ("failed", "UsageUnavailable"))
-        self.assertEqual(statuses["c"], ("ok", None))
-        self.assertEqual(statuses["d"], ("ok", None))
-        self.assertEqual(result["summary"]["questions_ok"], 3)
+        self.assertEqual(result["summary"]["questions_ok"], 1)
         self.assertEqual(result["summary"]["questions_failed"], 1)
-        self.assertEqual(result["summary"]["questions_remaining"], 0)
+        self.assertEqual(result["summary"]["questions_remaining"], 2)
+        self.assertFalse(result["summary"]["stopped_for_budget"])
+        self.assertTrue(result["summary"]["stopped_for_usage_unavailable"])
+        self.assertEqual(len(result["report"]["questions"]), 4)
+        self.assertEqual(result["report"]["questions_ok"], 1)
         for row in saved["records"]:
             self.assertNotIn("private provider diagnostic", json.dumps(row))
 
-    def test_resume_skips_recorded_successes_and_failures(self):
+    def test_resume_retries_failed_and_unrecorded_and_upserts_by_id(self):
         config = RAGConfig(embedding_provider="mock", retrieval_mode="hybrid")
         client = FakeClient()
         with patch.object(live_answers, "retrieve",
@@ -247,15 +251,72 @@ class LiveAnswerTests(unittest.TestCase):
                     resume=True)
                 saved = json.loads(checkpoint.read_text(encoding="utf-8"))
 
+        # The successful id is skipped; the recorded failure is retried and the
+        # never-recorded ids are generated. No duplicate ids are appended.
+        self.assertEqual(client.calls, 3)
+        questions = [messages[-1]["content"].splitlines()[1] for messages in client.prompts]
+        self.assertEqual(questions, ["beta", "gamma", "delta"])
+        self.assertEqual([row["id"] for row in saved["records"]], ["a", "b", "c", "d"])
+        self.assertEqual(saved["records"][0]["answer"], "done a src/a.py:1-1")
+        self.assertEqual(saved["records"][1]["status"], "ok")
+        self.assertIsNone(saved["records"][1]["error"])
+        self.assertEqual(result["summary"]["resumed"], True)
+        self.assertEqual(result["summary"]["questions_ok"], 4)
+        self.assertEqual(result["summary"]["questions_failed"], 0)
+        self.assertEqual(result["summary"]["questions_remaining"], 0)
+        self.assertAlmostEqual(float(saved["embedding_cost_cny"]), 0.0001)
+
+    def test_resume_skip_failed_opts_out_of_retrying_recorded_failures(self):
+        config = RAGConfig(embedding_provider="mock", retrieval_mode="hybrid")
+        client = FakeClient()
+        with patch.object(live_answers, "retrieve",
+                          return_value=[SimpleNamespace(citation="src/a.py:1-1",
+                                                        content="evidence")]):
+            retriever = retriever_for("index", config, top_k=5)
+            meter = MeteredModel(client, budget_cny=Decimal("1"),
+                                 input_rate=1, output_rate=1, reasoning_rate=1)
+            with tempfile.TemporaryDirectory() as folder:
+                folder = Path(folder)
+                checkpoint = folder / "checkpoint.json"
+                checkpoint.write_text(json.dumps({
+                    "schema_version": 1,
+                    "embedding_cost_cny": "0",
+                    "embedding_usage": {},
+                    "records": [
+                        {"id": "a", "answer": "done a src/a.py:1-1", "citations": ["src/a.py:1-1"],
+                         "latency_ms": 1, "total_tokens": 10, "cost_cny": 0.01,
+                         "source": "live", "status": "ok", "error": None},
+                        {"id": "b", "answer": "", "citations": [], "latency_ms": 1,
+                         "total_tokens": 0, "cost_cny": 0, "source": "live",
+                         "status": "failed", "error": "UsageUnavailable"},
+                    ],
+                }), encoding="utf-8")
+                result = run_live_answers(
+                    dataset(), retriever=retriever, meter=meter, budget_cny="1",
+                    embedding_cost_cny="0",
+                    embedding_usage={"api_calls": 0, "total_tokens": 0},
+                    report_dir=folder / "reports", checkpoint_path=checkpoint,
+                    resume=True, skip_failed=True)
+                saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+
         self.assertEqual(client.calls, 2)
         questions = [messages[-1]["content"].splitlines()[1] for messages in client.prompts]
         self.assertEqual(questions, ["gamma", "delta"])
         self.assertEqual([row["id"] for row in saved["records"]], ["a", "b", "c", "d"])
         self.assertEqual(saved["records"][1]["status"], "failed")
-        self.assertEqual(result["summary"]["resumed"], True)
+        self.assertEqual(saved["records"][1]["error"], "UsageUnavailable")
         self.assertEqual(result["summary"]["questions_ok"], 3)
         self.assertEqual(result["summary"]["questions_failed"], 1)
-        self.assertAlmostEqual(float(saved["embedding_cost_cny"]), 0.0001)
+
+    def test_cli_passes_skip_failed_to_live_runner(self):
+        with patch.object(answers_cli, "_run_live", return_value=0) as run:
+            code = answers_cli.main([
+                "--live", "--budget-cny", "2", "--resume", "--skip-failed",
+            ])
+        self.assertEqual(code, 0)
+        args = run.call_args.args[0]
+        self.assertTrue(args.resume)
+        self.assertTrue(args.skip_failed)
 
     def test_existing_checkpoint_without_resume_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as folder:

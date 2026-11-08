@@ -61,10 +61,16 @@ python scripts/evaluate_answers.py --plan --budget-cny 2
 python scripts/evaluate_answers.py --live --budget-cny 2
 ```
 
-续跑只补没有检查点记录的题（已成功或已失败的题都不会再生成，避免重复扣费）：
+续跑默认只跳过已成功的题；失败题（包括 `UsageUnavailable`）和没有记录的题会重新生成：
 
 ```bash
 python scripts/evaluate_answers.py --live --budget-cny 2 --resume
+```
+
+如果不想重试已记录的失败题（例如避免为上次失败再次付费），加 `--skip-failed`：
+
+```bash
+python scripts/evaluate_answers.py --live --budget-cny 2 --resume --skip-failed
 ```
 
 `--live` 的流程：
@@ -74,8 +80,8 @@ python scripts/evaluate_answers.py --live --budget-cny 2 --resume
 - 嵌入使用 `CachedEmbedding` + `DiskCache`，缓存目录由 `RAG_CACHE_DIR` 决定。使用 `/workspace/bailian_cache` 时需要 `RAG_EMBEDDING_PROVIDER=openai`、`RAG_EMBEDDING_MODEL=text-embedding-v4`、`RAG_EMBEDDING_DIMENSIONS=1024`，并设置 `RAG_CACHE_DIR=/workspace/bailian_cache`。
 - 在任何嵌入请求之前，对唯一 chunk 文本和 80 个问题调用 `estimate_missing()`；按默认 0.5 元/百万嵌入 token 估算，超过剩余预算就直接中止，零 provider 调用。
 - 每题 `retrieve` 一次，然后只做一次 completion。prompt 要求用 `path:start-end` 引用，把检索内容当作不可信数据，证据不足时用 `answers.py` 能识别的拒答措辞（“not established”）。
-- 每题结束后原子写入检查点（默认 `.baseagent/live_answers_checkpoint.json`，可用 `--checkpoint` 改路径），记录答案、花费、`ok`/`failed` 和安全的失败原因（例如 `UsageUnavailable`），不含 provider 原文或密钥。`UsageUnavailable` 只让这一题失败，后面的题继续跑。预算耗尽仍会停止，但已经写下的题会留在检查点里。
-- `--resume` 会跳过检查点里已有记录的题号，包括失败题，避免对同一题重复扣费。没有记录的题才会再生成。检查点已存在且未传 `--resume` 时会直接退出，不会覆盖；`--resume` 但检查点不存在时也会退出，两者都不会发起 provider 调用。
+- 每题结束后原子写入检查点（默认 `.baseagent/live_answers_checkpoint.json`，可用 `--checkpoint` 改路径），记录答案、引用、用量/花费、`ok`/`failed` 状态和安全的失败原因（例如 `UsageUnavailable`），不含 provider 原文、密钥或 endpoint。`UsageUnavailable`（缺少 usage、无法计量或模型请求失败）会先把该题记为 failed 并落盘，然后立即停止本次运行，不再发起后续生成调用——未知用量不能继续花钱。已写下的题保留在磁盘上，最终报告仍会用已持久化的记录写出。预算耗尽（`BudgetReached`）仍按原行为停止。已计费的空答案只是单题 `empty_answer` 失败，不会中断整次运行。
+- `--resume` 只跳过已成功（`status == "ok"`）的题；失败题（包括上次的 `UsageUnavailable`）和没有记录的题都会重新发给模型。重试失败题时按 id 覆盖旧行（upsert），不会追加重复 id，也不会覆盖成功记录。默认重试失败题；加 `--skip-failed` 可改为也跳过已记录的失败题，避免再次付费。检查点已存在且未传 `--resume` 时会直接退出，不会覆盖；`--resume` 但检查点不存在时也会退出，两者都不会发起 provider 调用。`--resume` 仍需 `--budget-cny`，硬上限不变。
 - 生成和嵌入都计入同一个 `--budget-cny`。生成用 `MeteredModel`（qwen-plus 非思考北京价：输入 0.8 元/百万、输出 2 元/百万、reasoning 8 元/百万）；最后一笔可越过预算，之后不再调用。预算由 `consume_budget` 驱动，不能用 agent loop 或自动压缩绕过。
 - 生成后用现有离线分层打分：引用层、summary token F1 / ROUGE-L、拒答准确率；tune 和 test 分开。不跑 `--nli`、`--judge` 或 rerank。失败题按空答案计分，所以 tune/test 报告仍会写出。
 - 报告写 `cost_cny`（生成 + 嵌入）、`provider_calls`、`live_executed`、`stopped_for_budget`、`embedding_usage`（cache hits/misses、api_calls、tokens），以及检查点路径和 `questions_ok` / `questions_failed` / `questions_remaining`。`write_answer_report` 仍会拒绝 secret 标记。

@@ -32,6 +32,7 @@ from applications.project_assistant.evaluation.live_answers import (  # noqa: E4
     DEFAULT_TOP_K,
     EMBEDDING_CNY_PER_MILLION,
     LiveSetupError,
+    pending_questions,
     prepare_checkpoint,
     prepare_live_retrieval,
     run_live_answers,
@@ -85,11 +86,12 @@ def _run_live(args, dataset):
                                  ensure_ascii=False))
                 return 1
             remaining = budget - setup["embedding_cost_cny"]
-            done_ids = {row["id"] for row in payload.get("records") or []}
-            pending_n = sum(1 for question in dataset["questions"] if question["id"] not in done_ids)
+            pending_n = len(pending_questions(
+                dataset, payload.get("records") or [], skip_failed=args.skip_failed))
             checkpoint_kwargs = {
                 "checkpoint_path": args.checkpoint,
                 "resume": args.resume,
+                "skip_failed": args.skip_failed,
             }
             if remaining > 0:
                 meter = MeteredModel(client, budget_cny=remaining,
@@ -143,7 +145,9 @@ def main(argv=None):
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
                         help="Per-question live checkpoint; written after each question")
     parser.add_argument("--resume", action="store_true",
-                        help="Skip question ids already recorded in --checkpoint; do not retry failures")
+                        help="Skip successful question ids in --checkpoint; retry failures and missing ids")
+    parser.add_argument("--skip-failed", action="store_true",
+                        help="With --resume, also skip recorded failures instead of retrying them")
     args = parser.parse_args(argv)
     if args.plan:
         print(json.dumps(planned_live(args.budget_cny), ensure_ascii=False, indent=2))

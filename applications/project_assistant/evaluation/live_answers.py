@@ -51,6 +51,9 @@ class LiveSetupError(ValueError):
     """A safe, user-facing setup failure that contains no provider configuration."""
 
 
+class _UsageUnavailableStop(Exception):
+    """Internal signal: a question was recorded as UsageUnavailable; stop this run."""
+
 
 def _empty_checkpoint():
     return {
@@ -118,6 +121,36 @@ def _answer_record(question, *, answer, citations, latency_ms, total_tokens, cos
         "status": status,
         "error": error,
     }
+
+
+def _upsert_record(records, record):
+    """Replace a non-success row with the same id; append when absent.
+
+    A successful record is never overwritten. Replacing in place keeps the
+    checkpoint free of duplicate ids, which the scorer rejects.
+    """
+    for position, row in enumerate(records):
+        if row.get("id") == record["id"]:
+            if row.get("status") == "ok":
+                return False
+            records[position] = record
+            return True
+    records.append(record)
+    return True
+
+
+def pending_questions(dataset, records, *, skip_failed=False):
+    """Questions that still need generation.
+
+    Only ``ok`` rows count as finished; recorded failures are retried unless
+    ``skip_failed`` opts out. Rows without a status are retried as incomplete.
+    """
+    done = set()
+    for row in records:
+        status = row.get("status")
+        if status == "ok" or (skip_failed and status == "failed"):
+            done.add(row.get("id"))
+    return [question for question in dataset["questions"] if question["id"] not in done]
 
 
 def _positive_decimal(value, name):
@@ -266,8 +299,13 @@ def generate_answer(question, retriever, meter):
 
 def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cny=0,
                      embedding_usage=None, report_dir=None, checkpoint_path=None,
-                     resume=False):
-    """Generate through consume_budget, persist each question, then score offline."""
+                     resume=False, skip_failed=False):
+    """Generate through consume_budget, persist each question, then score offline.
+
+    ``UsageUnavailable`` records that question as failed, persists it and stops
+    further generation in this run. A later ``--resume`` may retry it because
+    only ``status == "ok"`` rows are treated as finished by default.
+    """
     budget = _positive_decimal(budget_cny, "budget")
     this_embed = Decimal(str(embedding_cost_cny))
     if not this_embed.is_finite() or this_embed < 0:
@@ -285,16 +323,20 @@ def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cn
         save_checkpoint(path, payload)
 
     remaining_budget = budget - embedding_cost
-    done_ids = {row["id"] for row in prior_records}
-    pending = [question for question in dataset["questions"] if question["id"] not in done_ids]
+    pending = pending_questions(dataset, prior_records, skip_failed=skip_failed)
     new_records = []
+    stopped_for_usage = False
 
     def ask_fn(question):
         record = generate_answer(question, retriever, meter)
+        _upsert_record(payload["records"], record)
         new_records.append(record)
-        payload["records"].append(record)
         if path is not None:
             save_checkpoint(path, payload)
+        if record.get("status") == "failed" and record.get("error") == "UsageUnavailable":
+            # The failure is already persisted. Unknown usage must not keep
+            # spending, so no later question is sent to the provider this run.
+            raise _UsageUnavailableStop
         return record
 
     try:
@@ -308,6 +350,17 @@ def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cn
                 "stopped_for_budget": remaining_budget <= 0 and bool(pending),
                 "provider_calls": 0,
             }
+    except _UsageUnavailableStop:
+        stopped_for_usage = True
+        outcome = {
+            "executed": True,
+            "answers": new_records,
+            "spent_cny": format(
+                sum((Decimal(str(row.get("cost_cny") or 0)) for row in new_records), Decimal(0)),
+                "f"),
+            "stopped_for_budget": False,
+            "provider_calls": len(new_records),
+        }
     except BudgetReached:
         outcome = {
             "executed": True,
@@ -343,6 +396,7 @@ def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cn
         "embedding_usage": usage,
         "stopped_for_budget": bool(outcome["stopped_for_budget"]) or (
             remaining_budget <= 0 and bool(pending)),
+        "stopped_for_usage_unavailable": stopped_for_usage,
         "checkpoint": None if path is None else str(path),
         "resumed": bool(resume),
         "questions_ok": questions_ok,
@@ -357,6 +411,7 @@ def run_live_answers(dataset, *, retriever, meter, budget_cny, embedding_cost_cn
         "provider_calls": report["provider_calls"],
         "live_executed": report["live_executed"],
         "stopped_for_budget": report["stopped_for_budget"],
+        "stopped_for_usage_unavailable": report["stopped_for_usage_unavailable"],
         "checkpoint": report["checkpoint"],
         "resumed": report["resumed"],
         "questions_ok": questions_ok,
