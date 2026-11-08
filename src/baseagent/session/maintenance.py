@@ -21,6 +21,14 @@ def _page(after_id, limit):
         raise ValueError("page size must be 1-1000")
 
 
+def utc_timestamp(value):
+    """Render SQLite CURRENT_TIMESTAMP text (always UTC) as ISO 8601 with offset."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return value
+
+
 def list_sessions(store, *, after_id=None, limit=100):
     _page(after_id, limit)
     with store._connection() as connection:
@@ -32,7 +40,8 @@ def list_sessions(store, *, after_id=None, limit=100):
                 json_extract(state_json, '$.total_tokens') AS total_tokens
             FROM sessions WHERE id > ? ORDER BY id LIMIT ?
         """, (after_id or "", limit + 1)).fetchall()
-    return {"sessions": [dict(row) for row in rows[:limit]], "next_after": rows[limit - 1]["id"] if len(rows) > limit else None}
+    sessions = [{**dict(row), "updated_at": utc_timestamp(row["updated_at"])} for row in rows[:limit]]
+    return {"sessions": sessions, "next_after": rows[limit - 1]["id"] if len(rows) > limit else None}
 
 
 def inspect_session(store, session_id):
@@ -86,7 +95,7 @@ def export_session(store, session_id, target):
                 output.write(',"session":')
                 output.write(row["state_json"])
                 output.write(',"updated_at":')
-                json.dump(row["updated_at"], output)
+                json.dump(utc_timestamp(row["updated_at"]), output)
                 output.write(',"tool_calls":[')
                 for index, record in enumerate(connection.execute("SELECT * FROM tool_calls WHERE session_id=? ORDER BY rowid", (session_id,))):
                     if index:
@@ -192,7 +201,7 @@ def cleanup(store, older_than_seconds, *, dry_run=True, after_id=None, limit=100
             ORDER BY id LIMIT ?
         """, (after_id or "", cutoff, limit + 1)).fetchall()
     ids = [row["id"] for row in rows[:limit]]
-    result = {"dry_run": dry_run, "cutoff": cutoff, "eligible": ids, "deleted": [], "skipped": [],
+    result = {"dry_run": dry_run, "cutoff": utc_timestamp(cutoff), "eligible": ids, "deleted": [], "skipped": [],
               "next_after": ids[-1] if len(rows) > limit else None}
     if not dry_run:
         for session_id in ids:

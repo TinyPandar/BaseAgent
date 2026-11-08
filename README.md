@@ -43,107 +43,6 @@ The library includes strict deterministic recording/replay and OpenAI-compatible
 
 For the application-development handoff, current framework map, and proposed RAG scope, see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
 
-## 施工中：连续对话实测问题（本段合并进 master 前必须删除）
-
-> 这是产品方案和验收标准，不是实现说明。请只在本 branch `plan/cli-chat-ux` 上开发；不要另开 branch，不要把本段方案带进 master。功能做完、测试通过后，删除本段，并同步更新 README 里面向用户的对应说明（连续对话、`--max-steps` / `--max-model-calls` / `--model-retries` / `--wrapup-hint-steps`、`--list-sessions`）。
->
-> 原则：最小改动、白盒可解释。不要抄 mewcode，不要改 Chainlit WebUI，不要把 Project Assistant 的 `ask` 接到默认 coding CLI，不要动三层上下文 / spill / compaction / Router-Worker 架构。
-
-来源：作者在 Windows 上用连续对话（以及随后的 `--resume`）亲自跑出来的问题。一次做完下面 6 项。
-
-### 1. 寒暄不应先翻任务状态和记忆
-
-**现象：** 连续对话里只说 `hi`，模型在回答前调用了 `get_task_state`、`recall_memory`，并对当前回合多次 `read_history`。
-
-**方案：** 不要写死 `hi` 关键词表。强化 coding CLI / 连续对话投影给模型的任务说明：问候、寒暄、以及不依赖历史的一般闲聊，应直接回答；不要为此调用 `get_task_state`、`recall_memory`、`read_history`。用户明确提到先前任务、计划、记忆或对话内容时，才使用这些工具。README 里 WebUI 已有 “General questions should be answered directly”，连续对话应对齐同一条约束。
-
-**验收：**
-
-- 投影给模型的系统 / 任务说明里，有上述约束（用测试检查投影文本，不要只靠线上模型碰运气）。
-- 不新增专用「问候工具」，不因此关掉 memory / history 工具包。
-- 用户问「上次做到哪了」「你还记得…」时，这些工具仍可用。
-
-### 2. 工具结果预览截得太狠，看不出列表全貌
-
-**现象：** 连续对话里 `glob` 匹配 `"*"` 时，终端预览只显示到根目录某个文件后出现 `...`。看不出后面还有没有匹配、子目录有没有被搜到、是预览截断还是工具自己的 `max_results`（默认 200）截断。
-
-**方案：** 只改连续对话（以及同样的 CLI 工具预览）展示层，不改 `glob` / `grep` 的搜索语义（`*` 仍按现有一层匹配，不要改成默认递归）。列表类结果的预览必须让人判断：总共多少条、这次显示了多少条、剩余被预览省略了多少、工具是否因 `max_results` / `max_matches` 截断。
-
-**验收：**
-
-- 预览不再在列表中间突然 `...` 而不说明省略了多少。
-- 能区分「预览截断」和「工具结果本身截断」。
-- 不把 `*` 说成递归全仓库；需要递归时应使用现有的 `**/*` 等写法（文档里如有提及一并写清）。
-- 超长单条文本仍可截断，但列表类结果至少能看到条数信息。
-
-### 3. 模型传输超时应自动重试（有额外 API 费用）
-
-**现象：** 连续对话和 `--resume` 都会在约 30 秒 HTTP 传输超时时抛出 `ModelTimeoutError: model transport timed out` 并停住。README 写明 `--model-retries` 默认是 0；开启后可覆盖传输失败和 408/409/429/500/502/503/504。作者需要超时自动重试，否则只能手动一次次 `--resume`。每次失败仍会计入 `model attempts`，超时时没有官方用量则会增加 `unknown usage calls`。
-
-**方案：** 把 `--model-retries` 的默认值改为 2（允许范围仍是 0–4）。重试范围保持现状：传输超时 / 上述状态码；不要重试鉴权失败或普通业务/编程错误。用户显式传入 `--model-retries` 时以用户为准。
-
-**费用：** 每次重试都是一次付费模型请求（例如百炼 qwen），并且计入 `--max-model-calls`（失败也计次）。默认 2 意味着同一步最多 3 次实际请求。有 token 预算且超时报了未知用量时，沿用现有「未知用量需核对后才能继续」的规则，不要绕过核对协议；但报错文案要写清楚为什么没能接着重试。
-
-**验收：**
-
-- 未传 `--model-retries` 时，传输超时会自动重试，而不是第一次超时就停。
-- `--model-retries 0` 仍可关闭自动重试。
-- 鉴权错误等非瞬时失败不会被重试。
-- README 写明默认值从 0 改为 2，以及费用和计数影响。
-- 有针对默认值和超时重试路径的测试（优先离线 / 伪造传输失败，不要为测这个打付费 API）。
-
-### 4. 触达步数 / 模型次数上限时，错误信息要能看懂、知道怎么继续
-
-**现象：** 连续对话里说「继续」后出现 `Model-call limit reached: no error detail was recorded`。默认 `--max-steps` 为 8，`--max-model-calls` 默认等于 `--max-steps`，工具偏多的回合很容易用尽。提示更像一次性 CLI 的 `--resume`，没有已用/上限，也没说在对话里如何继续。`--resume` 是接着同一未完成回合，已用计数不清零；只提高上限才会允许继续。新用户输入只有在上一回合完成后才会开新回合并重置计数。
-
-**方案：**
-
-- 报错必须写明撞上的是哪条限制（`max-steps` / `max-model-calls` / `max-tool-calls`）、已用/上限，不要再出现 “no error detail was recorded”。
-- 说明：`--resume` 继续同一回合且保留已用计数；需要把对应上限提高到已用值之上（例如 `--resume --max-steps 16 --max-model-calls 16`）。
-- 连续对话里用同样清楚的中文/英文提示（与现有 CLI 语言风格一致），并提醒可用 `/status` 查看会话 ID。
-- 连续对话在用户未显式传入时，将 `--max-steps` 与 `--max-model-calls` 默认改为 16；一次性 `baseagent "task"` 仍保持 8，避免改掉脚本行为。
-- `/status` 如尚未展示已用步数/模型次数/上限，一并补上。
-
-**费用：** 连续对话默认上限从 8 提到 16，成功跑满时最多大约多一倍模型调用。一次性命令不受影响。
-
-**验收：**
-
-- 用尽上限时的输出含限制名称和已用/上限，不再是空的 “no error detail was recorded”。
-- 连续对话默认 16/16，一次性命令默认仍为 8；用户显式传参时以用户为准。
-- 文档说明 resume 保留计数、以及连续对话与一次性命令的默认差异。
-
-### 5. 连续对话接近上限时应提示收尾
-
-**现象：** `--wrapup-hint-steps N` 在剩余步骤较少时提示模型收尾，但默认关闭。作者原以为接近上限会自动提醒，连续对话里没有发生。
-
-**方案：** 连续对话在用户未显式传入时，默认 `--wrapup-hint-steps 2`（剩余不超过 2 步时提示收尾）。一次性 CLI 保持默认关闭（0），以免改变现有脚本。用户显式传参时以用户为准。不要新写一套收尾提示，复用现有 `--wrapup-hint-steps` 机制。
-
-**验收：**
-
-- 连续对话默认会在接近步数上限时发出已有的收尾提示。
-- `baseagent "task"` 默认仍不提示，除非传入 `--wrapup-hint-steps`。
-- README「成功率提示（opt-in）」一条改为如实描述：连续对话默认开启（N=2），一次性命令仍默认关闭。
-
-### 6. 会话列表时间戳要带时区
-
-**现象：** `--list-sessions` 的 `updated_at` 形如 `2026-11-08 15:27:12`，没有 `Z` 或 `+00:00`。实际按 UTC 理解与北京时间（UTC+8）对得上（需加 8 小时），但很容易被当成本地时间。
-
-**方案：** 对外展示的会话时间（至少 `updated_at`，若还有 `created_at` 等同类字段则一起改）改为带时区的 ISO 8601，例如 `2026-11-08T15:27:12+00:00`，或明确后缀 `UTC`。不要悄悄改成北京时间，以免破坏按 UTC 解析的调用方。README 的 `--list-sessions` 说明里写明这些时间是 UTC。
-
-**验收：**
-
-- `--list-sessions` 输出里的时间带时区或 UTC 标记，不再是无时区的空格分隔时间。
-- 文档写明时区。
-- 有测试锁定时间格式。
-
-### 不要做
-
-- 不实现 Textual TUI，不改 WebUI 流式输出。
-- 不把 RAG `ask` 接到默认连续对话。
-- 不改 `glob "*"` 的匹配范围去「顺便递归」。
-- 不绕过未知用量核对协议。
-- 不把本段施工说明合并进 master。
-
 ## HarnessKnight 安全服务对接 (可选)
 
 BaseAgent can send prompt and tool events to HarnessKnight for ALLOW, REVIEW, or BLOCK decisions.
@@ -160,7 +59,7 @@ Tool REVIEW uses BaseAgent's exact-call approval flow; prompt BLOCK stops the ru
 - **应用 CLI 与历史**：`python -m applications.project_assistant` 提供 `index`、`status`、`ask` 和 `history log/show/added`；只读 `git_log`、`git_show`、`git_pickaxe` 工具用于历史查询。见[应用说明](applications/project_assistant/README.md)。
 - **受控 coding 场景**：临时夹具中检索约定、修改代码、运行验证并写报告；附百炼 qwen-plus 录像与离线回放入口。见[场景说明](applications/project_assistant/evaluation/README.md#受控-coding-离线验收phase-3-第-3-项)。
 - **三层上下文内存（默认启用）**：热上下文保留近期对话与工具配对；超大工具结果溢出到会话文件并以可读路径加预览替代；接近窗口上限时自动摘要旧轮次并保留近期原始尾部。原始会话不被改写，默认摘要器不调用模型。见[三层上下文内存](#three-tier-context-memoryspill--compaction)。
-- **成功率提示（opt-in）**：`--wrapup-hint-steps N` 在剩余步骤较少时提示收尾；`--repeat-call-guard` 警告并阻止第三次完全相同的工具调用；`--dedupe-reads` 对文件未变化的重复读取返回简短引用。三项默认关闭，也可在版本化配置的 `run` 区域设置。
+- **成功率提示**：`--wrapup-hint-steps N` 在剩余步骤不超过 N 时提示模型收尾；连续对话默认开启（N=2），一次性 `baseagent "task"` 默认仍关闭，`--wrapup-hint-steps 0` 可在连续对话里关闭。`--repeat-call-guard` 警告并阻止第三次完全相同的工具调用；`--dedupe-reads` 对文件未变化的重复读取返回简短引用，这两项默认关闭。均可在版本化配置的 `run` 区域设置。
 - **测试修复循环（opt-in）**：编辑后在完成前运行配置的测试命令，失败时向模型反馈，达到迭代上限则停止。见[测试修复循环](#test-and-fix-loopopt-in)。
 - **通用编辑策略**：`EditPolicy` 支持路径允许/拒绝规则、大改动审批及编辑后检查失败回滚。见[编辑策略](#edit-policy)。
 - **工作区搜索**：`grep` 搜索正则与行号，`glob` 查找文件；遵守工作区边界与忽略规则，支持 ripgrep 和 Python 回退。见[搜索工具](#workspace-searchgrep--glob)。
@@ -251,7 +150,9 @@ uv run baseagent --eval-harness
 
 会话默认存于 `.baseagent/sessions.sqlite3`（`--db` 可改）。`--allow-command` 不是沙箱。可选 UI：`uv run --extra ui baseagent-ui`，打开 `http://127.0.0.1:8000`。
 
-不带任务直接运行 `baseagent` 会进入连续对话：每行输入开始一轮，自动创建并复用同一个会话，无需每轮传 `--session`。`baseagent "task"` 仍是一次性命令，脚本和现有调用不变；指定 `--session demo` 时交互模式复用该会话。输入 `/exit` 或 `/quit` 退出，`/status` 查看会话 ID、状态、令牌和工作区。`Ctrl+C` 只取消当前轮并回到输入提示（空闲提示符下再按一次退出）；工具调用会显示名称、截断的参数和结果预览。需要批准的工具调用在终端询问 `Allow ...? [y/N]`，批准/拒绝沿用 `--tool-policy` 和 `--allow-write` / `--allow-command` 的能力边界，批准不会授予工作区未开启的能力。
+不带任务直接运行 `baseagent` 会进入连续对话：每行输入开始一轮，自动创建并复用同一个会话，无需每轮传 `--session`。`baseagent "task"` 仍是一次性命令，脚本和现有调用不变；指定 `--session demo` 时交互模式复用该会话。输入 `/exit` 或 `/quit` 退出，`/status` 查看会话 ID、状态、令牌、工作区，以及已用/上限的步数、模型次数和工具次数。`Ctrl+C` 只取消当前轮并回到输入提示（空闲提示符下再按一次退出）；工具调用会显示名称、截断的参数和结果预览。列表类结果（如 `glob`、`grep`）的预览先写明总条数、预览显示了几条、还有几条未显示，以及工具本身是否因 `max_results` / `max_matches` 截断；预览最多列 10 条，单条过长仍会截断。
+
+连续对话在未显式传参时使用更宽松的默认值：`--max-steps 16`、`--max-model-calls 16`、`--wrapup-hint-steps 2`；一次性 `baseagent "task"` 仍为 8 / 8 / 关闭。显式传参（或 `--config`）以用户为准。上限从 8 提到 16，回合跑满时模型调用最多约多一倍。用尽上限时会写明撞上的是哪条限制（`max-steps` / `max-model-calls` / `max-tool-calls`）和已用/上限。`--resume` 接着同一未完成回合，已用计数不清零，所以要把上限提高到已用值之上，例如 `baseagent --session <id> --resume --max-steps 32 --max-model-calls 32`。在对话里直接再发一条消息，会先用原上限续跑同一回合，因此会再次停住；需退出后按提示的命令继续。只有上一回合完成后，新输入才会开新回合并重置计数。需要批准的工具调用在终端询问 `Allow ...? [y/N]`，批准/拒绝沿用 `--tool-policy` 和 `--allow-write` / `--allow-command` 的能力边界，批准不会授予工作区未开启的能力。
 
 ```bash
 # bash
@@ -530,7 +431,7 @@ Set `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and optionally `DEEPSEEK_MODEL` in 
 
 The agent can read files, search text, and inspect `git diff` by default. File writes require `--allow-write`; subprocesses require `--allow-command`. These flags give the model those capabilities for the whole run. `--allow-command` is **not a sandbox**: the command may access anything the current OS account can access. Only enable it for tasks and workspaces you trust.
 
-`--max-steps` limits logical agent rounds (default 8). `--max-model-calls` limits actual adapter call attempts, including middleware retries; it defaults to `--max-steps`. `--max-tool-calls` limits actual dispatch attempts, including invalid arguments and middleware retries (default 32). Attempts are counted before execution, so failures consume budget too. Middleware that returns a cached response or denies a tool without calling its handler consumes no execution budget. The OpenAI SDK's implicit retries are disabled and its request timeout is 30 seconds.
+`--max-steps` limits logical agent rounds (default 8; 16 in interactive chat when not given). `--max-model-calls` limits actual adapter call attempts, including middleware retries and failed attempts; it defaults to `--max-steps`. `--max-tool-calls` limits actual dispatch attempts, including invalid arguments and middleware retries (default 32). Attempts are counted before execution, so failures consume budget too. Middleware that returns a cached response or denies a tool without calling its handler consumes no execution budget. The OpenAI SDK's implicit retries are disabled and its request timeout is 30 seconds.
 Library calls require integer step/model/tool attempt limits; booleans, fractions and non-finite values are rejected before dispatch. Invalid resume limits leave the saved checkpoint and events unchanged.
 Each tool result is limited to 256 KB in the transcript. A non-completed run exits with code 1 (130 for a handled interruption) and prints its status and attempt counts. Serialized input byte limits, reported token budgets, and turn deadlines are enforced.
 Use `--trace` to print model steps and tool names without dumping file contents or tool arguments.
@@ -600,7 +501,7 @@ SQLite cannot transact atomically with arbitrary file writes or external service
 
 ## Session maintenance
 
-These commands need no model credentials. Listing returns metadata without transcripts; sessions are ordered by ID with a `next_after` cursor:
+These commands need no model credentials. Listing returns metadata without transcripts; sessions are ordered by ID with a `next_after` cursor. `updated_at` (and the cleanup preview `cutoff` / export `updated_at`) is UTC in ISO 8601 with an explicit offset, for example `2026-11-08T15:27:12+00:00` (Beijing time is +8 hours):
 
 ```powershell
 .\.venv\Scripts\python.exe -m baseagent --list-sessions --session-limit 100
@@ -693,7 +594,9 @@ If reported total usage exceeds the declared bound, or reported completion token
 
 `--max-duration-seconds` is wall time from the original turn start, including time between recovery invocations. Increasing it extends that original deadline. Checks run at model/tool dispatch and loop boundaries. The CLI adapter bounds its HTTP timeout by remaining time (and its usual 30 seconds). Workspace commands, verification commands and `git_diff` use the smaller of their own timeout and the remaining turn time; an expired deadline prevents process launch. Process cleanup and checkpoint commits may finish after the deadline. This is cooperative stopping: arbitrary in-process Python handlers and HTTP transport phases are not forcefully terminated by this turn budget. Contextual library handlers can query `context.remaining_seconds()` for the current remaining time (`None` for no deadline). Old sessions without a start timestamp establish a migration origin on first active upgrade.
 
-`--model-retries N` and `--tool-retries N` opt into up to N retries (0-4, default 0), with bounded exponential delays. Every dispatch still consumes core attempt budgets; deadlines are rechecked. Model retries cover transport failures and status 408/409/429/500/502/503/504, not authentication or arbitrary programming failures. With a token budget, an unknown failed attempt blocks the next request until usage is verified.
+`--model-retries N` (0-4) retries transient model failures; the default changed from 0 to 2, so a transport timeout (the adapter's 30-second HTTP timeout) is retried instead of stopping the turn. `--model-retries 0` disables it. `--tool-retries N` (0-4, default 0) stays opt-in. Delays are bounded and exponential. Model retries cover transport failures and status 408/409/429/500/502/503/504, not authentication or arbitrary programming failures.
+
+Cost: every retry is another billed model request, and every attempt, failed or not, counts toward `--max-model-calls`. With the default of 2, one step can make up to 3 actual requests. A timeout with no reported usage also adds to `unknown usage calls`. With `--max-total-tokens`, that unknown failed attempt blocks the next request until usage is verified. Automatic retry stops there, and the error explains why: record verified usage with `--resolve-usage`, then `--resume`. Deadlines are rechecked.
 
 Tools additionally require `register(..., retry_safe=True)` and an explicitly retryable failure. Actual terminal calls are checked, so inner middleware redirects to an unsafe write cannot inherit a read tool's retry permission. Writes and commands are not declared retry-safe. A cached failure or denial with no dispatch is not retried. Tool retry failures/interruption may still leave a running ledger entry requiring conservative reconciliation; the retry declaration is a developer promise of idempotency, not an OS guarantee. Retry options participate in the CLI runtime fingerprint and must be supplied consistently on resume.
 
@@ -1107,4 +1010,4 @@ uv run baseagent "Fix the failing tests" --root . --allow-write --allow-command 
 
 ## Workspace search（grep / glob）
 
-coding 能力包注册 `grep(pattern, path=".", glob=None, ignore_case=False, max_matches=100)` 和 `glob(pattern, path=".", max_results=200)`，实现在 `src/baseagent/tools/search.py`。前者返回路径、行号和文本，后者返回排序后的文件路径；均报告截断。搜索限于本机工作区，过滤保护路径、链接及忽略目录；内容搜索跳过二进制、非 UTF-8 和大文件。优先使用 ripgrep，缺失或表达式不兼容时使用 Python 回退。
+coding 能力包注册 `grep(pattern, path=".", glob=None, ignore_case=False, max_matches=100)` 和 `glob(pattern, path=".", max_results=200)`，实现在 `src/baseagent/tools/search.py`。前者返回路径、行号和文本，后者返回排序后的文件路径；均报告截断（`grep` 的 `truncated` 也可能表示单行超过 300 字符被截短）。匹配规则：不含 `/` 的模式只匹配文件名、但覆盖 `path` 下所有层级，所以 `*` 会列出全部未忽略文件（再受 `max_results` 限制），`*.py` 匹配任意目录下的 `.py`；含 `/` 的模式按相对路径逐段匹配，一个 `*` 只匹配一层（`src/*` 只看 `src` 下的直接文件），跨目录要写 `**`，例如 `src/**/*.py`。搜索限于本机工作区，过滤保护路径、链接及忽略目录；内容搜索跳过二进制、非 UTF-8 和大文件。优先使用 ripgrep，缺失或表达式不兼容时使用 Python 回退。

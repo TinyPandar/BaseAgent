@@ -71,8 +71,8 @@ def _run_turn(run_turn, store, state, text, out, err):
                 return None
         _report(state, out, err)
         if state.status != RunStatus.COMPLETED:
-            print("The previous turn is still unfinished; inspect or resume it with "
-                  "--session <id> --resume.", file=err)
+            print("The previous turn is still unfinished; your new message was not sent. Inspect or "
+                  f"resume it with --session {state.session_id or '<id>'} --resume.", file=err)
             return state
     state = _invoke(run_turn, text, out, err)
     if state is None:
@@ -155,11 +155,56 @@ def _report(state, out, err):
     if state.status == RunStatus.INTERRUPTED:
         print("Turn cancelled. Type another message to continue.", file=err)
         return
-    detail = state.error or "no error detail was recorded"
-    print(_explain(state.status, detail), file=err)
+    print(stop_explanation(state, interactive=True), file=err)
     if state.blocked_tool_calls:
         print("Unresolved tool calls: " + ", ".join(state.blocked_tool_calls)
               + ". Inspect with --inspect-session and resolve them before resuming.", file=err)
+
+
+# Turn limits: status -> (CLI option, used counter, limit field).
+LIMITS = {
+    RunStatus.MAX_STEPS_EXCEEDED: ("max-steps", "step", "max_steps"),
+    RunStatus.MAX_MODEL_CALLS_EXCEEDED: ("max-model-calls", "model_calls", "max_model_calls"),
+    RunStatus.MAX_TOOL_CALLS_EXCEEDED: ("max-tool-calls", "tool_calls", "max_tool_calls"),
+}
+
+
+def stop_explanation(state, *, interactive):
+    """Explain why an unfinished turn stopped and how to continue it."""
+    status = RunStatus(state.status)
+    if status in LIMITS:
+        return _limit_explanation(state, status, interactive)
+    detail = state.error or "no error detail was recorded"
+    text = _explain(status, detail)
+    if status == RunStatus.USAGE_UNAVAILABLE:
+        text += ("\nAutomatic model retries (--model-retries) stop here: a failed attempt (for example a "
+                 "transport timeout) reported no usage, so the token budget cannot be checked before another "
+                 "billed request. Verify provider usage, record it with --resolve-usage, then --resume.")
+    return text
+
+
+def _limit_explanation(state, status, interactive):
+    option, used_field, limit_field = LIMITS[status]
+    used, limit = getattr(state, used_field), getattr(state, limit_field)
+    sid = state.session_id or "<id>"
+    if status == RunStatus.MAX_TOOL_CALLS_EXCEEDED:
+        raise_options = f"--max-tool-calls {max(used, limit) * 2}"
+    else:
+        # Steps and model calls advance together; raise both so the other
+        # limit does not stop the resumed turn immediately.
+        raise_options = (f"--max-steps {max(state.step, state.max_steps) * 2} "
+                         f"--max-model-calls {max(state.model_calls, state.max_model_calls) * 2}")
+    lines = [
+        f"{_explain(status, '')}{option} {used}/{limit} used "
+        f"(steps {state.step}/{state.max_steps}, model calls {state.model_calls}/{state.max_model_calls}, "
+        f"tool calls {state.tool_calls}/{state.max_tool_calls}).",
+        "The turn is unfinished. --resume continues this same turn and keeps the used counts, so raise "
+        f"the limit above the used value: baseagent --session {sid} --resume {raise_options}",
+    ]
+    if interactive:
+        lines.append("Sending another message here resumes the same turn with the same limits and stops "
+                     "again; exit (/exit) and run the command above. /status shows the session ID and usage.")
+    return "\n".join(lines)
 
 
 def _explain(status, detail):
@@ -201,6 +246,7 @@ def _print_status(store, state, session_id, workspace, out):
     print(f"Workspace: {current.workspace_root or workspace.root}", file=out)
     print(f"Turn: {current.turn_id or '(none)'}", file=out)
     print(f"Tokens: {current.total_tokens} reported; {current.unknown_usage_calls} unknown usage calls", file=out)
-    print(f"Attempts: steps {current.step}, model {current.model_calls}, tools {current.tool_calls}", file=out)
+    print(f"Attempts: steps {current.step}/{current.max_steps}, model {current.model_calls}/{current.max_model_calls}, "
+          f"tools {current.tool_calls}/{current.max_tool_calls}", file=out)
     if current.max_total_tokens is not None:
         print(f"Token budget: {current.max_total_tokens}", file=out)

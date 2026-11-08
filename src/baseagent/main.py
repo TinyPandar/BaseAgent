@@ -46,7 +46,10 @@ get_instructions provides the instruction digest; use expected_sha256='missing'.
 Use update_plan for substantial work and verify_command for actual checks. A plan
 marked completed is not test evidence. Truncated file data is incomplete; request
 smaller line ranges before editing. On conflicts, read the latest content again.
-Use recall_memory/read_history to recover prior session decisions. Reference notes
+Answer greetings, small talk and general questions that do not depend on earlier
+work directly, without calling get_task_state, recall_memory or read_history.
+Use those tools only when the user refers to earlier tasks, plans, memory or
+conversation, or to recover prior session decisions. Reference notes
 and agent-authored summaries can be wrong; verify original sources and current
 files. Never store credentials in memory. Summaries may cover completed old turns
 only, and must preserve goals, constraints, decisions and remaining work.
@@ -91,6 +94,53 @@ def _trace_preview(value, limit):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+DEFAULT_MODEL_RETRIES = 2
+CHAT_MAX_STEPS = 16
+CHAT_WRAPUP_HINT_STEPS = 2
+
+# Tool-side result caps: (argument name, default) used to explain truncation.
+RESULT_LIMITS = {"glob": ("max_results", 200), "grep": ("max_matches", 100)}
+PREVIEW_ITEMS = 10
+
+
+def _list_preview(name, arguments, data, limit, max_items=PREVIEW_ITEMS):
+    """Describe list-shaped results by count; None when the result is not a list."""
+    if isinstance(data, list):
+        items, truncated = data, False
+    elif isinstance(data, dict):
+        lists = [value for value in data.values() if isinstance(value, list)]
+        if len(lists) != 1:
+            return None
+        items, truncated = lists[0], data.get("truncated") is True
+    else:
+        return None
+    try:
+        values = json.loads(arguments or "{}")
+    except ValueError:
+        values = {}
+    key, default = RESULT_LIMITS.get(name, (None, None))
+    cap = values.get(key, default) if isinstance(values, dict) else default
+    if type(cap) is not int:
+        cap = default
+    if truncated and cap is not None and len(items) >= cap:
+        tool = f"tool stopped at {key}={cap}; more may exist"
+    elif truncated and name == "grep":
+        tool = "tool returned all matches; some long lines were clipped"
+    elif truncated:
+        tool = "tool reported its result as truncated"
+    else:
+        tool = "tool returned the complete result"
+    shown = items[:max_items]
+    omitted = len(items) - len(shown)
+    lines = [f"tool result: {len(items)} item{'' if len(items) == 1 else 's'} ({tool}); "
+             + (f"preview shows first {len(shown)}, {omitted} more not shown" if omitted else "preview shows all")]
+    for item in shown:
+        if isinstance(item, dict) and {"path", "line"} <= item.keys():
+            item = f"{item['path']}:{item['line']}: {item.get('text', '')}"
+        lines.append("  " + _trace_preview(item, limit))
+    return "\n".join(lines)
+
+
 class TraceMiddleware(AgentMiddleware):
     def __init__(self, *, preview_chars=0, steps=True):
         self.preview_chars = preview_chars
@@ -111,9 +161,11 @@ class TraceMiddleware(AgentMiddleware):
                 print(f"tool result: {_trace_preview(detail, self.preview_chars)}", file=sys.stderr)
             else:
                 print(f"tool result: {result.error.code}", file=sys.stderr)
+        elif self.preview_chars:
+            listing = _list_preview(request.name, request.arguments, result.data, self.preview_chars)
+            print(listing or f"tool result: {_trace_preview(result.data, self.preview_chars)}", file=sys.stderr)
         else:
-            print(f"tool result: {_trace_preview(result.data, self.preview_chars)}" if self.preview_chars
-                  else "tool result: ok", file=sys.stderr)
+            print("tool result: ok", file=sys.stderr)
         return result
 
 
@@ -176,8 +228,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--accept-config-changes", action="store_true", help="Explicitly accept changed runtime/tools for an unfinished turn")
     parser.add_argument("--accept-workspace-changes", action="store_true", help="Acknowledge changed observed files/guidance; stale write hashes remain rejected")
     parser.add_argument("--model", default=None, help="Model name (default: BASEAGENT_LLM_MODEL or DEEPSEEK_MODEL)")
-    parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8; resume: preserve)")
-    parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries (defaults to max-steps)")
+    parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8, interactive chat: 16; resume: preserve)")
+    parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries and failed attempts (defaults to max-steps)")
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
     parser.add_argument("--compaction-max-chars", type=int, help="Legacy explicit JSON character trigger for summaries (0 disables compaction; resume: preserve)")
     parser.add_argument("--compaction-keep-turns", type=int, help="Recent user turns to preserve including the active turn (default 2)")
@@ -198,7 +250,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--spill-preview-chars", type=int, help="Preview characters in a fresh spill stub (default 2048)")
     parser.add_argument("--spill-head-lines", type=int, help="Lines to include at the start of spill previews (default 20)")
     parser.add_argument("--spill-tail-lines", type=int, help="Lines to include at the end of spill previews (default 10)")
-    parser.add_argument("--wrapup-hint-steps", type=int, help="Inject a wrap-up hint at or below this many remaining steps (0 disables; recommended 3)")
+    parser.add_argument("--wrapup-hint-steps", type=int, help="Inject a wrap-up hint at or below this many remaining steps (0 disables; default: 2 in interactive chat, 0 otherwise)")
     parser.add_argument("--repeat-call-guard", action=argparse.BooleanOptionalAction, default=None, help="Warn on repeated identical calls and block the third (resume: preserve)")
     parser.add_argument("--dedupe-reads", action=argparse.BooleanOptionalAction, default=None, help="Return a short reference for unchanged repeated file reads (resume: preserve)")
     parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=None, help="Stream model tokens as model_delta events (resume: preserve)")
@@ -213,7 +265,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--preauthorize-model", action=argparse.BooleanOptionalAction, default=None, help="Require trusted adapter request reservations; default CLI adapter has no prompt counter and refuses before dispatch")
     parser.add_argument("--accept-request-bound-violation", action="store_true", help="Acknowledge a verified request bound violation after repairing the adapter counter; usage/budgets remain")
     parser.add_argument("--max-duration-seconds", type=float, help="Wall duration from original turn start, including time between resumes")
-    parser.add_argument("--model-retries", type=int, default=0, help="Retries after transient model errors (0-4; default disabled)")
+    parser.add_argument("--model-retries", type=int, default=DEFAULT_MODEL_RETRIES, help="Retries after transport timeouts and transient model errors; each retry is a billed model attempt (0-4; default 2)")
     parser.add_argument("--tool-retries", type=int, default=0, help="Retries of explicitly safe, retryable tool failures (0-4)")
     parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
@@ -260,6 +312,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     database_operation = args.list_sessions or args.backup_db is not None or args.cleanup_days is not None
     operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages
     interactive = not operation and args.prompt is None
+    if interactive:
+        # Chat turns are open-ended; one-shot defaults stay unchanged for scripts.
+        if args.max_steps is None:
+            args.max_steps = CHAT_MAX_STEPS
+            if args.max_model_calls is None:
+                args.max_model_calls = CHAT_MAX_STEPS
+        if args.wrapup_hint_steps is None:
+            args.wrapup_hint_steps = CHAT_WRAPUP_HINT_STEPS
     if (args.eval_report or args.eval_case) and not args.eval_harness:
         parser.error("evaluation report/cases require --eval-harness")
     if args.eval_harness and (args.prompt is not None or args.session or args.root):
@@ -602,6 +662,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         print(f"Agent error: {state.error}")
     if state.status != "completed":
         print(f"Agent stopped: {state.status} (steps: {state.step}, model attempts: {state.model_calls}, tool attempts: {state.tool_calls})")
+        from baseagent.cli_chat import LIMITS, stop_explanation
+        if state.status in LIMITS or state.status == "usage_unavailable":
+            print(stop_explanation(state, interactive=False), file=sys.stderr)
         if state.blocked_tool_calls:
             print("Inspect with --inspect-session; verify external effects before --resolve-tool.", file=sys.stderr)
         return 130 if state.status == "interrupted" else 1
