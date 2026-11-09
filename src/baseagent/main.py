@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+from decimal import Decimal
 import os
 import sqlite3
 import sys
@@ -14,7 +15,8 @@ from dotenv import load_dotenv
 
 from baseagent.agent import run_agent
 from baseagent.agent.completion import CompletionPolicy
-from baseagent.agent.router import MAIN_AGENT_PROMPT, WorkerRuntime, is_main_agent_session
+from baseagent.agent.router import MAIN_AGENT_MODE, MAIN_AGENT_PROMPT, SINGLE_AGENT_MODE, is_main_agent_session
+from baseagent.agent.workers import SessionTagMiddleware, SharedBudgetMiddleware, TurnBudget, WorkerManager
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
@@ -98,6 +100,7 @@ def _trace_preview(value, limit):
 DEFAULT_MODEL_RETRIES = 2
 CHAT_MAX_STEPS = 16
 CHAT_WRAPUP_HINT_STEPS = 2
+CHAT_MAX_WORKERS = 2
 
 # Tool-side result caps: (argument name, default) used to explain truncation.
 RESULT_LIMITS = {"glob": ("max_results", 200), "grep": ("max_matches", 100)}
@@ -143,30 +146,32 @@ def _list_preview(name, arguments, data, limit, max_items=PREVIEW_ITEMS):
 
 
 class TraceMiddleware(AgentMiddleware):
-    def __init__(self, *, preview_chars=0, steps=True):
+    def __init__(self, *, preview_chars=0, steps=True, emit=None):
         self.preview_chars = preview_chars
         self.steps = steps
+        # Workers emit into the chat's notice queue instead of the live terminal.
+        self.emit = emit or (lambda line: print(line, file=sys.stderr))
 
     def before_model(self, state):
         if self.steps:
-            print(f"model step {state.step + 1}/{state.max_steps}", file=sys.stderr)
+            self.emit(f"model step {state.step + 1}/{state.max_steps}")
 
     def wrap_tool_call(self, request, handler):
-        print(f"tool: {request.name}", file=sys.stderr)
+        self.emit(f"tool: {request.name}")
         if self.preview_chars:
-            print(f"tool args: {_trace_preview(request.arguments, self.preview_chars)}", file=sys.stderr)
+            self.emit(f"tool args: {_trace_preview(request.arguments, self.preview_chars)}")
         result = handler(request)
         if not result.ok:
             if self.preview_chars:
                 detail = f"{result.error.code}: {result.error.message}"
-                print(f"tool result: {_trace_preview(detail, self.preview_chars)}", file=sys.stderr)
+                self.emit(f"tool result: {_trace_preview(detail, self.preview_chars)}")
             else:
-                print(f"tool result: {result.error.code}", file=sys.stderr)
+                self.emit(f"tool result: {result.error.code}")
         elif self.preview_chars:
             listing = _list_preview(request.name, request.arguments, result.data, self.preview_chars)
-            print(listing or f"tool result: {_trace_preview(result.data, self.preview_chars)}", file=sys.stderr)
+            self.emit(listing or f"tool result: {_trace_preview(result.data, self.preview_chars)}")
         else:
-            print("tool result: ok", file=sys.stderr)
+            self.emit("tool result: ok")
         return result
 
 
@@ -220,7 +225,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--approval-digest", help="Reviewed request digest from --inspect-session")
     parser.add_argument("--tool-policy", type=Path, help="JSON tool/parameter policy with allow/deny/ask actions")
     parser.add_argument("--subtasks-config", type=Path, help="Debugging/library entry: named sequential subtasks from a JSON configuration (not used by the main agent)")
-    parser.add_argument("--main-agent", action=argparse.BooleanOptionalAction, default=None, help="Interactive chat as a main agent that only talks and delegates to one generic worker (default on for new chat sessions; existing sessions keep their mode)")
+    parser.add_argument("--main-agent", action=argparse.BooleanOptionalAction, default=None, help="Interactive chat as a main agent that only talks and dispatches background workers (default on for new chat sessions; existing sessions keep their mode)")
+    parser.add_argument("--max-workers", type=int, help=f"Main-agent chat: workers that may be active at once (default {CHAT_MAX_WORKERS}); extra delegations are rejected, and only one worker may write at a time")
+    parser.add_argument("--budget-cny", help="Main-agent chat: CNY per main-agent turn shared by the main agent and its workers, charged from reported usage at qwen-plus rates (input 0.8, output 2 CNY per million tokens); off by default")
     parser.add_argument("--request-bound-profile", choices=["deepseek-context-v1"], help="Explicit conservative whole-context bound for official DeepSeek Flash/Pro; requires --preauthorize-model")
     parser.add_argument("--max-completion-tokens", type=int, default=4096, help="Output cap for strict or estimated reservations (default: 4096)")
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
@@ -328,6 +335,16 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("--main-agent applies to interactive chat; one-shot prompts stay single-agent")
     if args.main_agent and args.subtasks_config:
         parser.error("--subtasks-config is a named-subtask debugging entry; use it with --no-main-agent")
+    if (args.max_workers is not None or args.budget_cny is not None) and args.prompt is not None:
+        parser.error("--max-workers and --budget-cny apply to main-agent chat; one-shot prompts stay single-agent")
+    if args.max_workers is not None and args.max_workers < 1:
+        parser.error("--max-workers must be positive")
+    if args.budget_cny is not None:
+        try:
+            if not Decimal(args.budget_cny) > 0:
+                raise ValueError
+        except (ArithmeticError, ValueError):
+            parser.error("--budget-cny must be a positive number")
     if args.eval_harness and (args.prompt is not None or args.session or args.root):
         parser.error("evaluation uses isolated fixtures; omit prompt, session and root")
     if args.list_tool_packages and (args.prompt is not None or args.session):
@@ -545,6 +562,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                   + " the main agent and keeps that mode.", file=sys.stderr)
         if main_agent and args.subtasks_config:
             raise ValueError("--subtasks-config cannot be combined with a main-agent session")
+        if main_agent and args.prompt is not None:
+            # Results of background workers are pushed into a chat; a one-shot prompt has none.
+            raise ValueError(f"session {args.session} is a main-agent chat session; a one-shot prompt runs a single "
+                             f"agent and cannot continue it. Continue it in chat: baseagent --session {args.session}")
         if args.subtasks_config:
             from baseagent.agent.subtasks import SubtaskRuntime
             configuration = read_json_object(args.subtasks_config, max_bytes=32000, label="subtask configuration")
@@ -630,24 +651,72 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                  else assemble_capabilities(workspace, packages=args.tool_package, skills=skills))
         if skills is not None:
             layers.append(SkillMiddleware(skills))
+        base_layers = list(layers)
         if interactive:
             layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
         elif args.trace:
             layers.append(TraceMiddleware())
+        retry_layers = []
         if args.model_retries or args.tool_retries:
-            layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
+            retry_layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
+        layers.extend(retry_layers)
         model = model_factory(args) if model_factory is not None else LazyModel()
         session = {"id": args.session}
         prompt = system_prompt
+        workers = None
+        # Chat sessions record their mode; one-shot sessions keep their original metadata.
+        if interactive:
+            layers.insert(0, SessionTagMiddleware(session_mode=MAIN_AGENT_MODE if main_agent else SINGLE_AGENT_MODE))
         if main_agent:
-            # The worker gets exactly the entry's tools and prompt; the main agent only delegates.
-            subtasks = WorkerRuntime(tools, system_prompt=system_prompt)
+            # Workers get exactly the entry's tools and prompt; the main agent only dispatches.
+            # Streaming deltas would print from worker threads into the prompt line, so workers never stream.
+            worker_config = {key: value for key, value in config.items() if key != "stream"}
+
+            def run_worker(user_input, *, session_id, tools, system_prompt, max_steps, max_model_calls, max_tool_calls,
+                           middleware, cancellation, emit, metadata):
+                return run_agent(
+                    model, user_input, tools=tools,
+                    middleware=[SessionTagMiddleware(**metadata), *base_layers,
+                                TraceMiddleware(preview_chars=200, steps=args.trace, emit=emit), *retry_layers, *middleware],
+                    system_prompt=system_prompt, max_steps=max_steps,
+                    max_model_calls=max_model_calls, max_tool_calls=max_tool_calls,
+                    store=store, session_id=session_id, workspace_root=workspace.root,
+                    compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
+                    max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
+                    runtime_config=worker_config, accept_config_changes=args.accept_config_changes,
+                    max_total_tokens=args.max_total_tokens, max_duration_seconds=args.max_duration_seconds,
+                    tool_policy=policy, cancellation=cancellation,
+                    estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model,
+                )
+
+            def turn_budget(resuming=False):
+                steps = args.max_steps
+                calls = args.max_model_calls
+                current = store.load(session["id"]) if resuming and session["id"] else None
+                if current is not None:
+                    steps, calls = steps or current.max_steps, calls or current.max_model_calls
+                steps = steps or CHAT_MAX_STEPS
+                budget = TurnBudget(calls or steps, steps, budget_cny=args.budget_cny)
+                if current is not None:
+                    # A resumed turn keeps what it already used.
+                    budget.model_calls, budget.steps = current.model_calls, current.step
+                return budget
+
+            workers = WorkerManager(tools, system_prompt=system_prompt, store=store, runner=run_worker,
+                                    max_workers=args.max_workers or CHAT_MAX_WORKERS, budget_factory=turn_budget)
+            subtasks = workers
             prompt = MAIN_AGENT_PROMPT
 
         def run_turn(user_input):
+            extra = []
+            if workers is not None:
+                # One shared budget per main-agent turn; workers started in it draw from the same pool.
+                # A resumed turn gets a fresh pool seeded with the main agent's own usage so far.
+                workers.budget = turn_budget(resuming=user_input is None)
+                extra.append(SharedBudgetMiddleware(workers.budget, worker=False))
             state = run_agent(
                 model, user_input, tools=tools,
-                middleware=layers,
+                middleware=[*layers, *extra],
                 system_prompt=prompt, max_steps=args.max_steps,
                 max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
                 store=store, session_id=session["id"], workspace_root=workspace.root,
@@ -665,8 +734,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
         if interactive:
             from baseagent.cli_chat import run_chat
-            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace, main_agent=main_agent)
+            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace,
+                            main_agent=main_agent, workers=workers)
+        if workers is not None:
+            workers.restore(existing)
         state = run_turn(args.prompt)
+        if workers is not None:
+            # --resume of a main-agent turn: there is no chat to push into, so wait and print the results.
+            from baseagent.cli_chat import finish_workers
+            finish_workers(workers, sys.stdout, sys.stderr)
     except KeyboardInterrupt:
         return 130
     except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:

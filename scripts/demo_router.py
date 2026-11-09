@@ -1,4 +1,4 @@
-"""Offline main-agent demo. No provider calls.
+"""Offline demo of the synchronous WorkerRuntime library entry. No provider calls.
 
 One continuous session: small talk is answered without a worker, a read is
 delegated to one generic worker whose tool body never reaches the main window,
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from baseagent.agent import run_agent  # noqa: E402
-from baseagent.agent.router import MAIN_AGENT_PROMPT, WorkerRuntime, isolation_report, route  # noqa: E402
+from baseagent.agent.router import SEQUENTIAL_MAIN_AGENT_PROMPT, WorkerRuntime, isolation_report, route  # noqa: E402
 from baseagent.llm.response import ModelResponse, TokenUsage  # noqa: E402
 from baseagent.session import SessionStore  # noqa: E402
 from baseagent.tools.policy import ToolPolicy  # noqa: E402
@@ -63,7 +63,7 @@ def main():
     turns = []
     for prompt in (greeting, question, change):
         state = run_agent(main_agent, prompt, tools=tools, store=store, session_id="main-agent-demo",
-                          workspace_root=root, subtasks=runtime, system_prompt=MAIN_AGENT_PROMPT,
+                          workspace_root=root, subtasks=runtime, system_prompt=SEQUENTIAL_MAIN_AGENT_PROMPT,
                           tool_policy=policy, max_steps=16)
         nodes = store.task_tree("main-agent-demo")["nodes"]
         turns.append({"prompt": prompt, "debug_route": route(prompt)["action"], "status": state.status,

@@ -173,31 +173,38 @@ def test_chat_main_agent_worker_inherits_knowledge_tools(project, capsys):
     root, index, db = project
     assert build(root, index) == 0
     capsys.readouterr()
-    seen = []
+    main_seen, worker_seen = [], []
 
+    # Workers run in the background, so calls are routed by role instead of by global order.
     def complete(messages, tools):
         names = [t["function"]["name"] for t in tools]
-        seen.append(names)
-        if len(seen) == 1:
-            response = {"tool_calls": [{"id": "d1", "type": "function", "function": {
-                "name": "delegate_task", "arguments": '{"task":"Explain the kernel with citations"}'}}]}
-        elif len(seen) == 2:
-            response = {"tool_calls": [{"id": "search-1", "type": "function", "function": {
-                "name": "knowledge_search", "arguments": '{"query":"kernel"}'}}]}
-        elif len(seen) == 3:
-            evidence = json.loads(messages[-1]["content"])["data"]["evidence"]
-            response = {"content": "The kernel executes tools. " + evidence[0]["citation"]}
+        if "delegate_task" in names:
+            main_seen.append(names)
+            if len(main_seen) == 1:
+                response = {"tool_calls": [{"id": "d1", "type": "function", "function": {
+                    "name": "delegate_task", "arguments": '{"task":"Explain the kernel with citations"}'}}]}
+            elif len(main_seen) == 2:
+                response = {"content": "Dispatched w1."}
+            else:
+                assert '"status": "completed"' in messages[-1]["content"]
+                response = {"content": "Answer from the worker report."}
         else:
-            response = {"content": "Answer from the worker report."}
+            worker_seen.append(names)
+            if len(worker_seen) == 1:
+                response = {"tool_calls": [{"id": "search-1", "type": "function", "function": {
+                    "name": "knowledge_search", "arguments": '{"query":"kernel"}'}}]}
+            else:
+                evidence = json.loads(messages[-1]["content"])["data"]["evidence"]
+                response = {"content": "The kernel executes tools. " + evidence[0]["citation"]}
         return ModelResponse(response, TokenUsage(3, 2, 5))
 
     model = type("ChatModel", (), {"complete": staticmethod(complete)})()
-    with patch("builtins.input", side_effect=["Explain kernel", "/exit"]):
+    with patch("builtins.input", side_effect=["Explain kernel", "/wait", "What did it find?", "/exit"]):
         assert main(["ask", "--root", str(root), "--index-dir", str(index), "--db", str(db),
                      "--mock-embedding", "--session", "chat"], model_factory=lambda args: model) == 0
     assert "Answer from the worker report." in capsys.readouterr().out
-    assert seen[0] == ["delegate_task"] and seen[3] == ["delegate_task"]
-    assert {"knowledge_search", "git_log", "git_show", "git_pickaxe"} <= set(seen[1])
-    assert not {"write_file", "edit_file", "run_command", "delegate_task"} & set(seen[1])
-    nodes = SessionStore(db).task_tree("chat")["nodes"]
-    assert [node["name"] for node in nodes] == ["worker"]
+    assert all(names == ["delegate_task", "message_worker"] for names in main_seen) and len(main_seen) == 3
+    assert {"knowledge_search", "git_log", "git_show", "git_pickaxe"} <= set(worker_seen[0])
+    assert not {"write_file", "edit_file", "run_command", "delegate_task", "message_worker"} & set(worker_seen[0])
+    worker = SessionStore(db).load("chat-w1")
+    assert worker.status == "completed" and worker.metadata["main_session"] == "chat"
