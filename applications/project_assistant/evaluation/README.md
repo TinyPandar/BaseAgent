@@ -364,6 +364,18 @@ Every stored `evidence_sha256` still matched the cited line slice. Gold ranges
 and answer summaries were not regenerated. Published hybrid MRR 0.845 was not
 recomputed.
 
+## Corpus rebind (2026-11-09, full-duplex branch)
+
+`corpus_version` moved from `4a21c5d6199e1e5d` to `67b239e3418916cc` on
+`plan/superagent-full-duplex` after the full-duplex main-agent changes. It was
+rebound with `python scripts/rebind_corpus_version.py --write`, which also
+found that stale-07's `src/baseagent/main.py:277-278` had drifted to `286-287`
+and moved the reference. The hash was unchanged. Every other stored
+`evidence_sha256` still matched. Gold ranges and answer summaries were not
+regenerated. Published hybrid MRR 0.845 was not recomputed. This value is for
+reference only: the README construction section is part of the corpus, so run
+`--check` / `--write` again after it is deleted at merge.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
