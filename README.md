@@ -21,7 +21,7 @@
 | 流式 / 并行只读 / resume | 离线已接 | 付费冒烟未跑 |
 | 生成答案质量评测 | 离线管道 | 真实 80 题未跑 |
 | Watchdog | 有，默认关闭 | 任务级停滞 / 重复 / 预算 / 超时；不是调用前安全拦截 |
-| 主 Agent / Worker（原 Router） | 有，连续对话默认开启 | 主 Agent 只对话和分派，一次派生一个通用 Worker（入口工具，默认只读）；只回摘要和引用，写入走原审批；比单 Agent 多约 2 次付费模型调用；离线测试，付费冒烟未跑；一次性 CLI 不变 |
+| 主 Agent / Worker（原 Router） | 有，连续对话默认开启 | 全双工，最多 N 个 worker 并行（`--max-workers`，默认 2），写入同时只有一个；派出即返回，结果自动推送；只回摘要和引用，写入走原审批；离线测试，付费冒烟未跑；一次性 CLI 不变 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
 | Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
@@ -209,7 +209,7 @@ uv run baseagent --eval-harness
 
 不带任务直接运行 `baseagent` 会进入连续对话：每行输入开始一轮，自动创建并复用同一个会话，无需每轮传 `--session`。`baseagent "task"` 仍是一次性命令，脚本和现有调用不变；指定 `--session demo` 时交互模式复用该会话。输入 `/exit` 或 `/quit` 退出，`/status` 查看会话 ID、状态、令牌、工作区，以及已用/上限的步数、模型次数和工具次数。`Ctrl+C` 只取消当前轮并回到输入提示（空闲提示符下再按一次退出）；工具调用会显示名称、截断的参数和结果预览。列表类结果（如 `glob`、`grep`）的预览先写明总条数、预览显示了几条、还有几条未显示，以及工具本身是否因 `max_results` / `max_matches` 截断；预览最多列 10 条，单条过长仍会截断。
 
-新的连续对话默认是主沟通 Agent：它只回答和分派，自己不读、不改文件，也不跑命令。需要动手时调用 `delegate_task`，派生一个通用执行 Worker。Worker 在独立子节点里用本入口已授权的工具（默认只读子集；用户明确要求修改时才允许写入），结束后只把摘要、引用、路径、call id 和 spill ref 交回主 Agent。Worker 的审批直接在对话里 `y` / `N`；它失败或用完自己的上限时，对话用中文说明。`/status` 会显示 Worker 状态。派生会比单 Agent 多约 2 次付费模型调用，额度仍受下面的 16 次上限约束，并为主 Agent 回复预留 1 次。已有会话保持创建时的模式；`--no-main-agent` 回到以前自己执行工具的单 Agent 对话。细节见 [docs/router_worker.md](docs/router_worker.md)。
+新的连续对话默认是主沟通 Agent：它只回答和分派，自己不读、不改文件，也不跑命令。需要动手时调用 `delegate_task`，在后台派出通用执行 Worker，立刻返回 `w1` 这样的 id，对话不等它。Worker 用本入口已授权的工具（默认只读子集；用户明确要求修改时才允许写入），在自己的会话里运行；结束后摘要、引用、路径、call id 和 spill ref 自动推送回对话（在两次提示之间打印，并附在下一条消息前交给主 Agent）。只读 Worker 可以并行，`--max-workers N`（默认 2）限制同时活跃的数量，写入 Worker 同一时间只有一个，超出时直接拒绝并说明原因。`/status` 列出所有 Worker，`/wait` 等它们跑完，`/cancel <id|all>` 取消，`/tell <id> <text>` 补要求。Worker 的审批在对话里逐条 `y` / `N`。主 Agent 这一轮和它派出的 Worker 共用下面的 16 次额度（以及可选的 `--budget-cny`），并为主 Agent 回复预留 1 次。已有会话保持创建时的模式；`--no-main-agent` 回到以前自己执行工具的单 Agent 对话；一次性 `baseagent "task" --session <主 Agent 会话>` 会被拒绝。细节见 [docs/router_worker.md](docs/router_worker.md)。
 
 连续对话在未显式传参时使用更宽松的默认值：`--max-steps 16`、`--max-model-calls 16`、`--wrapup-hint-steps 2`；一次性 `baseagent "task"` 仍为 8 / 8 / 关闭。显式传参（或 `--config`）以用户为准。上限从 8 提到 16，回合跑满时模型调用最多约多一倍。用尽上限时会写明撞上的是哪条限制（`max-steps` / `max-model-calls` / `max-tool-calls`）和已用/上限。`--resume` 接着同一未完成回合，已用计数不清零，所以要把上限提高到已用值之上，例如 `baseagent --session <id> --resume --max-steps 32 --max-model-calls 32`。在对话里直接再发一条消息，会先用原上限续跑同一回合，因此会再次停住；需退出后按提示的命令继续。只有上一回合完成后，新输入才会开新回合并重置计数。需要批准的工具调用在终端询问 `Allow ...? [y/N]`，批准/拒绝沿用 `--tool-policy` 和 `--allow-write` / `--allow-command` 的能力边界，批准不会授予工作区未开启的能力。
 
@@ -682,7 +682,7 @@ The library accepts `run_agent(..., subtasks=SubtaskRuntime([...]))`. Define tas
 .\.venv\Scripts\python.exe -m baseagent --session delegation-demo --resume --subtasks-config examples/subtasks.json
 ```
 
-Named subtasks are a library interface and an explicit debugging entry; continuous chat does not use them and never requires `--subtasks-config` (it delegates to one generic worker, see [docs/router_worker.md](docs/router_worker.md)). `--subtasks-config` cannot be combined with `--main-agent`; pass `--no-main-agent` to use it in chat. Supplying `--subtasks-config` explicitly enables the `run_subtask(name, prompt)` tool. JSON accepts `tasks`, `max_depth`, `max_nodes`; each task requires `name` and `tools`, and can specify `system_prompt`, a normal tool `policy`, and local limit fields. Duplicate keys, nonfinite numbers, unknown fields and tools absent from the root registry are refused. The example authorizes only file-reading tools. Workspace write/command/publication permissions still come from the original handlers and capability switches.
+Named subtasks are a library interface and an explicit debugging entry; continuous chat does not use them and never requires `--subtasks-config` (it dispatches generic background workers, see [docs/router_worker.md](docs/router_worker.md)). `--subtasks-config` cannot be combined with `--main-agent`; pass `--no-main-agent` to use it in chat. Supplying `--subtasks-config` explicitly enables the `run_subtask(name, prompt)` tool. JSON accepts `tasks`, `max_depth`, `max_nodes`; each task requires `name` and `tools`, and can specify `system_prompt`, a normal tool `policy`, and local limit fields. Duplicate keys, nonfinite numbers, unknown fields and tools absent from the root registry are refused. The example authorizes only file-reading tools. Workspace write/command/publication permissions still come from the original handlers and capability switches.
 
 Child tool registries reuse authorized parent handlers and select only available parent tool names. Nested tasks cannot gain a tool absent from their parent. Effective policy takes the stricter parent/child action, and approvals bind that combined policy and the node turn. Parent middleware is inherited; extra library task middleware can be configured explicitly. Cycles are refused, and depth/quantity limits apply before node creation.
 

@@ -997,6 +997,14 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(report["main_agent_tools"], ["delegate_task"])
         self.assertEqual(report["cost_cny"], 0)
 
+    def test_offline_duplex_demo_runs(self):
+        # AC27
+        completed = self.run_script("demo_duplex.py")
+        report = json.loads(completed.stdout.strip().splitlines()[-1])
+        self.assertEqual(report["cost_cny"], 0)
+        self.assertEqual(report["workers"], {"w1": "cancelled", "w2": "completed"})
+        self.assertTrue(report["chatted_while_running"])
+
 
 if __name__ == "__main__":
     unittest.main()
