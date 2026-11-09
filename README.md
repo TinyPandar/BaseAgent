@@ -92,6 +92,42 @@
 
 **交付**：小步提交，提交说明写清对应 AC；不要删本段（PM 合并时删）；完成后在本段末尾列出每条 AC 的状态和对应测试名。
 
+### 完成情况（实现者填写）
+
+设计说明和取舍见 [docs/router_worker.md](docs/router_worker.md)。测试都离线、零付费调用；并发测试用事件、Gate 和 Barrier 控制，不靠 sleep。下面的测试名不带前缀时都在 `tests/test_main_agent.py`。
+
+| AC | 状态 | 测试 / 证据 |
+| --- | --- | --- |
+| AC1 立即返回 | 完成；「同一轮回用户一句」靠提示词 | `test_delegate_returns_immediately_and_result_is_pushed` |
+| AC2 运行中可继续聊 | 完成 | `test_chat_answers_while_worker_is_blocked` |
+| AC3 自动推送 | 完成（完成/失败/取消/待审批都推） | `test_delegate_returns_immediately_and_result_is_pushed`、`test_worker_failure_explains_and_retries_in_chat`、`test_cancel_all_stops_every_active_worker` |
+| AC4 推送进上下文 | 完成；转述质量靠提示词 | 同上（断言下一轮用户消息带推送 JSON、不带工具原文） |
+| AC5 终端不乱序 | 完成：提示之间打印；真实终端仅在输入行为空时打印在提示上方 | `test_pushes_never_split_a_line_being_typed`、`test_live_terminal_prints_only_above_an_empty_prompt` |
+| AC6 `--max-workers` | 完成，超限拒绝（不排队） | `test_max_workers_rejects_extra_delegation`、`test_worker_and_budget_options_are_chat_only` |
+| AC7 单写入者 | 完成；原因返回给主 Agent，转告用户靠提示词 | `test_only_one_writer_at_a_time`、`test_read_only_workers_run_in_parallel` |
+| AC8 预算共享 | 次数/步数完成且精确；CNY 为派发前检查，并发在途调用可能超一次 | `test_turn_budget_admission_is_atomic`、`test_shared_budget_is_never_exceeded_by_concurrent_workers`、`test_reply_hold_keeps_one_call_for_the_main_agent`、`test_budget_cny_*`、`test_worker_limit_is_reported_in_chinese_and_chat_stays_usable` |
+| AC9 `/status` | 完成 | `test_status_lists_every_worker_with_state_time_and_calls` |
+| AC10 `/cancel` | 完成；正在等模型 HTTP 响应时要等这次调用返回 | `test_cancel_stops_worker_and_kills_its_subprocess`（睡眠子进程已退出）、`test_cancel_all_stops_every_active_worker` |
+| AC11 补要求 | 完成（`message_worker` + `/tell`） | `test_tell_and_message_worker_inject_at_the_next_step` |
+| AC12 双工审批 | 完成；审批在下一次提示前提问，答完才回到对话输入 | `test_worker_write_waits_for_chat_approval`、`test_approval_wait_blocks_neither_other_workers_nor_chat` |
+| AC13 逐条审批 | 完成 | `test_parallel_approvals_are_asked_in_order_and_answer_only_the_shown_call` |
+| AC14 持久化 | 完成；进程崩溃时仍在跑的 worker 重启后记为 cancelled，不自动重跑 | `test_worker_status_survives_exit_and_resume`、`test_pending_worker_approval_survives_restart` |
+| AC15 退出处理 | 完成（`/exit` 询问；Ctrl+C 记录；EOF 等完再退） | `test_exit_with_running_worker_asks_then_cancels_and_records`、`test_exit_can_keep_waiting`、`test_ctrl_c_at_the_prompt_records_running_workers_as_cancelled`、`test_eof_waits_for_running_workers_and_prints_their_pushes` |
+| AC16 白盒说明 | 完成：线程，附时序图 | `docs/router_worker.md` |
+| AC17 不改压缩 | 完成：推送是用户消息的一部分，走现有规则 | 无新测试；压缩相关既有测试未改 |
+| AC18 corpus 重绑脚本 | 完成 | `scripts/rebind_corpus_version.py`、`tests/test_rebind_corpus_version.py` |
+| AC19 stale-07 | 完成；PM 删本段后需再跑一次 `--write` | 脚本发现 `main.py:277-278` 漂移并改到最终行号，哈希不变 |
+| AC20 会话模式元数据 | 完成 | `test_session_mode_is_recorded_in_metadata`、`test_mode_metadata_wins_and_old_sessions_fall_back_to_the_prompt`、`test_old_main_agent_session_without_metadata_keeps_its_mode` |
+| AC21 补测试 | 完成 | `test_read_only_worker_never_gets_run_command`、`test_worker_write_waits_for_chat_approval`（参数预览）、`test_worker_trace_preview_is_printed_between_prompts` |
+| AC22 一次性 `--session` | 完成：拒绝，退出码 1 | `test_one_shot_prompt_is_refused_for_a_main_agent_session` |
+| AC23 错误说明 | 完成 | `test_stop_without_error_text_explains_usage_and_how_to_continue` |
+| AC24 离线确定性 | 完成 | 上述全部；`tests/test_main_agent.py` 连跑 25 次全过 |
+| AC25 既有测试 | 完成：`test_cli_chat.py`、`test_router.py`、`test_subtasks.py` 未改动；`test_main_agent.py` 和 `tests/test_project_assistant_cli.py` 的对话测试按全双工改写，提交说明逐条解释 | 全量离线测试 |
+| AC26 README | 完成 | 对照表「主 Agent / Worker」行 |
+| AC27 演示 | 完成 | `docs/demo.md`、`scripts/demo_duplex.py`、`DemoTests.test_offline_duplex_demo_runs` |
+
+付费冒烟（qwen-plus/百炼）未跑。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
