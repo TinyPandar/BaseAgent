@@ -375,6 +375,16 @@ the reference. The hash was unchanged. Every other stored `evidence_sha256`
 still matched. Gold ranges and answer summaries were not regenerated. Published
 hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-10, TUI/WebUI merge)
+
+`corpus_version` moved from `5d294e3fd9450819` to `513708831331d11f` when
+`plan/tui-webui` was merged, after the shared chat session layer, the Textual
+TUI, the FastAPI + SSE web frontend, and the deletion of the README
+construction section. It was rebound with
+`python scripts/rebind_corpus_version.py --write`; no references moved and all
+101 stored `evidence_sha256` values still matched. Gold ranges and answer
+summaries were not regenerated. Published hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
