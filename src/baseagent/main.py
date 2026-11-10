@@ -293,6 +293,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--watchdog-max-tokens", type=int, help="Task token budget enforced by Watchdog (0 disables)")
     parser.add_argument("--watchdog-max-seconds", type=float, help="Task wall-clock budget enforced by Watchdog (0 disables)")
     parser.add_argument("--watchdog-tool-timeout", type=float, help="Single-tool timeout in seconds (0 disables)")
+    parser.add_argument("--ui", choices=["cli", "tui"], default="cli", help="Interactive chat frontend: cli (default, line-based) or tui (Textual; extra 'tui')")
     if configure_parser is not None:
         configure_parser(parser)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
@@ -397,6 +398,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("duration budget must be positive and finite")
     if not 0 <= args.model_retries <= 4 or not 0 <= args.tool_retries <= 4:
         parser.error("retry counts must be 0-4")
+    if args.ui != "cli" and not interactive:
+        parser.error("--ui tui applies to interactive chat; one-shot prompts and session operations stay on the CLI")
+    if args.ui != "cli":
+        missing = _missing_frontend(args.ui)
+        if missing:
+            print(missing, file=sys.stderr)
+            return 2
 
     # Defer provider configuration: inspection, reconciliation, and cached completion
     # need no model key and must not make an API call.
@@ -656,9 +664,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if interactive:
             from baseagent.chat import EventBuffer, ToolEventMiddleware
             chat_events = EventBuffer()
-            # Previews for chat frontends; observes only.
+            # Previews for chat frontends; observes only. The TUI shows these instead of stderr trace lines.
             layers.append(ToolEventMiddleware(chat_events))
-            layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
+            if args.ui == "cli":
+                layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
         elif args.trace:
             layers.append(TraceMiddleware())
         retry_layers = []
@@ -743,6 +752,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             from baseagent.chat import ChatSession
             chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
                                workers=workers, main_agent=main_agent, events=chat_events)
+            if args.ui == "tui":
+                from baseagent.tui.app import run_tui
+                return run_tui(chat)
             from baseagent.cli_chat import run_chat
             return run_chat(session=chat)
         if workers is not None:
@@ -772,3 +784,18 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             print("Inspect with --inspect-session; verify external effects before --resolve-tool.", file=sys.stderr)
         return 130 if state.status == "interrupted" else 1
     return 0
+
+
+# --ui frontend -> (install extra, modules it needs). Core installs stay unchanged.
+FRONTEND_EXTRAS = {"tui": ("tui", ("textual",))}
+
+
+def _missing_frontend(ui):
+    """One-line install hint when the optional frontend dependencies are missing."""
+    from importlib.util import find_spec
+    extra, modules = FRONTEND_EXTRAS[ui]
+    absent = [name for name in modules if find_spec(name) is None]
+    if not absent:
+        return None
+    return (f"--ui {ui} needs the optional '{extra}' extra ({', '.join(absent)} not installed): "
+            f"uv sync --extra {extra}  (or: pip install 'baseagent[{extra}]')")

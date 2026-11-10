@@ -27,6 +27,10 @@ baseagent-ui = "baseagent.ui.launch:main"
 ui = [
     "chainlit>=2.9,<3",
 ]
+# `baseagent --ui tui`: Textual terminal frontend for continuous chat.
+tui = [
+    "textual>=8,<9",
+]
 # Faithfulness loader target: transformers==4.57.1. Not a default dependency.
 # On that release, pipeline(local_files_only=True) does not reach cached_file.
 # The loader forces HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE, then passes
