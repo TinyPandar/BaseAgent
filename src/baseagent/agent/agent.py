@@ -115,7 +115,12 @@ def _apply_watchdog(state, checkpoint, *, raise_stop=True, **kwargs):
 def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_calls: int | None, max_tool_calls: int | None) -> None:
     if not user_input.strip():
         raise ValueError("user input must not be blank")
+    from baseagent.session.checkpoints import take_notices
     state.turn_start = len(state.messages)
+    notice = take_notices(state)
+    if notice:
+        # Files of an undone turn are back to their originals; say so once before the next prompt.
+        state.messages.append({"role": "system", "content": notice})
     state.messages.append({"role": "user", "content": user_input})
     state.turn_id = uuid4().hex
     state.step = state.model_calls = state.tool_calls = 0

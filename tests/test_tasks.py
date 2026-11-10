@@ -234,7 +234,7 @@ class TaskPersistenceTests(unittest.TestCase):
         self.assertEqual(upgraded.events("demo"), events)
         self.assertEqual(upgraded.task_tree("demo")["nodes"], [])
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
 
     def test_cli_tree_reads_without_provider_credentials(self):
         with self.store.exclusive("demo"):

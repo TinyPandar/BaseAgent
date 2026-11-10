@@ -251,7 +251,7 @@ class CancellationTests(unittest.TestCase):
         request = upgraded.request_cancellation("demo")
         self.assertEqual(upgraded.cancellation("demo", state.turn_id), request)
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
 
 
 if __name__ == "__main__":

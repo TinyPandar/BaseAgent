@@ -20,9 +20,12 @@ import threading
 import time
 
 from baseagent.agent.state import RunStatus
-from baseagent.agent.workers import AWAITING, INBOX_HEADER, PUSH_HEADER, USER_HEADER, preview
+from baseagent.agent.workers import ACTIVE, AWAITING, INBOX_HEADER, PUSH_HEADER, USER_HEADER, preview
 from baseagent.agent.workers import worker_label as duplex_worker_label
 from baseagent.session import SessionBusy
+from baseagent.session.checkpoints import CheckpointError, parse_target
+from baseagent.session.checkpoints import describe as describe_checkpoints
+from baseagent.session.checkpoints import summary as checkpoint_summary
 
 from .events import EventBuffer
 from .text import (arguments_preview, node_arguments_preview, pending_worker, status_lines, stop_explanation,
@@ -30,6 +33,7 @@ from .text import (arguments_preview, node_arguments_preview, pending_worker, st
 
 ERRORS = (ValueError, SessionBusy, OSError, sqlite3.Error)
 EXIT_COMMANDS = frozenset({"/exit", "/quit"})
+CHECKPOINT_COMMANDS = frozenset({"/checkpoints", "/undo", "/rewind"})
 ANY = object()
 STATUS_INTERVAL = 1.0
 HISTORY_LIMIT = 200
@@ -354,15 +358,21 @@ class ChatSession:
 
     # ----- commands ---------------------------------------------------------------------
     def command(self, text, *, blocking=True):
-        """/status always; /wait, /cancel, /tell in main-agent chat. False means: an ordinary chat line."""
+        """/status, /checkpoints, /undo, /rewind always; /wait, /cancel, /tell in main-agent chat.
+
+        False means: an ordinary chat line.
+        """
         if text == "/status":
             self._say("out", "\n".join(self.status_lines()))
             self.publish_status(force=True)
             return True
-        if self.workers is None:
-            return False
         command, _, rest = text.partition(" ")
         rest = rest.strip()
+        if command in CHECKPOINT_COMMANDS:
+            self.checkpoint_command(command, rest)
+            return True
+        if self.workers is None:
+            return False
         if command == "/wait":
             if not self.workers.running():
                 self._say("out", "No worker is running.")
@@ -391,6 +401,77 @@ class ChatSession:
             self.tell(worker_id, note.strip())
             return True
         return False
+
+    # ----- checkpoints (/checkpoints, /undo, /rewind) -------------------------------------
+    def checkpoint_command(self, command, rest):
+        words = rest.split()
+        force = "--force" in words
+        words = [word for word in words if word != "--force"]
+        if command == "/checkpoints":
+            if words or force:
+                self._fail("Usage: /checkpoints")
+                return None
+            return self.checkpoints()
+        if command == "/undo":
+            if words:
+                self._fail("Usage: /undo [--force]")
+                return None
+            return self.undo(force=force)
+        if len(words) != 1:
+            self._fail("Usage: /rewind <N> [--force]")
+            return None
+        try:
+            target = parse_target(words[0])
+        except ValueError:
+            self._fail("Usage: /rewind <N> [--force]（N 是 /checkpoints 里的轮次号）")
+            return None
+        return self.undo(target, force=force)
+
+    def checkpoints(self):
+        """List this session's file checkpoints (also the /checkpoints text)."""
+        if not self.session_id or self._stored_state() is None:
+            self._say("out", "还没有检查点：这个对话还没有开始第一轮。")
+            return {"session_id": self.session_id, "checkpoints": []}
+        try:
+            listing = self.store.checkpoints(self.session_id)
+        except ERRORS as exc:
+            self._fail(f"Could not read checkpoints: {exc}")
+            return None
+        self._say("out", describe_checkpoints(listing))
+        return listing
+
+    def undo_blockers(self):
+        """Why an undo must wait now (None when it may run): a running turn or an active writer."""
+        if self._busy:
+            return "撤销被拒绝：主 Agent 还在回复这一轮；等这一轮结束后再撤销。"
+        if self.workers is not None:
+            with self.workers._lock:
+                writers = [record for record in self.workers.records.values()
+                           if record.allow_writes and record.status in ACTIVE]
+            if writers:
+                names = "、".join(f"{record.id}（{'等待审批' if record.status == AWAITING else '运行中'}）"
+                                 for record in writers)
+                return f"撤销被拒绝：可写的 worker {names}还没结束。等它结束或 /cancel 后再撤销。"
+        return None
+
+    def undo(self, target="last", *, force=False):
+        """/undo and /rewind: restore the files of one or more turns. Returns the result or None."""
+        if not self.session_id or self._stored_state() is None:
+            self._fail("没有可撤销的检查点：这个对话还没有开始第一轮。")
+            return None
+        reason = self.undo_blockers()
+        if reason is not None:
+            self._fail(reason)
+            return None
+        try:
+            result = self.store.rewind(self.workspace, self.session_id, target, force=force)
+        except ERRORS as exc:
+            self._fail(str(exc) if isinstance(exc, CheckpointError) else f"Undo failed: {exc}")
+            return None
+        self.state = self._stored_state() or self.state
+        self._say("out", checkpoint_summary(result))
+        self.publish_status(force=True)
+        return result
 
     def cancel(self, target):
         """Cancel one worker or "all". Returns [(ok, message)]."""

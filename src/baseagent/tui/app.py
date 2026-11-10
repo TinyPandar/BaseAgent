@@ -134,7 +134,7 @@ class ChatApp(App):
         with Horizontal(id="main"):
             with Vertical(id="chat"):
                 yield RichLog(id="log", wrap=True, markup=False, highlight=False, auto_scroll=True)
-                yield Input(placeholder="输入任务或问题；/status、/cancel <id|all>、/tell <id> <text>、/exit", id="input")
+                yield Input(placeholder="输入任务或问题；/status、/checkpoints、/undo、/cancel <id|all>、/tell <id> <text>、/exit", id="input")
             with Vertical(id="side"):
                 yield Label("Workers", id="side-title")
                 yield DataTable(id="workers", cursor_type="row", zebra_stripes=True)

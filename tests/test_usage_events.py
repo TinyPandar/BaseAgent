@@ -232,7 +232,7 @@ run_agent(Model(), "task", tools=ToolRegistry(), store=SessionStore(sys.argv[1])
         self.assertEqual(migrated.events("demo"), [])
         with contextlib.closing(sqlite3.connect(self.path)) as connection:
             with connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
                 connection.execute("PRAGMA user_version=99")
         with self.assertRaisesRegex(ValueError, "unsupported"):
             SessionStore(self.path)

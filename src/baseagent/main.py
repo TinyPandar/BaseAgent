@@ -206,6 +206,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     operations.add_argument("--export-session", type=Path, metavar="JSON_FILE", help="Archive a consistent session snapshot")
     operations.add_argument("--backup-db", type=Path, metavar="SQLITE_FILE", help="Create a consistent, non-overwriting SQLite backup")
     operations.add_argument("--delete-session", action="store_true", help="Delete the named completed session")
+    operations.add_argument("--checkpoints", action="store_true", help="List per-turn file checkpoints of --session as JSON (no model access)")
+    operations.add_argument("--rewind", metavar="N|last", help="Restore files written by the agent in turn N and every later turn, or only the latest turn with 'last' (no model access)")
+    parser.add_argument("--force", action="store_true", help="--rewind: restore even files that changed after the agent wrote them")
     operations.add_argument("--cleanup-days", type=float, help="Preview completed sessions older than this age")
     parser.add_argument("--apply-cleanup", action="store_true", help="Apply --cleanup-days instead of previewing")
     parser.add_argument("--discard-unfinished", action="store_true", help="Explicitly discard an unfinished session with --delete-session")
@@ -321,7 +324,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         args.skills_dir = skills_default
     if (args.max_steps is not None and args.max_steps < 1) or (args.max_model_calls is not None and args.max_model_calls < 1) or (args.max_tool_calls is not None and args.max_tool_calls < 0):
         parser.error("step/model limits must be positive and tool limit nonnegative")
-    session_operation = args.resume or args.inspect_session or args.task_tree or args.acknowledge_task_bound or args.resolve_tool is not None or args.approve_tool is not None or args.deny_tool is not None or args.cancel_session or args.clear_cancel is not None or args.events or args.follow_events is not None or args.prune_events is not None or args.shared_memory or args.resolve_usage is not None or args.export_session is not None or args.delete_session
+    session_operation = args.resume or args.inspect_session or args.task_tree or args.acknowledge_task_bound or args.resolve_tool is not None or args.approve_tool is not None or args.deny_tool is not None or args.cancel_session or args.clear_cancel is not None or args.events or args.follow_events is not None or args.prune_events is not None or args.shared_memory or args.resolve_usage is not None or args.export_session is not None or args.delete_session or args.checkpoints or args.rewind is not None
     database_operation = args.list_sessions or args.backup_db is not None or args.cleanup_days is not None
     operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages
     interactive = not operation and args.prompt is None
@@ -403,6 +406,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("retry counts must be 0-4")
     if args.ui != "cli" and not interactive:
         parser.error("--ui tui/web applies to interactive chat; one-shot prompts and session operations stay on the CLI")
+    if args.force and args.rewind is None:
+        parser.error("--force applies to --rewind")
+    if args.rewind is not None:
+        from baseagent.session.checkpoints import parse_target
+        try:
+            rewind_target = parse_target(args.rewind)
+        except ValueError as exc:
+            parser.error(f"--rewind: {exc}")
     if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
         parser.error("--host, --port and --token apply to --ui web")
     if args.ui == "web":
@@ -496,6 +507,21 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if args.prune_events is not None:
             print(json.dumps(store.prune_events(args.session, through=args.prune_events, keep_latest=args.keep_events,
                                                expected_digest=args.event_prune_digest), ensure_ascii=False, indent=2))
+            return 0
+        if args.checkpoints:
+            print(json.dumps(store.checkpoints(args.session), ensure_ascii=False, indent=2))
+            return 0
+        if args.rewind is not None:
+            if not existing.workspace_root:
+                raise ValueError("session has no workspace binding")
+            if args.root and args.root.resolve() != Path(existing.workspace_root).resolve():
+                raise ValueError("session belongs to a different workspace")
+            protected = [store.path, Path(str(store.path) + "-wal"), Path(str(store.path) + "-shm"),
+                         Path(str(store.path) + "-journal"), store.lock_dir]
+            # Writing back is the user's own restore, so it needs no --allow-write; paths stay inside
+            # the workspace boundary and outside protected paths.
+            target = Workspace(existing.workspace_root, protected_paths=protected)
+            print(json.dumps(store.rewind(target, args.session, rewind_target, force=args.force), ensure_ascii=False, indent=2))
             return 0
         if args.shared_memory:
             if not existing.workspace_root:

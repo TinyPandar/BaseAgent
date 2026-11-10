@@ -39,9 +39,11 @@ class SessionStore:
     def _initialize(self):
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5, 6):
+            if version not in (0, 1, 2, 3, 4, 5, 6, 7):
                 raise ValueError(f"unsupported session database version: {version}")
             connection.execute("PRAGMA journal_mode=WAL")
+            from .checkpoints import SCHEMA as CHECKPOINT_SCHEMA
+            # v7 only adds the checkpoint tables; every earlier table and row is kept as is.
             connection.executescript("""
                 BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -104,7 +106,8 @@ class SessionStore:
                     UNIQUE(session_id, root_turn_id, parent_task_id, spawn_call_id),
                     UNIQUE(session_id, node_turn_id)
                 );
-                PRAGMA user_version=6;
+            """ + CHECKPOINT_SCHEMA + """
+                PRAGMA user_version=7;
                 COMMIT;
             """)
 
@@ -279,6 +282,16 @@ class SessionStore:
     def cleanup(self, older_than_seconds, *, dry_run=True, after_id=None, limit=100):
         from .maintenance import cleanup
         return cleanup(self, older_than_seconds, dry_run=dry_run, after_id=after_id, limit=limit)
+
+    def checkpoints(self, session_id):
+        """Per-turn file checkpoints of a session (no file contents)."""
+        from .checkpoints import list_checkpoints
+        return list_checkpoints(self, session_id)
+
+    def rewind(self, workspace, session_id, target="last", *, force=False):
+        """Undo file writes of the latest open turn ("last") or of turn N and later; no model call."""
+        from .checkpoints import rewind
+        return rewind(self, workspace, session_id, target, force=force)
 
     @staticmethod
     def _save(connection: sqlite3.Connection, state: State) -> None:

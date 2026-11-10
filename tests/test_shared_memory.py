@@ -161,7 +161,7 @@ class SharedMemoryTests(unittest.TestCase):
         upgraded = SessionStore(self.store.path)
         self.assertEqual(upgraded.load("publisher").to_dict(), before.to_dict())
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
 
 
 if __name__ == "__main__":

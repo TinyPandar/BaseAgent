@@ -15,6 +15,46 @@ from .result import ErrorCode, ToolFailure, ToolResult
 from .search import glob as search_glob
 from .search import grep as search_grep
 
+GIT_STATUS_OUTPUT = 30_000
+GIT_STATUS_ENTRIES = 500
+GIT_CODES = {"M": "modified", "T": "type_changed", "A": "added", "D": "deleted", "R": "renamed", "C": "copied",
+             "U": "unmerged", "?": "untracked", "!": "ignored"}
+
+
+def parse_git_status(output: str, *, truncated: bool = False) -> dict:
+    """Parse ``git status --porcelain=v1 -z --branch``. Harness state under .baseagent/ is not listed."""
+    fields = output.split("\0")
+    branch, entries, hidden = None, [], 0
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if not field:
+            continue
+        if field.startswith("## "):
+            branch = field[3:]
+            continue
+        if len(field) < 4 or field[2] != " ":
+            continue
+        code_x, code_y, path = field[0], field[1], field[3:]
+        entry = {"path": path, "index": code_x, "worktree": code_y}
+        if ("R" in (code_x, code_y) or "C" in (code_x, code_y)) and index < len(fields):
+            entry["orig_path"] = fields[index]
+            index += 1
+        if path.split("/", 1)[0].casefold() == ".baseagent":
+            hidden += 1
+            continue
+        if code_x == "?" or code_x == "!":
+            entry["status"] = GIT_CODES[code_x]
+        elif "U" in (code_x, code_y) or (code_x, code_y) in {("A", "A"), ("D", "D")}:
+            entry["status"] = "unmerged"
+        else:
+            entry["status"] = GIT_CODES.get(code_y if code_y != " " else code_x, "changed")
+        entries.append(entry)
+    shown = entries[:GIT_STATUS_ENTRIES]
+    return {"clean": not entries and not truncated, "branch": branch, "entries": shown, "count": len(entries),
+            "truncated": truncated or len(entries) > len(shown), "harness_paths_hidden": hidden}
+
 
 def apply_edits(content: str, edits: list[dict]) -> str:
     """Apply the edit_file replacements in order without writing any bytes."""
@@ -132,7 +172,18 @@ class Workspace:
         if not self.allow_write:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
         self._path(path)
-        result = policy_write_file(self, path, content, expected_sha256, expected_instructions, context=context, request=request)
+        self.edit_policy.check_path(self, path)
+        from baseagent.session.checkpoints import capture
+        # Save the original before the first write of this turn; a failed save writes nothing.
+        saved = capture(self, path, content, context)
+        try:
+            result = policy_write_file(self, path, content, expected_sha256, expected_instructions, context=context, request=request)
+        except BaseException:
+            if saved is not None:
+                saved.abort()
+            raise
+        if saved is not None:
+            saved.commit(result)
         self._observe(result, context)
         if context is not None:
             from .workflow import invalidate_verifications
@@ -207,6 +258,25 @@ class Workspace:
     def git_diff(self, *, context=None) -> ToolResult:
         return self._run_bounded_command(["git", "diff", "--", "."], 10, output_limit=30_000, context=context)
 
+    def git_status(self, *, context=None) -> ToolResult:
+        """Parsed ``git status --porcelain=v1``; readable failures outside a repository or without git."""
+        try:
+            result = self._run_bounded_command(["git", "status", "--porcelain=v1", "-z", "--branch"], 10,
+                                               output_limit=GIT_STATUS_OUTPUT, context=context)
+        except FileNotFoundError:
+            return ToolResult.failure(ErrorCode.NOT_FOUND, "git is not installed or not on PATH")
+        data = result.data or {}
+        if not result.ok:
+            stderr = str(data.get("stderr") or "")
+            if "not a git repository" in stderr.lower():
+                return ToolResult.failure(ErrorCode.EXECUTION_FAILED, "workspace is not a git repository")
+            if result.error and result.error.code in (ErrorCode.TIMEOUT, ErrorCode.CANCELLED):
+                return result
+            detail = stderr.strip().splitlines()[0][:300] if stderr.strip() else (result.error.message if result.error else "")
+            return ToolResult.failure(ErrorCode.EXECUTION_FAILED, f"git status failed: {detail}")
+        return ToolResult(data=parse_git_status(str(data.get("stdout") or ""),
+                                                truncated=bool(data.get("stdout_truncated"))))
+
     def _run_bounded_command(self, argv, timeout, *, output_limit=20_000, context=None):
         effective = timeout
         if context is not None and context.remaining_seconds is not None:
@@ -258,6 +328,7 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     registry.register("get_task_state", "Get plan revision and recent verification summaries", params({"recent_checks": {"type": "integer", "minimum": 0, "maximum": 100}}, []), get_task_state, retry_safe=True, contextual=True)
     registry.register("verify_command", "Execute a verification command and record its real result plus hashes of tracked source files; requires command permission", params({**command_fields, "paths": {"type": "array", "maxItems": 20, "uniqueItems": True, "items": string}}, ["argv", "paths"]), partial(verify_command, workspace), contextual=True)
     registry.register("git_diff", "View working tree diff", params({}, []), workspace.git_diff, retry_safe=True, contextual=True)
+    registry.register("git_status", "List changed, staged and untracked files from git status --porcelain=v1 (read-only; fails readably outside a git repository)", params({}, []), workspace.git_status, retry_safe=True, contextual=True)
     revision = {"type": "integer", "minimum": 0}
     key = {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}
     registry.register("remember", "Store a session-local reference note with conversation source indices; do not store credentials; not instruction or verification proof", params({"key": key, "content": {"type": "string", "minLength": 1, "maxLength": 4000}, "source_messages": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": True, "items": {"type": "integer", "minimum": 1}}, "expected_revision": revision}, ["key", "content", "source_messages", "expected_revision"]), remember, contextual=True)

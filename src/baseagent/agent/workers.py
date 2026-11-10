@@ -217,6 +217,7 @@ class WorkerRecord:
     report: dict = field(default_factory=dict)
     approval: dict | None = None
     announced: str | None = None
+    main_turn: int | None = None
 
     def __post_init__(self):
         self.thread = None
@@ -357,6 +358,9 @@ class WorkerManager:
                 number += 1
             self._next = number + 1
             record = WorkerRecord(f"w{number}", self._session(number), task, bool(allow_writes))
+            # File checkpoints: this worker's writes belong to the main-agent turn that dispatched it.
+            from baseagent.session.checkpoints import turn_number
+            record.main_turn = turn_number(context.state)
             record.usage = {"max_model_calls": min(self.max_steps, room), "max_steps": min(self.max_steps, room),
                             "max_tool_calls": min(self.max_tool_calls, max(tool_room, 0)),
                             "model_calls": 0, "steps": 0, "tool_calls": 0}
@@ -396,7 +400,8 @@ class WorkerManager:
                                 max_model_calls=limits.get("max_model_calls"), max_tool_calls=limits.get("max_tool_calls"),
                                 middleware=self._layers(record), cancellation=record.cancellation,
                                 emit=lambda line: self._progress(record, line),
-                                metadata={"session_mode": "worker", "main_session": self.session_id, "worker_id": record.id})
+                                metadata={"session_mode": "worker", "main_session": self.session_id, "worker_id": record.id,
+                                          **({"main_turn": record.main_turn} if record.main_turn is not None else {})})
         except BaseException as exc:  # noqa: BLE001 -- a worker failure must not kill the chat.
             error = f"{type(exc).__name__}: {exc}"
         with self._lock:

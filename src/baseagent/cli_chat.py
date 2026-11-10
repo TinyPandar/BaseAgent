@@ -101,6 +101,7 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
         if session.main_agent:
             print("Main agent: answers directly and hands workspace work to one worker at a time.", file=out)
         print("Type a task, /status, /exit or /quit. Ctrl+C cancels the current turn.", file=out)
+    print("File checkpoints: /checkpoints lists them, /undo or /rewind <N> restores files written by the agent.", file=out)
     session.start()
     line = PromptLine(out, live=live)
     if workers is not None:

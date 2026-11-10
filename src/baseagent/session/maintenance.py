@@ -171,6 +171,9 @@ def _delete_locked(store, session_id, *, discard_unfinished=False, cutoff=None):
             return "changed"
         connection.execute("DELETE FROM events WHERE session_id=?", (session_id,))
         connection.execute("DELETE FROM tool_calls WHERE session_id=?", (session_id,))
+        from .checkpoints import delete_records
+        # Checkpoints of this session, then every content block no other checkpoint refers to.
+        delete_records(connection, session_id)
         connection.execute("DELETE FROM sessions WHERE id=?", (session_id,))
     # Keep lock files: unlinking a locked inode could allow a second lock owner.
     return "deleted"
