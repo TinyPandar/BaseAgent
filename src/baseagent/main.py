@@ -17,6 +17,7 @@ from baseagent.agent import run_agent
 from baseagent.agent.completion import CompletionPolicy
 from baseagent.agent.router import MAIN_AGENT_MODE, MAIN_AGENT_PROMPT, SINGLE_AGENT_MODE, is_main_agent_session
 from baseagent.agent.workers import SessionTagMiddleware, SharedBudgetMiddleware, TurnBudget, WorkerManager
+from baseagent.backends import LocalBackend
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
@@ -98,6 +99,11 @@ def _trace_preview(value, limit):
 
 
 DEFAULT_MODEL_RETRIES = 2
+# --mode presets -> (--allow-write, --allow-command). read-only is the default without flags.
+MODES = {"read-only": (False, False), "edit": (True, False), "full": (True, True)}
+FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machine; LocalBackend is not a sandbox. "
+                     "/undo restores files written by write_file/edit_file, not changes made by commands. "
+                     "For isolation use DockerBackend (docs/docker_backend.md).")
 CHAT_MAX_STEPS = 16
 CHAT_WRAPUP_HINT_STEPS = 2
 CHAT_MAX_WORKERS = 2
@@ -282,6 +288,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
+    parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
@@ -304,6 +311,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         configure_parser(parser)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     bootstrap.add_argument("--config", type=Path)
+    # Only explicit command-line permission flags count for --mode conflicts (not --config defaults).
+    bootstrap.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=None)
+    bootstrap.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=None)
     initial, _ = bootstrap.parse_known_args(argv)
     defaults = {}
     if initial.config is not None:
@@ -414,6 +424,18 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             rewind_target = parse_target(args.rewind)
         except ValueError as exc:
             parser.error(f"--rewind: {exc}")
+    if args.mode is not None:
+        if operation and not args.resume:
+            parser.error("--mode applies to one-shot prompts, --resume and interactive chat")
+        allow_write, allow_command = MODES[args.mode]
+        for flag, explicit, wanted in (("allow-write", initial.allow_write, allow_write),
+                                       ("allow-command", initial.allow_command, allow_command)):
+            if explicit is not None and explicit != wanted:
+                given = f"--{flag}" if explicit else f"--no-{flag}"
+                parser.error(f"--mode {args.mode} conflicts with {given}: {args.mode} means "
+                             f"{'--' if wanted else '--no-'}{flag}; drop one of them")
+        # The preset replaces permission settings that came from --config.
+        args.allow_write, args.allow_command = allow_write, allow_command
     if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
         parser.error("--host, --port and --token apply to --ui web")
     if args.ui == "web":
@@ -596,6 +618,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         root = args.root or (Path(existing.workspace_root) if existing and existing.workspace_root else Path.cwd())
         protected = [store.path, Path(str(store.path) + "-wal"), Path(str(store.path) + "-shm"), Path(str(store.path) + "-journal"), store.lock_dir]
         workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected)
+        if args.mode == "full" and isinstance(workspace.backend, LocalBackend):
+            print(FULL_MODE_WARNING, file=sys.stderr)
         policy = ToolPolicy()
         if args.tool_policy:
             policy = ToolPolicy.from_dict(read_json_object(args.tool_policy, max_bytes=20_000, label="tool policy"), workspace=workspace)

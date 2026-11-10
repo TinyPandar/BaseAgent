@@ -30,8 +30,8 @@ if HAS_WEB:
 
     from baseagent.web.server import create_app
 
-SINGLE = ["--session", "demo", "--allow-write", "--no-main-agent"]
-MAIN = ["--session", "demo", "--allow-write"]
+SINGLE = ["--session", "demo", "--mode", "edit", "--no-main-agent"]
+MAIN = ["--session", "demo", "--mode", "edit"]
 
 
 def three_writes(root):
