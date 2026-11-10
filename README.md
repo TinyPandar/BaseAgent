@@ -99,6 +99,56 @@
 
 做完后在这里填一张表：AC 编号 | 状态（通过 / 部分 / 未做）| 证据（测试名或文件）| 备注。再列出你自己拍板的点和理由（例如事件缓冲大小、CSS 库选哪个、是否逐 token 流式）。
 
+分支 `plan/tui-webui`，提交 `37dd4c0`（会话/事件层）→ `0b32d08`（TUI）→ `1987a3f`（Web）→ `109b02f`（跨前端测试和演示脚本）→ `4572f36`（文档、截图）。全部离线，没有调用 qwen-plus / 百炼。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 | 通过 | `src/baseagent/chat/session.py` `ChatSession`；`tests/test_chat_events.py` | 回合、续跑、推送、审批、`/status /wait /cancel /tell /exit` 都在这里 |
+| 2 | 通过 | `send` / `approve` / `deny` / `cancel` / `tell` / `status` / `exit`；`test_worker_approval_with_a_wrong_digest_or_call_is_refused`、`test_main_agent_call_approval_checks_digest_then_resumes_the_turn` | call_id 或 digest 不对抛 `ApprovalMismatch`，GUI 收到 `error`，Web 返回 409 |
+| 3 | 通过 | `chat/events.py` `KINDS`、`ChatEvent`；`docs/ui.md` 事件表 | 另加了 `notice`、`resync`。和 SQLite 元数据事件分开：不同的类（`kind` / `type`）、不同存储；`worker_cancelled` 两边同名，docs/ui.md 写明关系 |
+| 4 | 通过 | `EventBuffer`；`test_evicted_or_unknown_ids_are_never_silently_skipped`、`test_overflowed_cursor_returns_a_resync_snapshot` | 1000 条；挤出、跨进程、无 id 都给 `resync` 快照 |
+| 5 | 通过 | `cli_chat.py`；`test_cli_chat_runs_through_chat_session_and_publishes_events`；`tests/test_cli_chat.py`、`tests/test_main_agent.py` 未改一行，原样通过 | 输出文字逐字由 `ChatSession._say` 产出；说明文字原样搬到 `chat/text.py` |
+| 6 | 通过 | `git diff origin/master...HEAD -- src/baseagent/kernel src/baseagent/agent/agent.py` 为空；`agent/workers.py` 只加 `observer` 钩子（+22 / −1 行） | 工具事件用中间件 `ToolEventMiddleware`。`scripts/check_kernel_isolation.py` 在本机改动前后都因 `ensurepip` SIGABRT 跑不起来（环境问题，输出相同） |
+| 7 | 通过 | `--ui tui`；`tests/test_tui.py`（用 `--session`、`--allow-write`、`--tool-policy`）、`tests/test_demo_ui.py`（`--max-workers`） | 和 CLI 同一段组合代码 |
+| 8 | 通过 | `tui/app.py`；`docs/images/tui-*.svg`；`test_message_reply_and_status_bar` | 面板：id、状态、已运行时间、模型调用已用/上限、任务；状态栏：会话 id、本轮预算已用/上限 |
+| 9 | 通过 | `test_worker_push_appears_without_touching_the_input` | 输入框内容、焦点都保留 |
+| 10 | 通过 | `test_approval_modals_come_one_at_a_time_allow_then_deny` | 一次批准、一次拒绝，依次弹出 |
+| 11 | 通过 | `test_f2_cancels_the_selected_worker_and_f3_cancels_all`、`test_exit_with_a_running_worker_asks_then_cancels` | F2 / F3 / F5 / Ctrl+Q，列在底栏 |
+| 12 | 部分 | `test_session_resume_shows_history_and_asks_the_pending_approval` | 恢复历史和未决审批通过。**Windows Terminal 未验**：只在 macOS 上开发和测试，没有 Windows 机器 |
+| 13 | 通过 | `test_sse_starts_with_a_snapshot_then_sends_events_in_order_with_ids`（断言默认 127.0.0.1:8765） | |
+| 14 | 通过 | `tests/test_web.py` `WebCommandTests` | 七个接口都有测试 |
+| 15 | 通过 | `test_last_event_id_replays_only_later_events`、`test_too_old_or_foreign_last_event_id_gets_resync_first` | SSE id 是 `<epoch>:<n>`，换了进程先 `resync` |
+| 16 | 部分 | `web/static/`（HTML + 原生 JS + 自带 Pico.css）；`test_page_and_assets_are_local_files` | 不逐 token 流式（原因见 docs/ui.md：CLI 的模型组合没有流式接口）。`app.js` 只在本机用 JavaScriptCore + 手写的假 DOM 回放过真实事件序列（对话、面板、审批卡片、预算、POST 内容都对），**没有在真实浏览器里渲染过** |
+| 17 | 通过 | `test_token_is_required_on_every_endpoint`、`test_non_loopback_without_token_refuses_to_start`、`test_web_refuses_a_public_address_without_a_token`、`test_posts_accept_json_only_and_validate_fields` | 另加：无 token 时只接受回环 Host（防 DNS rebinding）、页面 CSP |
+| 18 | 通过 | `docs/ui.md`「一个服务进程只服务一个会话」 | |
+| 19 | 通过 | 三端在 `main.py` 里拿同一个 `ChatSession`；`tests/test_frontend_resume.py` | 界面层没有自己的规则 |
+| 20 | 通过 | `test_cli_then_tui`、`test_tui_then_web`、`test_web_then_cli`；`test_demo_ui.py` | |
+| 21 | 通过 | `pyproject.toml` extras `tui`、`web`、`frontends` | 核心依赖不变；wheel 带上静态文件（本机 `uv build` 检查） |
+| 22 | 通过 | `test_missing_extra_prints_one_line_and_exits_nonzero`；在只装核心依赖的 venv 里实跑 `--ui tui` / `--ui web` | 一行提示，退出码 2，无堆栈 |
+| 23 | 通过 | `tests/test_chat_events.py` | |
+| 24 | 通过 | `tests/test_tui.py`（`App.run_test()` pilot） | |
+| 25 | 通过 | `tests/test_web.py`（TestClient） | `GET /events?wait=0` 读完缓冲就关，测试不挂起 |
+| 26 | 通过 | 全量 `python -B -m unittest discover -s tests`：816 项，810 过、1 跳过，失败 5 项与改动前完全相同（见下）；只装核心依赖的 venv 里 TUI/Web/跨前端测试全部跳过并写明原因 | |
+| 27 | 通过 | README 快速上手（extra、两条启动命令）、对照表加一行 | |
+| 28 | 通过 | `docs/ui.md` | |
+| 29 | 部分 | `docs/images/tui-approval.svg`、`tui-workers.svg`（`scripts/ui_screenshots.py` 离线生成） | **Web 截图跳过**：本机没有 Chrome/Chromium，Firefox 无头模式在本次执行环境的沙箱里起不来；没有为截图引入 Playwright |
+| 30 | 通过 | `docs/demo.md`「加演：TUI → Web，同一个会话」；`scripts/demo_ui.py`；`tests/test_demo_ui.py` 按步骤自动走一遍 | |
+
+测试：全量 816 项（新增 39 项）。改动前在同一台 macOS 上就失败的 5 项，改动后完全相同：`test_backends` 和 `test_config`、`test_evaluate_retrieval_cli` 各一项（临时目录 `/var` 与 `/private/var` 的符号链接差异），`test_coding` 一项（文件锁），`test_retrieval_evaluation` 一项（`corpus_version` 与题集记录不一致，是本分支第一个提交往 README 加施工段引起的，按惯例合并时 rebind）。`scripts/rebind_corpus_version.py --check`：101 条证据哈希全部对得上，`main.py:286-287` 没有行漂移（新参数加在 295 行之后）。新测试另外反复跑过几十到上百次，没有偶发失败。
+
+自己拍板的点（理由详见 [docs/ui.md](docs/ui.md)）：
+
+- 事件缓冲：每个会话 1000 条，按条数计；超出不丢，返回 `resync` 快照。
+- CSS 库：Pico.css 2.1.1，单文件 83 KB、MIT、无 JS，跟随系统深浅色；放进 `web/static/vendor/`。
+- 逐 token 流式：不做。CLI 默认的模型组合没有流式接口，`--stream` 在真实连续对话里本来就不生效；Worker 也不流式。回复期间显示「主 Agent 回复中…」。
+- Windows Terminal：未实测。
+- SSE 而不是 WebSocket；SSE id 带进程 epoch，服务重启后的旧 id 一律先 `resync`。
+- TUI 和 Web 都用 `events_after(after_id)` 轮询（50 ms / 100 ms），同一条补发/resync 路径。
+- 主 Agent 回合进行中再发消息：拒绝，不排队，输入框保留原文。
+- 审批弹窗必须回答，没有「稍后」，和 CLI 在下一次提示前逐条问一致。
+- Web 端 `/exit` 不停服务（一个进程一个会话），提示在终端 Ctrl+C；Ctrl+C 时运行中的 Worker 记为取消。
+- 已知限制（沿用 CLI）：Worker 推送出现后没再发消息就退出，换前端后面板里看得到结果，但这条推送不会再附给主 Agent。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
