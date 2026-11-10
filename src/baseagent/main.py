@@ -845,8 +845,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         state = run_turn(args.prompt)
         if workers is not None:
             # --resume of a main-agent turn: there is no chat to push into, so wait and print the results.
-            from baseagent.cli_chat import finish_workers
-            finish_workers(workers, sys.stderr if machine.enabled else sys.stdout, sys.stderr)
+            from baseagent.chat import ChatSession
+            human = sys.stderr if machine.enabled else sys.stdout
+            finishing = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=session["id"],
+                                    workers=workers, main_agent=True, status_events=False,
+                                    printer=lambda stream, text: print(text, file=human if stream == "out" else sys.stderr))
+            finishing.finish_workers()
     except KeyboardInterrupt:
         if machine.enabled:
             machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,

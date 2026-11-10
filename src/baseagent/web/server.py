@@ -26,6 +26,7 @@ import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 from .config import DEFAULT_HOST, is_loopback
 
@@ -41,10 +42,17 @@ PAGE_POLICY = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src
                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
-def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_SECONDS):
-    """Build the app for an opened ChatSession. Refuses a non-loopback host without a token."""
+def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_SECONDS,
+               heartbeat_seconds=HEARTBEAT_SECONDS, poll_seconds=POLL_SECONDS):
+    """Build the app for an opened ChatSession. Refuses a non-loopback host without a token.
+
+    ``heartbeat_seconds`` is the idle interval between ``: ping`` comments on ``/events``;
+    ``poll_seconds`` how often the stream checks for new events and a disconnected client.
+    """
     if not is_loopback(host) and not token:
         raise ValueError(f"refusing to serve {host} without a token")
+    if not heartbeat_seconds > 0 or not poll_seconds > 0:
+        raise ValueError("heartbeat and poll intervals must be positive")
     app = FastAPI(title="BaseAgent", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
 
@@ -79,12 +87,9 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
             raise HTTPException(400, f"{name} must be 1-{MAX_TEXT} characters")
         return text
 
-    @app.middleware("http")
-    async def headers(request, call_next):
-        response = await call_next(request)
-        for key, value in HEADERS.items():
-            response.headers.setdefault(key, value)
-        return response
+    # A plain ASGI wrapper rather than @app.middleware("http"): BaseHTTPMiddleware hides the
+    # client's disconnect from the endpoint, so request.is_disconnected() never turned true there.
+    app.add_middleware(SecurityHeaders)
 
     @app.get("/")
     def page(request: Request):
@@ -116,7 +121,7 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
             nonlocal cursor
             yield "retry: 2000\n\n"
             deadline = time.monotonic() + hold
-            beat = time.monotonic() + HEARTBEAT_SECONDS
+            beat = time.monotonic() + heartbeat_seconds
             while True:
                 items = session.events_after(cursor)
                 for item in items:
@@ -127,9 +132,9 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
                 if now >= deadline or await request.is_disconnected():
                     return
                 if now >= beat:
-                    beat = now + HEARTBEAT_SECONDS
+                    beat = now + heartbeat_seconds
                     yield ": ping\n\n"
-                await anyio.sleep(min(POLL_SECONDS, max(0.0, deadline - now)))
+                await anyio.sleep(min(poll_seconds, max(0.0, deadline - now)))
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
@@ -175,6 +180,28 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
         return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else 409)
 
     return app
+
+
+class SecurityHeaders:
+    """Add HEADERS to every HTTP response without wrapping the request or response body."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for key, value in HEADERS.items():
+                    if key not in headers:
+                        headers[key] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def _hostname(header):

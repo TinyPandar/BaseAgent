@@ -45,6 +45,9 @@ TERMINAL = frozenset({COMPLETED, FAILED, CANCELLED})
 INPUT_CNY_PER_MILLION = Decimal("0.8")
 OUTPUT_CNY_PER_MILLION = Decimal(2)
 PUSH_HEADER = "[worker 推送：系统自动附加的结果，不是用户输入]"
+# Pushes and trace lines waiting for the CLI to print them between prompts. Older lines are
+# dropped (and counted) beyond this, so a chat that nobody reads cannot grow without bound.
+DISPLAY_LIMIT = 1000
 USER_HEADER = "[用户消息]"
 INBOX_HEADER = "[主 Agent 转达的补充要求]"
 
@@ -287,7 +290,8 @@ class WorkerManager:
         self._changed = threading.Condition(self._lock)
         self._approvals = deque()
         self._pushes = []
-        self._display = deque()
+        self._display = deque(maxlen=DISPLAY_LIMIT)
+        self.display_dropped = 0
         self.on_notice = None
         # Optional chat event hook (baseagent.chat): observer(kind, record, **data). It only
         # reports what already happened; it never changes limits, approvals or control flow.
@@ -491,13 +495,20 @@ class WorkerManager:
         if hook is not None and hook(stream, text):
             return
         with self._lock:
+            if len(self._display) == self._display.maxlen:
+                self.display_dropped += 1
             self._display.append((stream, text))
 
     def take_display(self):
         with self._lock:
             items = list(self._display)
             self._display.clear()
-            return items
+            dropped, self.display_dropped = self.display_dropped, 0
+        if dropped:
+            notice = (f"（显示队列已满：较早的 {dropped} 行 worker 输出没有显示；"
+                      "/status 查看进度，完整工具记录在 worker 会话里）")
+            items.insert(0, ("err", notice))
+        return items
 
     def take_pushes(self):
         with self._lock:

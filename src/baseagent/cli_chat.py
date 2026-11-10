@@ -14,14 +14,12 @@ inside text the user is typing.
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 import threading
 
 from baseagent.chat.session import ERRORS, ChatSession, exit_question
 # Re-exported: stop and worker explanations moved to the shared chat layer unchanged.
 from baseagent.chat.text import LIMITS, WORKER_REASONS, WORKER_STATUS, stop_explanation, worker_explanation, worker_label  # noqa: F401
-from baseagent.session import SessionBusy
 
 PROMPT = "> "
 EXIT_COMMANDS = frozenset({"/exit", "/quit"})
@@ -120,7 +118,7 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
             except EOFError:
                 print(file=out)
                 if workers is not None:
-                    finish_workers(workers, out, err, line=line)
+                    session.finish_workers()
                 break
             except KeyboardInterrupt:
                 print(file=out)
@@ -144,24 +142,17 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
     return 0
 
 
-def finish_workers(workers, out, err, *, line=None):
-    """No more input: wait for running workers, print their pushes, keep parked approvals for later."""
-    if workers.running():
-        print("输入已结束：等待运行中的 worker 完成后退出（Ctrl+C 取消它们）。", file=err)
-        try:
-            workers.wait()
-        except KeyboardInterrupt:
-            print(file=out)
-            for message in workers.cancel_all(reason="cancelled at Ctrl+C"):
-                print(message, file=out)
-    _flush(workers, out, err)
-    parked = [record.id for record in workers.records.values() if record.status == "awaiting_approval"]
-    if parked:
-        print(f"{', '.join(parked)} 仍在等待审批；用同一 --session 再进入对话会逐条询问。", file=err)
-    try:
-        workers.persist()
-    except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:
-        print(f"Could not save worker status: {exc}", file=err)
+def finish_workers(source, out, err, *, line=None):
+    """No more input: wait for running workers, print their pushes, keep parked approvals for later.
+
+    The rules live in ``ChatSession.finish_workers``; ``source`` is a ChatSession, or (older callers)
+    a WorkerManager that gets a printing ChatSession around it.
+    """
+    session = source if isinstance(source, ChatSession) else ChatSession(
+        run_turn=None, store=source.store, workspace=None, session_id=source.session_id, workers=source,
+        main_agent=True, status_events=False)
+    session.printer = lambda stream, text: print(text, file=out if stream == "out" else err)
+    session.finish_workers()
 
 
 def _flush(source, out, err):

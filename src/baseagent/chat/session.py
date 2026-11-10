@@ -68,6 +68,7 @@ class ChatSession:
         self.state = None
         self.closed = False
         self.started = False
+        self.opened = False
         self._turn = threading.Lock()
         self._busy = False
         self._status_at = 0.0
@@ -117,8 +118,9 @@ class ChatSession:
         """
         if not self.started:
             self.start()
+        self.opened = True
         if self.workers is not None:
-            self.workers.on_notice = lambda stream, text: True
+            self.workers.on_notice = _swallow
         self.publish_status(force=True)
         return self.state
 
@@ -137,7 +139,9 @@ class ChatSession:
             return
         self.closed = True
         if self.workers is not None:
-            self.workers.on_notice = None
+            # Nobody drains the display queue of a TUI/Web session, so keep swallowing pushes
+            # from workers that are still finishing; the CLI prints its queue before closing.
+            self.workers.on_notice = _swallow if self.opened else None
             self.workers.observer = None
         self.persist()
 
@@ -539,6 +543,31 @@ class ChatSession:
     def take_display(self):
         return self.workers.take_display() if self.workers is not None else []
 
+    def flush_display(self):
+        """Print queued worker pushes and trace lines (terminal output only; GUIs got them as events)."""
+        for stream, text in self.take_display():
+            if self.printer is not None:
+                self.printer(stream, text)
+
+    def finish_workers(self):
+        """No more input: wait for running workers, print their pushes, keep parked approvals for later."""
+        workers = self.workers
+        if workers is None:
+            return
+        if workers.running():
+            self._say("err", "输入已结束：等待运行中的 worker 完成后退出（Ctrl+C 取消它们）。")
+            try:
+                workers.wait()
+            except KeyboardInterrupt:
+                self._say("out", "")
+                for message in workers.cancel_all(reason="cancelled at Ctrl+C"):
+                    self._say("out", message)
+        self.flush_display()
+        parked = [record.id for record in workers.records.values() if record.status == AWAITING]
+        if parked:
+            self._say("err", f"{', '.join(parked)} 仍在等待审批；用同一 --session 再进入对话会逐条询问。")
+        self.persist()
+
     def persist(self):
         if self.workers is None:
             return
@@ -757,6 +786,11 @@ class ChatSession:
             return [item.to_dict() for item in items]
         snapshot = self.snapshot()
         return [{"id": snapshot["last_id"], "kind": "resync", "ts": time.time(), "data": {"snapshot": snapshot}}]
+
+
+def _swallow(stream, text):
+    """on_notice hook of TUI/Web sessions: pushes arrive as worker_* events, never in the display queue."""
+    return True
 
 
 def strip_attachments(content):
