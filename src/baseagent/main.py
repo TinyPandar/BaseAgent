@@ -10,6 +10,7 @@ import sys
 from hashlib import sha256
 from importlib.metadata import version
 from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -30,6 +31,7 @@ from baseagent.middleware import AgentMiddleware
 from baseagent.middleware.execution_guidance import ExecutionGuidanceMiddleware
 from baseagent.middleware.repository import RepositoryMiddleware
 from baseagent.middleware.retry import RetryMiddleware
+from baseagent.output import MachineOutput, result as machine_result
 from baseagent.session import SessionBusy, SessionStore
 from baseagent.session.compatibility import digest
 from baseagent.tools.policy import ToolPolicy
@@ -101,6 +103,7 @@ def _trace_preview(value, limit):
 DEFAULT_MODEL_RETRIES = 2
 # --mode presets -> (--allow-write, --allow-command). read-only is the default without flags.
 MODES = {"read-only": (False, False), "edit": (True, False), "full": (True, True)}
+OUTPUT_FORMATS = ("text", "json", "jsonl")
 FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machine; LocalBackend is not a sandbox. "
                      "/undo restores files written by write_file/edit_file, not changes made by commands. "
                      "For isolation use DockerBackend (docs/docker_backend.md).")
@@ -289,6 +292,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
     parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
+    parser.add_argument("--output-format", choices=list(OUTPUT_FORMATS), default="text", help="One-shot prompt or --resume output: text (default, unchanged), json (one object on stdout) or jsonl (metadata events, then a result line); see docs/output.md")
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
@@ -436,6 +440,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                              f"{'--' if wanted else '--no-'}{flag}; drop one of them")
         # The preset replaces permission settings that came from --config.
         args.allow_write, args.allow_command = allow_write, allow_command
+    if args.output_format != "text":
+        if interactive:
+            parser.error(f"--output-format {args.output_format} applies to one-shot prompts and --resume; "
+                         "interactive chat writes to a terminal or UI")
+        if operation and not args.resume:
+            parser.error(f"--output-format {args.output_format} applies to one-shot prompts and --resume; "
+                         "session and database operations already print JSON or fixed text")
     if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
         parser.error("--host, --port and --token apply to --ui web")
     if args.ui == "web":
@@ -450,6 +461,11 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if missing:
             print(missing, file=sys.stderr)
             return 2
+
+    machine = MachineOutput(args.output_format)
+    if machine.enabled and not args.session:
+        # json/jsonl report the session id even when the run fails before the first checkpoint.
+        args.session = uuid4().hex
 
     # Defer provider configuration: inspection, reconciliation, and cached completion
     # need no model key and must not make an API call.
@@ -824,29 +840,43 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             return run_chat(session=chat)
         if workers is not None:
             workers.restore(existing)
+        if machine.enabled:
+            machine.follow(store, args.session)
         state = run_turn(args.prompt)
         if workers is not None:
             # --resume of a main-agent turn: there is no chat to push into, so wait and print the results.
             from baseagent.cli_chat import finish_workers
-            finish_workers(workers, sys.stdout, sys.stderr)
+            finish_workers(workers, sys.stderr if machine.enabled else sys.stdout, sys.stderr)
     except KeyboardInterrupt:
+        if machine.enabled:
+            machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,
+                                          error="interrupted before the turn finished"))
         return 130
     except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:
         print(f"Session error: {exc}", file=sys.stderr)
+        if machine.enabled:
+            machine.finish(machine_result(session_id=args.session, status="error", code=1, error=f"Session error: {exc}"))
         return 1
+    finally:
+        machine.stop()
     print(f"Session: {state.session_id}", file=sys.stderr)
     print(f"Reported tokens: {state.total_tokens}; unknown usage calls: {state.unknown_usage_calls}", file=sys.stderr)
-    if state.final_answer:
+    # json/jsonl: stdout carries only JSON; the human lines below move to stderr.
+    human = sys.stderr if machine.enabled else sys.stdout
+    if state.final_answer and not machine.enabled:
         print(state.final_answer)
     if state.error:
-        print(f"Agent error: {state.error}")
+        print(f"Agent error: {state.error}", file=human)
     if state.status != "completed":
-        print(f"Agent stopped: {state.status} (steps: {state.step}, model attempts: {state.model_calls}, tool attempts: {state.tool_calls})")
+        print(f"Agent stopped: {state.status} (steps: {state.step}, model attempts: {state.model_calls}, tool attempts: {state.tool_calls})", file=human)
         from baseagent.cli_chat import LIMITS, stop_explanation
         if state.status in LIMITS or state.status == "usage_unavailable":
             print(stop_explanation(state, interactive=False), file=sys.stderr)
         if state.blocked_tool_calls:
             print("Inspect with --inspect-session; verify external effects before --resolve-tool.", file=sys.stderr)
+    if machine.enabled:
+        machine.finish(machine_result(state, model_name=config["model"], store=store))
+    if state.status != "completed":
         return 130 if state.status == "interrupted" else 1
     return 0
 

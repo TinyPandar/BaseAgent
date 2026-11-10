@@ -1,0 +1,41 @@
+{
+  "source": "origin/master 2ed4a52, captured with a scripted fake model (see tests/test_output_format.py)",
+  "cases": [
+    {
+      "name": "completed",
+      "code": 0,
+      "stdout": "hi there\n",
+      "stderr": "Session: golden\nReported tokens: 5; unknown usage calls: 0\n"
+    },
+    {
+      "name": "unknown_usage",
+      "code": 0,
+      "stdout": "plain\n",
+      "stderr": "Session: golden\nReported tokens: 0; unknown usage calls: 1\n"
+    },
+    {
+      "name": "tool_then_answer",
+      "code": 0,
+      "stdout": "done\n",
+      "stderr": "Session: golden\nReported tokens: 13; unknown usage calls: 0\n"
+    },
+    {
+      "name": "max_steps",
+      "code": 1,
+      "stdout": "Agent stopped: max_steps_exceeded (steps: 1, model attempts: 1, tool attempts: 1)\n",
+      "stderr": "Session: golden\nReported tokens: 2; unknown usage calls: 0\nStep limit reached: max-steps 1/1 used (steps 1/1, model calls 1/1, tool calls 1/32).\nThe turn is unfinished. --resume continues this same turn and keeps the used counts, so raise the limit above the used value: baseagent --session golden --resume --max-steps 2 --max-model-calls 2\n"
+    },
+    {
+      "name": "denied_write",
+      "code": 0,
+      "stdout": "could not write\n",
+      "stderr": "Session: golden\nReported tokens: 4; unknown usage calls: 0\n"
+    },
+    {
+      "name": "failed_model",
+      "code": 1,
+      "stdout": "Agent error: RuntimeError: model exploded\nAgent stopped: failed (steps: 0, model attempts: 1, tool attempts: 0)\n",
+      "stderr": "Session: golden\nReported tokens: 0; unknown usage calls: 1\n"
+    }
+  ]
+}
