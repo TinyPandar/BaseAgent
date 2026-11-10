@@ -288,6 +288,9 @@ class WorkerManager:
         self._pushes = []
         self._display = deque()
         self.on_notice = None
+        # Optional chat event hook (baseagent.chat): observer(kind, record, **data). It only
+        # reports what already happened; it never changes limits, approvals or control flow.
+        self.observer = None
 
     # ----- run_agent subtasks protocol -------------------------------------------------
     def contract(self):
@@ -362,6 +365,7 @@ class WorkerManager:
             self.records[record.id] = record
             context.state.metadata["workers"] = self.snapshot()
         self._start(record, task)
+        self._notify("worker_started", record)
         return ToolResult(data={"task_id": record.id, "status": RUNNING, "allow_writes": record.allow_writes,
                                 "limits": {key: record.usage[key] for key in ("max_model_calls", "max_steps", "max_tool_calls")}})
 
@@ -391,7 +395,7 @@ class WorkerManager:
                                 system_prompt=self.worker_prompt, max_steps=limits.get("max_steps"),
                                 max_model_calls=limits.get("max_model_calls"), max_tool_calls=limits.get("max_tool_calls"),
                                 middleware=self._layers(record), cancellation=record.cancellation,
-                                emit=lambda line: self.post("err", f"[{record.id}] {line}"),
+                                emit=lambda line: self._progress(record, line),
                                 metadata={"session_mode": "worker", "main_session": self.session_id, "worker_id": record.id})
         except BaseException as exc:  # noqa: BLE001 -- a worker failure must not kill the chat.
             error = f"{type(exc).__name__}: {exc}"
@@ -449,6 +453,19 @@ class WorkerManager:
             self._pushes.append(self.push_payload(record))
             stream, text = self.describe(record)
         self.post(stream, text)
+        self._notify(OBSERVED.get(record.status, "worker_failed"), record, text=text)
+
+    def _progress(self, record, line):
+        self.post("err", f"[{record.id}] {line}")
+        self._notify("worker_progress", record, line=line)
+
+    def _notify(self, kind, record, **data):
+        observer = self.observer
+        if observer is not None:
+            try:
+                observer(kind, record, **data)
+            except Exception:  # noqa: BLE001 -- a display hook must never break a worker.
+                pass
 
     def describe(self, record):
         """Human-readable push for the terminal: summary fields only, never tool bodies."""
@@ -651,6 +668,10 @@ class WorkerManager:
             return record.usage
         return {**record.usage, "model_calls": state.model_calls, "steps": state.step, "tool_calls": state.tool_calls}
 
+
+# WorkerManager status -> chat event kind (baseagent.chat.events).
+OBSERVED = {COMPLETED: "worker_done", FAILED: "worker_failed", CANCELLED: "worker_cancelled",
+            AWAITING: "approval_requested"}
 
 WORKER_LABELS = {RUNNING: "运行中", AWAITING: "等待审批", COMPLETED: "已完成", CANCELLED: "已取消"}
 

@@ -652,7 +652,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if skills is not None:
             layers.append(SkillMiddleware(skills))
         base_layers = list(layers)
+        chat_events = None
         if interactive:
+            from baseagent.chat import EventBuffer, ToolEventMiddleware
+            chat_events = EventBuffer()
+            # Previews for chat frontends; observes only.
+            layers.append(ToolEventMiddleware(chat_events))
             layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
         elif args.trace:
             layers.append(TraceMiddleware())
@@ -677,7 +682,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 return run_agent(
                     model, user_input, tools=tools,
                     middleware=[SessionTagMiddleware(**metadata), *base_layers,
-                                TraceMiddleware(preview_chars=200, steps=args.trace, emit=emit), *retry_layers, *middleware],
+                                TraceMiddleware(preview_chars=200, steps=args.trace, emit=emit),
+                                *([ToolEventMiddleware(chat_events, worker=metadata.get("worker_id"))] if chat_events else []),
+                                *retry_layers, *middleware],
                     system_prompt=system_prompt, max_steps=max_steps,
                     max_model_calls=max_model_calls, max_tool_calls=max_tool_calls,
                     store=store, session_id=session_id, workspace_root=workspace.root,
@@ -733,9 +740,11 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             return state
 
         if interactive:
+            from baseagent.chat import ChatSession
+            chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
+                               workers=workers, main_agent=main_agent, events=chat_events)
             from baseagent.cli_chat import run_chat
-            return run_chat(run_turn=run_turn, store=store, session_id=args.session, workspace=workspace,
-                            main_agent=main_agent, workers=workers)
+            return run_chat(session=chat)
         if workers is not None:
             workers.restore(existing)
         state = run_turn(args.prompt)
