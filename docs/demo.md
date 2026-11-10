@@ -53,6 +53,25 @@ baseagent --session demo --max-workers 2 --budget-cny 0.5
 
 设计取舍（拒绝而不排队、线程而不是 asyncio、推送只在提示之间打印）见 [router_worker.md](router_worker.md)。
 
+## 加演：TUI → Web，同一个会话
+
+```bash
+uv sync --extra frontends
+python scripts/demo_ui.py --fresh        # 终端界面
+python scripts/demo_ui.py --ui web       # 同一会话的网页，http://127.0.0.1:8765/
+```
+
+离线，费用 0。脚本启动真实的 `baseagent --ui tui` / `--ui web` 入口，只是把模型换成脚本化的假模型；工作区和会话固定在 `.baseagent/demo-ui/`（`--fresh` 清掉重来）。`tests/test_demo_ui.py` 按下面的步骤自动走一遍。讲的时候按这个顺序：
+
+1. **开 TUI。** 左边对话区和输入框，右边 Worker 面板，底栏是会话 id、本轮预算已用/上限和快捷键（F2 取消选中、F3 全部取消、F5 刷新、Ctrl+Q 退出）。
+2. **派两个 Worker。** 输入「查一下 TODO，再把 VERSION 写成 1.0」。主 Agent 同一轮派出 w1（写 VERSION，`allow_writes=true`）和 w2（只读扫描，每 3 秒一步），马上回一句话，不等它们。
+3. **看面板。** 两行 Worker：状态、已运行时间、模型调用已用/上限；选中一行，下面一栏显示它的任务和最近一行进度。这时可以在输入框里继续聊，推送和进度不会打断正在输入的内容。
+4. **批一次审批。** w1 的 `write_file` 弹出模态框：Worker、工具名、参数预览、call id、digest。按 `y`（或点「批准」）。w1 写完，对话区出现 `[w1 已完成] Wrote VERSION (1.0).`。按 `n` 则拒绝，文件不变。
+5. **取消一个。** 点一下面板里 w2 那行（或 Tab 到面板再用方向键），按 F2。w2 记为已取消，对话区出现中文说明。然后 Ctrl+Q 退出（如果还有 Worker 在跑，会先问「取消它们并退出 / 继续等待」）。
+6. **换 Web 接着看。** `python scripts/demo_ui.py --ui web`，浏览器打开 `http://127.0.0.1:8765/`：同一个会话的对话历史、w1 已完成、w2 已取消都在；再发一条消息，回复从 SSE 推到页面。同一个 `--session` 也能回到 CLI：`baseagent --root .baseagent/demo-ui/workspace --db .baseagent/demo-ui/sessions.sqlite3 --session demo`（需要模型配置；假模型只在脚本里）。
+
+架构、事件表和「为什么用 SSE」见 [ui.md](ui.md)。截图：`docs/images/tui-approval.svg`、`docs/images/tui-workers.svg`（`python scripts/ui_screenshots.py` 重新生成）。
+
 ## 2:00 指标
 
 ```bash

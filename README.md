@@ -22,6 +22,7 @@
 | 生成答案质量评测 | 离线管道 | 真实 80 题未跑 |
 | Watchdog | 有，默认关闭 | 任务级停滞 / 重复 / 预算 / 超时；不是调用前安全拦截 |
 | 主 Agent / Worker（原 Router） | 有，连续对话默认开启 | 全双工，最多 N 个 worker 并行（`--max-workers`，默认 2），写入同时只有一个；派出即返回，结果自动推送；只回摘要和引用，写入走原审批；离线测试，付费冒烟未跑；一次性 CLI 不变 |
+| TUI / Web 前端 | 有，可选安装 | 连续对话的 Textual TUI 和本机 FastAPI + SSE 页面，与 CLI 共用一层会话/事件层；一个 Web 进程一个会话；离线测试，Windows Terminal 未实测 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
 | Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
@@ -143,6 +144,8 @@ Tool REVIEW uses BaseAgent's exact-call approval flow; prompt BLOCK stops the ru
 git clone https://github.com/TinyPandar/BaseAgent.git && cd BaseAgent
 uv sync                 # 创建 .venv 并安装锁定依赖
 uv sync --extra ui      # 可选：浏览器 UI（Chainlit）
+uv sync --extra tui     # 可选：连续对话的终端界面（Textual）
+uv sync --extra web     # 可选：连续对话的本机网页（FastAPI + SSE）；--extra frontends 两个都装
 ```
 
 ```powershell
@@ -150,6 +153,7 @@ uv sync --extra ui      # 可选：浏览器 UI（Chainlit）
 git clone https://github.com/TinyPandar/BaseAgent.git; cd BaseAgent
 uv sync
 uv sync --extra ui      # 可选
+uv sync --extra tui --extra web   # 可选：连续对话的 TUI / Web 前端
 ```
 
 使用 venv + pip（可编辑安装）：
@@ -232,6 +236,15 @@ uv run baseagent --root . --allow-write
 .\.venv\Scripts\python.exe -m baseagent --root . --session demo
 # 退出：/exit 或 /quit；Ctrl+C 取消当前轮
 ```
+
+同一个连续对话还有两个前端，参数与上面相同（`--session`、`--max-workers`、`--allow-write`、`--allow-command`、`--budget-cny` 等），审批、Worker 上限、单写者、预算和持久化规则也相同，`--session` 可以在三个前端之间接着用：
+
+```bash
+uv run --extra tui baseagent --ui tui --root . --session demo   # 终端界面：对话、Worker 面板、审批弹窗；F2/F3 取消，Ctrl+Q 退出
+uv run --extra web baseagent --ui web --root . --session demo   # 打开 http://127.0.0.1:8765/；非本机地址必须带 --token
+```
+
+一个 Web 进程只服务一个会话。架构、事件表和取舍见 [docs/ui.md](docs/ui.md)；没装对应 extra 时会提示安装命令并退出。
 
 ### 4. Project Assistant（RAG）离线演示
 
