@@ -72,6 +72,21 @@ python scripts/demo_ui.py --ui web       # 同一会话的网页，http://127.0.
 
 架构、事件表和「为什么用 SSE」见 [ui.md](ui.md)。截图：`docs/images/tui-approval.svg`、`docs/images/tui-workers.svg`（`python scripts/ui_screenshots.py` 重新生成）。
 
+## 加演：改 3 个文件 → `/checkpoints` → `/undo` → `git_status` 干净
+
+```bash
+python -B scripts/demo_checkpoints.py
+```
+
+离线，费用 0，需要本机有 git。脚本在临时目录里建一个 git 仓库（`app.py`、`README.md` 已提交），用真实的对话入口 `baseagent --mode edit --no-main-agent` 加脚本化输入和假模型，最后一行是 JSON 摘要（`files_restored: true`、`git_clean: true`）。`tests/test_demo_checkpoints.py` 自动走一遍。讲的时候按这个顺序：
+
+1. `> 把 app.py 的问候改成中文，README 跟着改，再加一份 notes.md` —— agent 一步调用三次 `write_file`，回「改好了」。每个文件第一次被写之前，原貌（新建文件记 `missing`）先按 sha256 存进会话库；存不下就不写。
+2. `> /checkpoints` —— `第 1 轮 … 3 个文件`，下面是 `修改 app.py`、`修改 README.md`、`新建 notes.md`。主 Agent 模式下还会标出是哪个 worker 写的。
+3. `> /undo` —— 「已撤回第 1 轮的文件改动：恢复 2 个文件，删除 1 个新建文件」。写回前逐个比对写后哈希，有人手改过就整批不动、要 `--force`；`run_command` 的副作用不在范围内，这句话直接打在结果里。
+4. `> 现在 git 状态干净吗？` —— 这一轮开头 agent 先收到一句「第 1 轮的文件改动已撤回」，然后调用只读工具 `git_status`（`git status --porcelain=v1` 的解析结果），回答「干净：分支 main 上没有改动」。
+
+同样的事不进对话也能做：`baseagent --session demo --checkpoints`、`baseagent --session demo --rewind last`（不调模型、不要密钥）。为什么按文件快照而不用影子 git，见 [checkpoints.md](checkpoints.md)。
+
 ## 2:00 指标
 
 ```bash

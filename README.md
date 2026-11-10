@@ -25,6 +25,9 @@
 | TUI / Web 前端 | 有，可选安装 | 连续对话的 Textual TUI 和本机 FastAPI + SSE 页面，与 CLI 共用一层会话/事件层；一个 Web 进程一个会话；离线测试，Windows Terminal 未实测 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
 | Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
+| 检查点/撤销 | 有，按文件快照 | 每个用户轮次一个检查点，`/checkpoints`、`/undo`、`/rewind N`；只覆盖 `write_file` / `edit_file`，`run_command` 的副作用撤不回；不用影子 git；离线测试 |
+| JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
+| 权限预设 | 有 | `--mode read-only\|edit\|full` 映射到 `--allow-write` / `--allow-command`；矛盾的显式标志直接报错；`--tool-policy` 只能再收紧 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
 | MCP 客户端 | 未做 | 不在本计划里 |
 
@@ -85,6 +88,54 @@
 
 ### 完成情况（实现者填写）
 做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出你自己拍板的点和理由，至少包括：表结构、内容块上限、`--rewind` 的写法、jsonl 的 schema 版本、mode 冲突规则、要不要加 `--backend docker`、`_display` 的修法。
+
+测试文件都在 `tests/`，类名.方法名；全部离线、假模型。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 | 完成 | `test_checkpoints`：`CaptureAndUndoTests.test_undo_restores_three_files_bytes_hashes_and_modes_and_deletes_a_new_file`、`test_second_write_in_the_same_turn_keeps_the_first_original`、`test_only_files_written_by_tools_are_stored_and_identical_originals_once` | 钩子在 `Workspace._write_file` 落盘前调用 `session/checkpoints.py::capture` |
+| 2 | 完成 | `test_checkpoints`：`test_only_files_written_by_tools_are_stored_and_identical_originals_once`、`MigrationTests.test_v6_database_upgrades_to_v7_without_losing_sessions`、`UndoRulesTests.test_delete_session_and_cleanup_collect_unreferenced_blocks` | 旧的 v1–v5 迁移测试把「升到当前版本」的断言从 6 改为 7，其余不变 |
+| 3 | 完成 | `test_checkpoints`：`test_unsaved_original_fails_closed_without_writing`（超限、读失败、数据库失败三种）、`test_file_limit_per_turn_matches_the_observed_limit`、`test_failed_write_and_post_edit_check_rollback_leave_no_record` | |
+| 4 | 完成 | `test_checkpoint_chat.WorkerCheckpointTests.test_worker_write_belongs_to_the_main_turn_that_dispatched_it`（第 1 轮派出、第 2 轮之后才写，仍记在第 1 轮）、`test_checkpoints.UndoRulesTests.test_turn_numbers_continue_after_undo_and_an_undone_turn_stays_closed` | |
+| 5 | 完成 | `test_checkpoint_chat`：`CliCheckpointTests.*`、`TuiCheckpointTests`、`WebCheckpointTests` | 命令在 `ChatSession.command` / `checkpoint_command` |
+| 6 | 完成 | `test_checkpoints.CommandLineTests.test_checkpoints_and_rewind_run_without_a_model_or_keys`（子进程、去掉所有模型密钥环境变量）、`test_argument_errors` | 库：`SessionStore.checkpoints/rewind`、`baseagent.session.list_checkpoints/rewind_session` |
+| 7 | 完成 | `test_checkpoints`：`test_manual_change_is_refused_for_the_whole_batch_until_force`、`test_write_back_stays_inside_the_workspace_and_protected_paths`、首个测试检查权限位和临时文件不残留；`test_checkpoint_chat.CliCheckpointTests.test_undo_conflict_needs_force` | 锁内再比一次哈希；若在两个文件之间被改动，已写回的文件会列在错误里（见 docs 限制） |
+| 8 | 完成 | `test_checkpoints`：`test_refused_while_the_turn_is_unfinished_awaiting_approval_or_running`、`test_refused_while_a_persisted_writable_worker_still_runs_elsewhere`；`test_checkpoint_chat.WorkerCheckpointTests.test_undo_is_refused_while_a_writable_worker_is_active` | |
+| 9 | 完成 | `test_checkpoints`：`test_rewind_n_undoes_that_turn_and_every_later_one_then_undo_takes_the_rest`（事件只有哈希）、`CommandLineTests`（`--events` 查到）、`test_next_turn_tells_the_agent_which_turn_was_undone` | |
+| 10 | 完成 | `test_checkpoints.GitStatusTests.*`（git 仓库、非 git 目录、无 git、只读 Worker 可用、解析器） | |
+| 11 | 完成 | `test_output_format.TextFormatTests.test_text_output_matches_master`、`JsonFormatTests.test_json_stops_and_errors_keep_exit_codes` | |
+| 12 | 完成 | `test_output_format.JsonFormatTests.*` | `cny` 只在已知价目（qwen-plus）且用量完整时出现 |
+| 13 | 完成 | `test_output_format.JsonLinesFormatTests.*`；schema 在 `docs/output.md` | `schema_version` 1 |
+| 14 | 完成 | `test_output_format.FormatScopeTests`、各 json 测试检查 `Session:` 只在 stderr；`test_chat_leftovers.FinishWorkersTests.test_resume_with_json_output_keeps_worker_pushes_off_stdout` | |
+| 15 | 完成 | `test_modes.CapabilityMatrixTests.test_every_mode_and_flag_as_one_shot_and_chat`；映射表在 README「Permission presets」 | |
+| 16 | 完成 | 矩阵里的冲突格（退出码 2）；`test_modes.ModeRuleTests.test_mode_replaces_permissions_from_config`、`test_tool_policy_only_restricts_the_mode` | |
+| 17 | 完成 | `test_modes.ModeRuleTests.test_full_mode_warning_is_one_stderr_line` | 没加 `--backend docker` |
+| 18 | 完成 | 矩阵（一次性 + 对话）、`test_tui_and_web_frontends_take_the_mode`、`test_unfinished_session_needs_accept_config_changes_when_the_mode_changes`、`test_main_agent_chat_workers_get_the_mode_permissions` | |
+| 19 | 完成 | `test_chat_leftovers.DisplayQueueTests.*` | 用 master 旧代码确认过增长路径：CLI 读行/阻塞时 10000 条全进队列，TUI/Web 打开时 0 条、`close()` 后 Worker 还在跑又涨到 10000 条 |
+| 20 | 完成 | `test_chat_leftovers.ServerSentEventsTests.*`（ASGI 2.3 和 2.4 两种断开） | |
+| 21 | 完成 | `test_chat_leftovers.FinishWorkersTests.*`；原有 `test_main_agent.test_eof_waits_for_running_workers_and_prints_their_pushes` 原样通过 | |
+| 22 | 完成 | `test_checkpoints`（24 个）+ `test_checkpoint_chat`（8 个），含退出重进：`test_undo_after_reopening_the_database_in_a_new_process`、`CliCheckpointTests.test_rewind_after_exit_and_reentry` | |
+| 23 | 完成 | `test_output_format`（11 个）；text 的期望输出 `tests/fixtures/one_shot_text_master.json` 是在 origin/master 2ed4a52 上用同一个假模型录的 | |
+| 24 | 完成 | `test_modes.CapabilityMatrixTests`：{一次性, 对话} × {无, read-only, edit, full} × 6 组标志 = 48 格，逐格断言退出码/报错、模型看到的工具列表、写和命令是否真的执行 | |
+| 25 | 完成 | `test_checkpoint_chat`：CLI（`invoke`）、TUI（`run_test` pilot）、Web（`TestClient`） | |
+| 26 | 完成 | `docs/checkpoints.md` | |
+| 27 | 完成 | README 对照表三行和用法；`docs/demo.md`「加演：改 3 个文件 → /checkpoints → /undo → git_status 干净」；`scripts/demo_checkpoints.py` + `tests/test_demo_checkpoints.py` | |
+
+自己拍板的点：
+
+- **表结构。** v7 只新增 `checkpoints(session_id, turn, created_at, restored_at)`、`checkpoint_files(session_id, turn, path, before_sha256, after_sha256, worker_id, writer_session_id, created_at, updated_at)`、`checkpoint_blobs(sha256, size, content)`，不改旧表，所以 v6→v7 不需要搬数据。写入前一次性记下「写前哈希 + 预期写后哈希」，不设 pending 状态：写失败就删记录；进程在写完后崩溃时，撤销看到的当前哈希只会等于写后或写前，两种都能正确处理。
+- **轮次号。** 不往会话状态加字段，用用户消息条数（排除 Worker 收件箱补充）。记录只追加、压缩不删原消息，所以和「每轮一条用户消息」一致；这样内核兼容基线测试（逐字段比状态）不用改。
+- **Worker 挂主轮次。** `delegate_task` 时记下主 Agent 当前轮次号，存进 `WorkerRecord.main_turn` 和 Worker 会话元数据 `main_turn`；Worker 的写入写进主会话的检查点并带 `worker_id`。比「写入时去查主会话当前轮次」简单，也不受 Worker 跨轮运行影响。
+- **内容块上限。** 单个原貌 200 KB、单轮 500 个文件，与读写工具和 observed 上限一致；超出时那次写入失败，文件不变。
+- **`--rewind` 的写法。** `--rewind N|last`（`last` 等于 `/undo`），加 `--force`；`--checkpoints` / `--rewind` 都输出 JSON，拒绝时 `Session error: …` + 退出码 1。写回不需要 `--allow-write`（是用户自己的恢复），但仍受工作区边界和保护路径约束；只支持 LocalBackend。撤销后的轮次关闭，不能再写入，也不做 redo。
+- **jsonl 的 schema 版本。** 每行严格是 `{type, timestamp, data}`；首行 `output_started` 带 `schema_version: 1`，末行 `result` 的 `data` 与 `json` 对象相同（也带 `schema_version`）。`model_delta` 的文本换成字符数。事件靠每 0.1 秒读 `events` 表输出，不改内核。
+- **`--output-format` 的范围。** 允许 `--resume`（它也是跑一轮），其他运维操作和对话报错退出 2。json/jsonl 下没给 `--session` 时先生成 id，保证失败时也能报出会话。
+- **mode 冲突规则。** 只看命令行上显式出现的 `--allow-write/--no-allow-write/--allow-command/--no-allow-command`（用一个预解析器识别），与 mode 矛盾退出 2，一致允许；`--config` 里的权限项被 mode 直接覆盖、不算冲突；`--tool-policy` 本来就只能 deny/ask，`allow` 不会打开 mode 没给的能力。各 mode 下模型看到的工具不同，是已有的 `ExecutionGuidanceMiddleware` 按权限隐藏的。`--mode` 与运维操作一起用报错。
+- **不加 `--backend docker`。** 要加就得管容器生命周期（启动、退出时清理、镜像、网络、资源参数），并且只能在有 Docker 的机器上真跑验证；本支要求全部离线。DockerBackend 仍可通过库使用，`--mode full` 的警告指向 `docs/docker_backend.md`。
+- **`_display` 的修法。** 两处都改：`deque(maxlen=1000)` 加丢弃计数（CLI 下次打印时说明丢了几行，保留最新的行）；TUI/Web 会话 `close()` 后继续吞掉推送（没人读这个队列）。
+- **`finish_workers`。** 规则搬进 `ChatSession.finish_workers()`，CLI 的 EOF 路径和 `main.py` 的 `--resume` 路径都调它；`cli_chat.finish_workers` 保留为兼容包装。
+- **SSE。** 心跳和轮询间隔作为 `create_app` 参数注入。顺带把加安全头的 `@app.middleware("http")` 换成纯 ASGI 中间件：前者会把断开信号挡在端点外，ASGI 2.4 服务器下生成器会一直空转（uvicorn 目前发 2.3，不受影响）。
+- **其他。** `git_status` 隐藏 `.baseagent/` 下的 harness 状态（文件锁目录），否则撤销后也永远不「干净」；撤销不删 agent 顺带建出的空目录；CLI 对话开头多打一行检查点命令提示，TUI/Web 输入框提示加了 `/checkpoints`、`/undo`。
 
 ## 库与 CLI
 
@@ -189,6 +240,8 @@ uv run baseagent --list-tool-packages                       # 不需要模型/�
 uv run baseagent --eval-harness                             # 离线六场景评估，不需要密钥
 uv run baseagent "Explain the project structure" --root .   # 只读（默认不允许写/命令）
 uv run baseagent "Fix the failing test and verify it" --root . --allow-write --allow-command
+uv run baseagent "Fix the failing test and verify it" --root . --mode full   # 同上；--mode read-only|edit|full
+uv run baseagent "Explain the project structure" --root . --output-format json  # stdout 只有一个 JSON 对象
 uv run baseagent --config examples/harness.readonly.json "Explain the project"
 # 或直接用 venv：
 .venv/bin/python -m baseagent "Explain the project structure" --root .
@@ -232,6 +285,15 @@ uv run --extra web baseagent --ui web --root . --session demo   # 打开 http://
 ```
 
 一个 Web 进程只服务一个会话。架构、事件表和取舍见 [docs/ui.md](docs/ui.md)；没装对应 extra 时会提示安装命令并退出。
+
+三个前端都有检查点命令：`/checkpoints` 列出每一轮改了哪些文件，`/undo` 撤回最近一轮 agent 用 `write_file` / `edit_file` 写过的文件，`/rewind N` 撤回第 N 轮及之后的所有轮次；文件在 agent 写入之后被人改过时整批不动，要加 `--force`。不进对话也行（不调模型、不要密钥）：
+
+```bash
+uv run baseagent --session demo --checkpoints            # JSON
+uv run baseagent --session demo --rewind last [--force]  # 或 --rewind 3
+```
+
+设计、表结构和限制（命令的副作用撤不回）见 [docs/checkpoints.md](docs/checkpoints.md)。
 
 ### 4. Project Assistant（RAG）离线演示
 
@@ -589,7 +651,35 @@ Exports and backups never overwrite an existing destination or protected databas
 .\.venv\Scripts\python.exe -m baseagent --cleanup-days 30 --apply-cleanup
 ```
 
-Deleting an unfinished session requires the explicit discard flag. A held session lock blocks deletion even with discard. Cleanup never selects unfinished sessions or unresolved tool records; it locks and rechecks every candidate before deleting, skips busy/changed candidates, and commits one session at a time. Its output reports eligible/deleted/skipped IDs and supports `--after-session` / `--session-limit` pagination. Default cleanup is a read-only preview. Deletion removes database records, not workspace files. Small lock files are retained to avoid creating two lock owners for the same ID; SQLite may reuse freed pages, so deletion is not secure erasure or immediate file shrinking.
+Deleting an unfinished session requires the explicit discard flag. A held session lock blocks deletion even with discard. Cleanup never selects unfinished sessions or unresolved tool records; it locks and rechecks every candidate before deleting, skips busy/changed candidates, and commits one session at a time. Its output reports eligible/deleted/skipped IDs and supports `--after-session` / `--session-limit` pagination. Default cleanup is a read-only preview. Deletion removes database records (including the session's file checkpoints and every stored original no other checkpoint refers to), not workspace files. Small lock files are retained to avoid creating two lock owners for the same ID; SQLite may reuse freed pages, so deletion is not secure erasure or immediate file shrinking.
+
+## Permission presets (`--mode`)
+
+`--mode` 是现有权限标志的简写，用于一次性任务、`--resume` 和三个对话前端（`--ui cli|tui|web`）；不传时行为不变。
+
+| `--mode` | 等价标志 | 模型能看到的写/命令工具 | 说明 |
+| --- | --- | --- | --- |
+| `read-only` | 不传标志时的默认值 | 无：`write_file`、`edit_file`、`run_command`、`verify_command` 都不暴露 | 读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
+| `edit` | `--allow-write` | `write_file`、`edit_file` | 文件写入都有检查点，可 `/undo` |
+| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend |
+
+未开启的工具不出现在发给模型的工具列表里（`ExecutionGuidanceMiddleware`），模型硬要调用也会在工作区边界返回 `permission_denied`。`publish_memory` / `withdraw_memory` 另由 `--allow-memory-publish` 控制，不在 `--mode` 里。
+
+- `--mode` 覆盖 `--config` 里的 `permissions.allow_write` / `allow_command`。
+- 命令行上显式的 `--allow-write` / `--no-allow-write` / `--allow-command` / `--no-allow-command` 与 mode 矛盾时直接报错（退出码 2），一致时允许（例如 `--mode edit --allow-write`）。
+- `--tool-policy` 只能在 mode 的基础上再收紧（`deny` / `ask`）：策略里写 `allow` 不会打开 mode 没给的能力。
+- 能力属于运行时契约：未完成的会话换 mode 续跑，仍需 `--accept-config-changes`。
+- 与 `--events`、`--checkpoints` 等运维操作一起用会报错（退出码 2）。
+- CLI 没有选 Docker 的参数；DockerBackend 通过库使用，见 [docs/docker_backend.md](docs/docker_backend.md)。
+
+## Machine-readable output (`--output-format`)
+
+一次性任务和 `--resume` 可以输出 `json`（结束时 stdout 只有一个对象：`status`、`final_answer`、`error`、`session_id`、`usage`、`exit_code`、`pending_approval`、`schema_version`）或 `jsonl`（每行一个元数据事件 `{type, timestamp, data}`，最后一行 `type: "result"`）。`Session:`、trace、警告和 Worker 输出都走 stderr；退出码仍是 0 / 1 / 130。对话模式和其他运维操作带这个参数会报错退出。默认 `text` 不变。schema 和版本规则见 [docs/output.md](docs/output.md)。
+
+```bash
+baseagent --root . --mode edit --output-format json "Rename the helper"
+baseagent --session S --resume --output-format jsonl | jq -c 'select(.type == "result") | .data.status'
+```
 
 ## Model context limits
 
@@ -667,7 +757,7 @@ Tools additionally require `register(..., retry_safe=True)` and an explicitly re
 
 ### Task-node persistence infrastructure
 
-Schema v6 stores child task snapshots with stable task IDs, parent IDs, originating tool call IDs, and distinct node turn IDs. Under `store.exclusive(session_id)`, internal orchestration can call `store.create_task(root_state, call_id=..., name=..., state=child_state)` and `store.task_node(root_state, task_id)` to access a node checkpoint/ledger view. Creation requires a running parent tool call and enforces depth/quantity limits. Repeating the same parent call returns the existing node; a changed initial task request is refused. Nested creation supplies `parent_task_id`.
+Schema v6 (and v7) stores child task snapshots with stable task IDs, parent IDs, originating tool call IDs, and distinct node turn IDs. Under `store.exclusive(session_id)`, internal orchestration can call `store.create_task(root_state, call_id=..., name=..., state=child_state)` and `store.task_node(root_state, task_id)` to access a node checkpoint/ledger view. Creation requires a running parent tool call and enforces depth/quantity limits. Repeating the same parent call returns the existing node; a changed initial task request is refused. Nested creation supplies `parent_task_id`.
 
 The node view's checkpoint methods commit node state, ancestor snapshots, root state, tool ledger changes and events in one transaction. Tool call IDs are isolated by node turn ID. Views reject writes outside the root lock and reject stale snapshots; reopen a view after another writer changes the node or an ancestor. Node events retain root-turn association and include task/parent IDs without task text.
 
@@ -748,7 +838,7 @@ For usage, the JSON `unknown_calls` must match **all attempts made directly by t
 
 ## Structured events
 
-The ordered event log was introduced in SQLite schema v2; current schema v6 migrates v1/v2/v3/v4/v5 stores while retaining checkpoints and tool records. Events cover run start/stop, model dispatch/result/failure, assistant checkpoints, tool start/attempt/result/completion, recovery blocks, usage reconciliation, approval decisions, cancellation requests, reference publication/withdrawal, and task-node checkpoints. They include measured call durations, counts, outcome codes, and whether usage was reported. State changes and corresponding start/completion events commit together.
+The ordered event log was introduced in SQLite schema v2; current schema v7 (which only adds the file checkpoint tables) migrates v1/v2/v3/v4/v5/v6 stores while retaining checkpoints and tool records. Events cover run start/stop, model dispatch/result/failure, assistant checkpoints, tool start/attempt/result/completion, recovery blocks, usage reconciliation, approval decisions, cancellation requests, reference publication/withdrawal, task-node checkpoints, and file undo (`checkpoint_restored`: turn, file count, paths with before/after hashes, never contents). They include measured call durations, counts, outcome codes, and whether usage was reported. State changes and corresponding start/completion events commit together.
 
 ```powershell
 .\.venv\Scripts\python.exe -m baseagent --session demo --events
@@ -866,7 +956,7 @@ Coding registries now include write/command capabilities and protected paths in 
 
 `--task-id TASK_ID` also targets cancellation and acknowledgment at a child in the current root turn. A node request is observed by that node and all descendants, while siblings' cancellation records remain separate. The active delegate pauses its ancestors when the cancelled child returns; it is not converted to a successful tool answer. Requesting cancellation works while the root executor owns its lock; acknowledging requires the root lock and the exact request ID. Completed/historical nodes refuse new cancellation requests. Root cancellation and node cancellation must be acknowledged independently. `SessionStore.request_cancellation(..., task_id=...)` and `clear_cancellation(..., task_id=...)` expose the same behavior in the library. Events carry the node/parent IDs; exports and backups retain the request under the node turn ID. Clearing a request alone does not execute anything or reset budget/ledger state.
 
-SQLite schema v3 introduced durable cancellation requests, retained by the current v6 schema. A separate process can request cancellation even while an executor owns the session lock:
+SQLite schema v3 introduced durable cancellation requests, retained by the current v7 schema. A separate process can request cancellation even while an executor owns the session lock:
 
 ```powershell
 .\.venv\Scripts\python.exe -m baseagent --session demo --cancel-session

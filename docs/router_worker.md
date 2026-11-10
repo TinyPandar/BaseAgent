@@ -13,6 +13,7 @@ Worker 没有类型，区别只在本次是否允许写入：
 
 - `allow_writes=false`（默认）：只拿入口工具里的只读子集（`retry_safe` 的工具）。即使开了 `--allow-command`，只读 Worker 也拿不到 `run_command`。
 - `allow_writes=true`：只在用户明确要求改文件或跑命令时使用。Worker 拿到入口工具全集；写入仍要过 `--allow-write` / `--allow-command` 和 `--tool-policy`，要审批的调用照常停下等审批。
+- 文件检查点：Worker 派出时记下主 Agent 当前的轮次号（`main_turn`），它用 `write_file` / `edit_file` 写的文件记在主会话这一轮的检查点里，并标出 `worker_id`；哪怕它在后面几轮才真正写。`/undo` 按主轮次撤销；有可写 Worker 在运行或等待审批时拒绝撤销。见 [checkpoints.md](checkpoints.md)。
 
 主 Agent 的提示词约束模型这样做，这不是硬保证；硬保证是工具面：主 Agent 只有 `delegate_task` 和 `message_worker`，只读 Worker 没有写入工具。
 

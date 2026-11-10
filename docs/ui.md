@@ -38,6 +38,7 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 | --- | --- | --- | --- |
 | `send(text)` / `turn(text, ask)` | 输入一行 | 输入框回车 | `POST /messages {"text"}` |
 | `approve` / `deny(call_id, digest, worker=…)` | `Allow …? [y/N]` | 审批弹窗：批准 (y) / 拒绝 (n) | `POST /approvals {"call_id","digest","decision","worker"?}` |
+| `checkpoint_command` / `checkpoints()` / `undo(target, force=)` | `/checkpoints`、`/undo [--force]`、`/rewind N [--force]` | 同一输入框 | `POST /messages {"text": "/undo"}` |
 | `cancel(id \| "all")` | `/cancel <id\|all>` | F2 取消选中 / F3 全部 / `/cancel` | `POST /workers/{id}/cancel`（`id=all` 取消全部） |
 | `tell(id, text)` | `/tell <id> <text>` | `/tell` | `POST /workers/{id}/tell {"text"}` |
 | `status()` / `status_lines()` | `/status` | F5、状态栏、Worker 面板 | `GET /status`、`status` 事件 |
@@ -78,7 +79,8 @@ SSE 的 `id:` 写成 `<epoch>:<n>`，epoch 是这个进程的随机前缀。浏�
 ## Web
 
 - 接口：`GET /`（页面）、`GET /events`（SSE，`text/event-stream`，每条带 `id:`）、`POST /messages`、`POST /approvals`、`POST /workers/{id}/cancel`、`POST /workers/{id}/tell`、`GET /status`，静态文件只放行 `app.js`、`app.css`、`vendor/pico.min.css` 三个。
-- `/events` 保持连接最多 300 秒，每 15 秒一个注释心跳，然后由服务器关闭；`EventSource` 会带 `Last-Event-ID` 自动重连并补发。`?wait=0` 立即返回缓冲里的内容后关闭（测试和 `curl` 用）。
+- `/events` 保持连接最多 300 秒，每 15 秒一个注释心跳，然后由服务器关闭；`EventSource` 会带 `Last-Event-ID` 自动重连并补发。`?wait=0` 立即返回缓冲里的内容后关闭（测试和 `curl` 用）。心跳间隔和轮询间隔可以注入（`create_app(..., heartbeat_seconds=, poll_seconds=)`）。客户端断开后生成器停止轮询、不留后台任务（`tests/test_chat_leftovers.py` 用 ASGI 2.3 和 2.4 两种断开方式验证）；为此安全响应头改用纯 ASGI 中间件，`@app.middleware("http")` 会把断开信号挡在端点外面。
+- Worker 推送在 TUI/Web 里只作为 `worker_*` 事件出现，不进 CLI 的显示队列；关闭会话后仍在收尾的 Worker 也不再往队列里放。CLI 的显示队列有上限（`DISPLAY_LIMIT` = 1000 行），超出时丢最早的行并在下次打印时说明丢了几行。
 - 页面：一个静态 HTML、一个原生 JS 文件、仓库里自带的 Pico.css（`web/static/vendor/`，MIT，许可证同目录），运行时不访问 CDN，没有构建步骤。所有文字用 `textContent` 写入，不拼 HTML。页面带 CSP（只允许同源脚本/样式/连接）。
 - 安全：默认只绑 127.0.0.1。绑定任何非回环地址都必须给 `--token`（或环境变量 `BASEAGENT_WEB_TOKEN`，至少 8 个字符），否则拒绝启动（一行说明，退出码 2）；给了 token 时每个请求都要带（`Authorization: Bearer`、`X-BaseAgent-Token`，页面和 `EventSource` 用 `?token=`），错了返回 401。不带 token 的本机模式只回答 Host 为 localhost / 127.0.0.1 / ::1 的请求（防 DNS rebinding）。没有 CORS 中间件，也就没有通配；POST 只接受 `application/json`（其他返回 415），跨站表单发不出 JSON，预检也不会通过。
 - **一个服务进程只服务一个会话。** 启动时就绑定 `--session`（不给就由第一条消息创建），页面不能切换会话，也不做多用户认证。要开另一个会话，换端口再起一个进程。两个进程不要同时打开同一个会话：会话在 SQLite 里有排他锁，后来的那个在跑回合时会得到 `session is already running`。
