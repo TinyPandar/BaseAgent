@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BaseAgent</title>
+  <link rel="stylesheet" href="/static/vendor/pico.min.css{{ASSET_QUERY}}">
+  <link rel="stylesheet" href="/static/app.css{{ASSET_QUERY}}">
+  <script src="/static/app.js{{ASSET_QUERY}}" defer></script>
+</head>
+<body>
+  <header class="container-fluid bar">
+    <strong>BaseAgent</strong>
+    <span id="session" class="muted">会话：—</span>
+    <span id="budget" class="muted">预算：—</span>
+    <span id="connection" class="muted">连接中…</span>
+  </header>
+  <main class="container-fluid layout">
+    <section class="chat">
+      <div id="transcript" class="transcript" aria-live="polite"></div>
+      <form id="composer" class="composer">
+        <input id="input" name="text" autocomplete="off" placeholder="输入任务或问题；/status、/cancel &lt;id|all&gt;、/tell &lt;id&gt; &lt;text&gt;" required>
+        <button type="submit">发送</button>
+      </form>
+    </section>
+    <aside class="side">
+      <article>
+        <header class="row"><strong>Workers</strong><button id="cancel-all" class="outline secondary small" type="button">全部取消</button></header>
+        <table class="workers">
+          <thead><tr><th>id</th><th>状态</th><th>时间</th><th>模型</th><th></th></tr></thead>
+          <tbody id="workers"><tr><td colspan="5" class="muted">还没有 worker</td></tr></tbody>
+        </table>
+      </article>
+      <section id="approvals"></section>
+    </aside>
+  </main>
+</body>
+</html>

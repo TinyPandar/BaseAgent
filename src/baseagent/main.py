@@ -293,7 +293,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--watchdog-max-tokens", type=int, help="Task token budget enforced by Watchdog (0 disables)")
     parser.add_argument("--watchdog-max-seconds", type=float, help="Task wall-clock budget enforced by Watchdog (0 disables)")
     parser.add_argument("--watchdog-tool-timeout", type=float, help="Single-tool timeout in seconds (0 disables)")
-    parser.add_argument("--ui", choices=["cli", "tui"], default="cli", help="Interactive chat frontend: cli (default, line-based) or tui (Textual; extra 'tui')")
+    parser.add_argument("--ui", choices=["cli", "tui", "web"], default="cli", help="Interactive chat frontend: cli (default, line-based), tui (Textual; extra 'tui') or web (local FastAPI + SSE page; extra 'web')")
+    parser.add_argument("--host", help="--ui web: address to bind (default 127.0.0.1); any non-loopback address requires --token")
+    parser.add_argument("--port", type=int, help="--ui web: port (default 8765)")
+    parser.add_argument("--token", help="--ui web: access token required on every request (or BASEAGENT_WEB_TOKEN); mandatory off localhost")
     if configure_parser is not None:
         configure_parser(parser)
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
@@ -399,7 +402,16 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     if not 0 <= args.model_retries <= 4 or not 0 <= args.tool_retries <= 4:
         parser.error("retry counts must be 0-4")
     if args.ui != "cli" and not interactive:
-        parser.error("--ui tui applies to interactive chat; one-shot prompts and session operations stay on the CLI")
+        parser.error("--ui tui/web applies to interactive chat; one-shot prompts and session operations stay on the CLI")
+    if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
+        parser.error("--host, --port and --token apply to --ui web")
+    if args.ui == "web":
+        from baseagent.web.config import web_settings
+        try:
+            web = web_settings(args.host, args.port, args.token or os.getenv("BASEAGENT_WEB_TOKEN"))
+        except ValueError as exc:
+            print(f"--ui web: {exc}", file=sys.stderr)
+            return 2
     if args.ui != "cli":
         missing = _missing_frontend(args.ui)
         if missing:
@@ -664,7 +676,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if interactive:
             from baseagent.chat import EventBuffer, ToolEventMiddleware
             chat_events = EventBuffer()
-            # Previews for chat frontends; observes only. The TUI shows these instead of stderr trace lines.
+            # Previews for chat frontends; observes only. The TUI/Web show these instead of stderr trace lines.
             layers.append(ToolEventMiddleware(chat_events))
             if args.ui == "cli":
                 layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
@@ -755,6 +767,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             if args.ui == "tui":
                 from baseagent.tui.app import run_tui
                 return run_tui(chat)
+            if args.ui == "web":
+                from baseagent.web.server import serve
+                return serve(chat, **web)
             from baseagent.cli_chat import run_chat
             return run_chat(session=chat)
         if workers is not None:
@@ -787,7 +802,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
 
 # --ui frontend -> (install extra, modules it needs). Core installs stay unchanged.
-FRONTEND_EXTRAS = {"tui": ("tui", ("textual",))}
+FRONTEND_EXTRAS = {"tui": ("tui", ("textual",)), "web": ("web", ("fastapi", "uvicorn"))}
 
 
 def _missing_frontend(ui):
