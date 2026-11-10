@@ -36,6 +36,56 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：coding agent 核心补齐（本段合并进 master 前必须删除）
+
+目标：补上检查点/撤销、机器可读输出、权限预设三块，并清掉 TUI/Web 遗留。全程离线，不调付费 API；Terminal-Bench 真实跑分、MCP、主 Agent 全双工体验都不在本支。
+
+现有钩子（实现时以此为准）：写文件只经过 `Workspace._write_file`（`tools/workspace.py`，`write_file` / `edit_file` 都走它）→ `tools/edit_policy.py::write_file` → `editing.atomic_write` 或 `backend.write_file`；工具标记 `ToolRegistry.register(..., retry_safe=)`；已有只读 `git_diff`；会话库 `session/store.py`（`PRAGMA user_version=6`，表 `sessions` / `tool_calls` / `events` …）；元数据事件 `agent/events.py::event()`；Worker 会话 id 为 `<主会话>-wN`，元数据带 `main_session` / `worker_id`；`WorkerManager._display` / `post()` / `take_display()`；SSE 心跳 `web/server.py` 的 `HEARTBEAT_SECONDS`。
+
+### A. 检查点与撤销（按文件快照，不用影子 git）
+1. 在 `_write_file` 真正落盘前，某文件在本轮第一次被写时保存原貌：内容哈希 + 字节；新建文件记 `missing`。同一轮再次写同一文件不再存原貌，只更新「写后哈希」。只存被工具写过的文件，不扫仓库。
+2. 内容按 sha256 寻址存一份（相同内容只存一份），记录进现有会话 SQLite：schema 从 v6 迁到 v7，旧库升级不丢数据；`delete_session` / `cleanup` 一并清理，无引用的内容块会被回收。
+3. 原貌存不下来（超限、读失败）就不写文件，返回明确错误（fail closed）；单轮文件数上限与现有 observed 上限（500）一致；写失败或 `post_edit_check` 回滚后不留「已改」记录。
+4. 一个用户轮次一个检查点，带从 1 开始的轮次号。Worker 的写入挂在派出它的那个主 Agent 轮次下，并记录 `worker_id`；撤销粒度是主轮次。单 Agent 对话和一次性模式按本会话自己的轮次。
+5. `/checkpoints` 列出轮次号、时间、改动文件（新建/修改、来自哪个 worker）、是否已撤销；`/undo` 撤最近一个未撤销的轮次；`/rewind N` 倒序撤回第 N 轮及之后的所有轮次。这三条命令放进 `ChatSession.command`，CLI、TUI、Web 共用。
+6. 非对话入口：`baseagent --session S --checkpoints`（输出 JSON）、`baseagent --session S --rewind N|last [--force]`；库调用暴露一个同样功能的函数。这几个操作不调模型、不需要密钥。
+7. 写回前逐个比对文件当前哈希和记录的写后哈希；有任何一个不一致（期间被人手改过），整批都不动，列出冲突文件，要求 `--force` 或 `/undo --force`。写回用临时文件 + fsync + 原子替换，按文件加锁；新建的文件直接删除。写回路径仍受工作区边界和保护路径约束。
+8. 有能写的 Worker 处于活跃状态（运行中或等待审批），或者主轮次正在进行、未完成、等待审批时，拒绝撤销并说明原因。
+9. 每次撤销都在 `events` 表记一条元数据事件（如 `checkpoint_restored`：轮次、文件数、前后哈希，不含内容），`--events` 能查到；对应检查点标记为已撤销。下一轮开始时给主 Agent 一句简短说明，「第 N 轮的文件改动已撤回」，免得它以为那些改动还在。
+10. 新增只读工具 `git_status`（`retry_safe=True`），返回 `git status --porcelain=v1` 的解析结果；工作区不是 git 仓库或没装 git 时，返回可读的失败信息，不抛异常。只读 Worker 也能用。
+
+### B. 机器可读输出
+11. 一次性模式新增 `--output-format text|json|jsonl`，默认 `text`，行为一字不变；退出码含义不变（0 / 1 / 130）。
+12. `json`：stdout 只有一个对象，含 `status`、`final_answer`、`error`、`session_id`、`usage`（prompt/completion/total tokens、unknown_usage_calls、model_calls、tool_calls、steps，算得出时再加 cny）、`exit_code`；等待审批时带待批的 call id 和 digest。
+13. `jsonl`：每行一个事件，复用 `agent/events.py` 的 `{type, timestamp, data}` 信封（只有元数据，没有参数和正文）；最后一行是 `type: "result"`，字段同 12。schema 写进文档，加版本字段。
+14. json 模式下 stdout 只有 JSON，`Session:`、trace、警告、Worker 输出都走 stderr。对话模式和其他运维操作带这个参数时，报错退出并写明原因。
+
+### C. 权限预设
+15. 新增 `--mode read-only|edit|full`：read-only = 现在的默认值；edit = `--allow-write`；full = `--allow-write --allow-command`。文档里给映射表，列出暴露的工具和与 `--tool-policy` 的关系。
+16. 冲突规则：`--mode` 覆盖 `--config` 里的权限项；显式的 `--allow-write` / `--allow-command` 和 mode 矛盾时直接报错（exit 2），一致时允许；`--tool-policy` 只能在 mode 基础上进一步收紧。
+17. full 模式在 LocalBackend 下打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend。CLI 目前没有选 Docker 的参数，加不加 `--backend docker` 由你定；加的话只复用现有 `DockerBackend`，不加依赖。
+18. 一次性、`--resume`、三种对话前端都认 `--mode`；不带 `--mode` 时行为不变；未完成会话改变能力时，仍需 `--accept-config-changes`。
+
+### D. 遗留
+19. `WorkerManager._display` 必须有上界：比如 `deque(maxlen=…)` 加丢弃计数，或在 TUI/Web 下不入队。注意 `ChatSession.open()` 已让 `on_notice` 吞掉推送，所以先写测试确认实际在哪条路径上增长（例如 `close()` 之后 Worker 还在跑），再修。测试要求：TUI/Web 模式下产生 10000 条进度后，队列长度不超过上界。
+20. SSE 测试：空闲时按心跳间隔收到 `: ping`（间隔可注入）；客户端断开后生成器退出、不留后台任务。
+21. CLI 的 `finish_workers` 改走 `ChatSession`（main.py 的 `--resume` 路径也一样），行为不变。
+
+### E. 测试（离线、确定性、假模型；已有测试不削弱）
+22. 检查点：改 3 个文件后 `/undo`，3 个文件字节和哈希完全复原；新建文件被删除；手改后不一致时拒绝，`--force` 才执行；跨轮 `/rewind`；退出重进后能撤；Worker 写入挂到正确的主轮次；有写 Worker 活跃时拒绝；schema v6→v7 迁移；`git_status` 在 git 仓库和非 git 目录下各测一次。
+23. `jsonl` 每一行都能 `json.loads`，最后一行是 result；`json` 模式下 stdout 只有一个对象；text 输出与 master 一致。
+24. mode 能力矩阵：3 种 mode × 冲突标志 × 一次性/对话，逐格断言工具列表和报错。
+25. 三个前端各走一遍 `/checkpoints` → `/undo`（CLI 用现有测试辅助，TUI 用 pilot，Web 用 TestClient）。
+
+### F. 文档
+26. 新建 `docs/checkpoints.md`：设计、数据模型（表和字段）、时序图（写入 → 存原貌 → 撤销 → 比对哈希 → 写回 → 记事件）、限制（`run_command` 的副作用撤不回，建议用 Docker 或 `--mode`；只覆盖文件工具；不能 redo）、备选方案（影子 git：能覆盖命令改动，但要扫整个工作区、依赖 git、要处理 ignore 和大文件，与白盒目标不符，所以没选）。
+27. README：用法各补几行；对照表加「检查点/撤销」「JSON 输出」「权限预设」三行；`docs/demo.md` 加一段面试演示：agent 改 3 个文件 → `/checkpoints` → `/undo` → `git_status` 干净。
+
+约束：只推到本分支，不 force-push，不开 PR；不新增核心运行时依赖；不改 Layer 2、RAG、Watchdog、HarnessKnight；不用 Claude Code 泄露或未授权的源码，不拷贝 mewcode。本段 README 会让语料版本测试失败，这是预期的：合并时我删掉本段，再用 `scripts/rebind_corpus_version.py --write` 重绑。
+
+### 完成情况（实现者填写）
+做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出你自己拍板的点和理由，至少包括：表结构、内容块上限、`--rewind` 的写法、jsonl 的 schema 版本、mode 冲突规则、要不要加 `--backend docker`、`_display` 的修法。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
