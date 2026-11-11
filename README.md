@@ -39,6 +39,58 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：MCP 网关与客户端（本段合并进 master 前必须删除）
+
+目标：做 MCP 客户端，并把本地工具和 MCP 工具收进同一条内部网关。网关只是统一的工具调用通道，不把防护做成 HarnessKnight 的一部分；本支只留空钩子，不实现新的 HK / Watchdog 注入，也不把 BaseAgent 暴露成对外 MCP 服务。全程离线，不调付费 API。
+
+现有钩子（实现时以此为准，不要另起一条调用链）：
+
+- 工具注册与执行：`ToolRegistry.register` / `execute`（`kernel/tools.py`），结果统一为 `ToolResult`。
+- 中间件：`AgentMiddleware.before_tool`、`wrap_tool_call`（`kernel/hooks.py`）。现在还没有独立的 `after_tool` / `on_tool_failure` 节点钩子。
+- 调度：`agent/agent.py` 的 `prepare_tool` → `pipeline.before_tool` → `policy.action`（`ask` 则 `awaiting_approval`）→ `_apply_watchdog(..., phase="before_tool")` → `store.start_call` → `pipeline.wrap_tool` → `ToolRegistry.execute` → `tool_call_finished` → `_apply_watchdog(..., phase="after_tool")`。
+- 审批：现有 `--tool-policy` 与 call id + digest；`--mode read-only|edit|full`；`--tool-policy` 只能再收紧。
+- HarnessKnight：可选，`middleware/harnessknight.py` 的 `install_harnessknight`；调用前 ALLOW / REVIEW / BLOCK，输出走 `wrap_tool_call`；事件里已有 `trace.mcp_server_id`，目前恒为 `null`。没开 `--harness-url` 时不引入 HK 运行时依赖。
+- Watchdog：`agent/watchdog.py`，任务级停滞 / 重复 / 预算 / 超时，不是调用前权限引擎。
+- 会话库当前 `PRAGMA user_version=7`。Worker 会话、检查点、TUI/Web 会话层保持原样。
+
+### A. 内部工具网关（统一通道 + 空钩子）
+1. 模型能看到的工具，包括 MCP 工具，都必须先注册进 `ToolRegistry`，并且只走上面这条现有调度路径。禁止模型适配器或 MCP 客户端自己直接 `tools/call` 绕过策略、审批、账本和钩子。
+2. 把这条路径收口并写成「工具网关」：可以是一个薄的装配层，不要再实现第二套循环，不要把 HK / Watchdog 搬到新包里，也不要改它们的判定规则。本地工具和 MCP 工具对网关来说只是不同的执行后端。
+3. 在 `AgentMiddleware` 上补两个默认空操作的节点钩子，并在现有收尾路径里调用：`after_tool(request, result)`、`on_tool_failure(request, result)`。已有的 `before_tool`、`wrap_tool_call` 和 `ask` 停下来走审批，保持原行为。这样以后防护只挂中间件，不必改 MCP 客户端。
+4. 钩子能读到的信息至少包括：工具名、`call_id`、来源（`local` 或 `mcp`）、`mcp_server_id`（本地工具为 `null`）。事件与 HK 已有信封里，MCP 工具必须填上 `trace.mcp_server_id`；本地工具仍是 `null`。钩子和元数据事件不要写入参数原文或密钥。
+5. 钩子只能加限制（阻止、改成待审批），不能放宽 `--mode`、`--tool-policy`、工作区边界或保护路径。策略与审批仍由现有 `policy.action` 执行，不把策略引擎搬进钩子。
+6. 本支不重写 HK / Watchdog，也不做「把它们注册进网关」的新插件机制。开着 `--harness-url` / `--watchdog` 时，MCP 工具要自动走现有实现（因为共用调度路径）。文档里写清以后若要做全流程管控，只需新写一个 `AgentMiddleware`，不要再分叉调用链。
+
+### B. MCP 客户端（先做 stdio）
+7. 实现一份白盒、只覆盖工具子集的 stdio 客户端：拉起子进程，按官方 MCP 用换行分隔的 JSON-RPC（UTF-8，消息里不能嵌换行），完成 `initialize`、`tools/list`、`tools/call`。对标规范以 [MCP 2025-11-25 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) 和 [2026-07-28 工具](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) 为准。不新增核心运行时依赖；不要为了这一支引入官方 SDK。Streamable HTTP、resources、prompts、sampling、elicitation、OAuth 本支不做，但传输层留一个接口，方便以后加 HTTP，不必再改网关。
+8. 配置通过 `--mcp-config path` 和项目根目录 `.mcp.json`（有 flag 时 flag 优先）。格式用常见的 `mcpServers`：每个服务器有 `command` / `args` / `env`，可选给单个工具标 `readOnly`。不配则完全关闭，现有行为不变。不自动安装、不默认去跑需要联网的 npx 服务。
+9. 注册名稳定且不覆盖内置工具，推荐 `mcp__<server>__<tool>`；与内置重名时跳过该 MCP 工具并给出明确警告。会话或一次性运行开始时 `tools/list`，再注册进 Registry。
+10. MCP 工具默认 `retry_safe=False`，并默认当成有副作用：`--mode read-only` 下不暴露，除非配置里标明 `readOnly: true`。未单独写 `--tool-policy` 时，非只读 MCP 工具默认 `ask`（fail closed，不要默认放行）。`--tool-policy` 按注册名匹配，只能再收紧。
+11. 某个服务器 initialize / `tools/list` 失败，或进程异常退出：默认跳过该服务器，向 stderr 写清原因，其它服务器和本地工具继续；`--mcp-strict` 则启动失败（退出码 2）。`tools/call` 超时、协议错误、非 JSON、服务器中途崩溃，都返回 `ToolFailure`，不要把异常漏到内核循环外。服务器写到 stderr 的日志按现有命令输出上限截断，不当作协议消息。
+12. 生命周期：运行或会话开始时启动已配置的服务器，会话结束、取消、进程退出时结束该进程组，不留孤儿进程。单次 `tools/call` 必须能被现有取消/超时打断，不能一直挂死。
+
+### C. 策略、审批、会话
+13. MCP 的 `ask` 走现有审批（call id + digest），CLI / TUI / Web 共用；待批信息里能看出服务器名和工具名。批准只覆盖这一次调用。
+14. 给未完成会话新增、删除或更换 MCP 服务器，视为配置变化，需要 `--accept-config-changes`。不带 MCP 配置时，已有测试和默认工具列表保持原意（仍然没有 MCP 工具）。
+15. Worker 拿到的 MCP 工具与派出时的 mode / policy 一致；有副作用的 MCP 调用仍要审批。检查点 / `/undo` 只覆盖文件工具，MCP 造成的外部副作用撤不回，文档里写明。文件写入仍遵守「同时只有一个可写 Worker」。
+
+### D. 测试（离线、确定性、假 MCP 服务器；已有测试不削弱）
+16. 仓库内提供一个假的 stdio MCP 服务器夹具（例如 echo / 可失败工具），测试不联网、不跑付费 API、不拉真实第三方 MCP 包。
+17. 同一条网关记录器能看到本地 `write_file`（或其它内置工具）和 MCP 工具的 `before_tool`、审批停住、`after_tool`、`on_tool_failure`。绕过网关直接打到 MCP 传输层的路径不能被模型调用用到，并有测试挡住。
+18. 权限矩阵：`read-only` 看不到非只读 MCP 工具；`edit` / `full` 下非只读 MCP 默认待审批；`--tool-policy` 拒绝时不执行；digest 对不上不能批；只读 MCP 工具在 `read-only` 下可执行且不走写权限。
+19. 失败路径：坏的 command、initialize 失败、调用中途进程退出、超时，都有断言；默认是跳过该服务器，`--mcp-strict` 启动失败。运行结束后服务器进程已退出。
+20. 用现有 HK 的假 transport（不要起真服务）测一次 MCP 调用：事件里 `trace.mcp_server_id` 为该服务器名，REVIEW 仍走原审批，BLOCK 不执行工具。Watchdog 打开时，MCP 重复调用能走到现有 `after_tool` / `before_tool` 相位。原有 HK、Watchdog、审批、mode 测试不得削弱。
+21. 三个前端至少有一条路径能完成「MCP 工具待审批 → 批准 → 结果回来」（CLI 用现有测试辅助，TUI 用 pilot，Web 用 TestClient）。一次性 `--output-format json` 时，MCP 的 Session / 警告仍走 stderr。
+
+### E. 文档
+22. 新建 `docs/mcp.md`：网关和客户端的关系（画一张时序：模型点名工具 → 网关钩子 / 策略 / 审批 → 本地 handler 或 MCP `tools/call` → 钩子收尾）；配置格式；命名规则；只读与默认 ask；进程生命周期；限制（不做 HTTP / resources / 对外 MCP 服务，`/undo` 撤不回 MCP 副作用）；空钩子怎么给以后的 HK / Watchdog 用；为什么本支手写工具子集而不是加官方 SDK。
+23. README：对照表把「MCP 客户端 | 未做」改成已做，说明是 stdio 客户端 + 内部网关，HTTP / resources 未做，也不是对外 MCP 服务；用法补 `--mcp-config`、`.mcp.json`、`--mcp-strict` 几行。`docs/demo.md` 加一段离线演示：假服务器 → 列表里出现 `mcp__…` 工具 → 审批 → 调用成功。费用 0。
+
+约束：只推到本分支，不 force-push，不开 PR；不新增核心运行时依赖；不改 Layer 2、RAG、检查点实现、主 Agent 全双工体验；不合并、不重写 Watchdog 与 HarnessKnight；不用 Claude Code 泄露或未授权的源码，不拷贝 mewcode。本段 README 会让语料版本测试失败，这是预期的：合并时我删掉本段，再用 `scripts/rebind_corpus_version.py --write` 重绑。
+
+### 完成情况（实现者填写）
+做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出你自己拍板的点和理由，至少包括：网关是独立类型还是现有调度的收口文档、工具命名、配置文件查找顺序、默认 ask 的实现位置、传输接口怎么留、进程清理方式。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
