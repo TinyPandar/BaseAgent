@@ -27,6 +27,7 @@ from baseagent.llm.bounds import request_bound_profile
 from baseagent.llm.estimation import TokenizerEstimator
 from baseagent.llm.reservation import ReservationUnavailable
 from baseagent.llm.response import TokenUsage
+from baseagent.mcp.manager import McpStartupError
 from baseagent.middleware import AgentMiddleware
 from baseagent.middleware.execution_guidance import ExecutionGuidanceMiddleware
 from baseagent.middleware.repository import RepositoryMiddleware
@@ -296,6 +297,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
+    parser.add_argument("--mcp-config", type=Path, help="MCP servers JSON (mcpServers: command/args/env per server, stdio only); default: .mcp.json in the workspace root; without either, MCP is off; see docs/mcp.md")
+    parser.add_argument("--mcp-strict", action="store_true", help="Exit with code 2 when a configured MCP server or tool cannot be used (default: skip it with a warning on stderr)")
     parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
     parser.add_argument("--tool-package", action="append", choices=["coding", "memory", "shared-memory"], help="Select built-in tool packages; repeat to combine (default: all)")
     parser.add_argument("--skills-dir", action="append", type=Path, help="Explicit local skill package directory; repeat to combine")
@@ -440,6 +443,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                              f"{'--' if wanted else '--no-'}{flag}; drop one of them")
         # The preset replaces permission settings that came from --config.
         args.allow_write, args.allow_command = allow_write, allow_command
+    if (args.mcp_config is not None or args.mcp_strict) and operation and not args.resume:
+        parser.error("--mcp-config and --mcp-strict apply to one-shot prompts, --resume and interactive chat")
     if args.output_format != "text":
         if interactive:
             parser.error(f"--output-format {args.output_format} applies to one-shot prompts and --resume; "
@@ -504,6 +509,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                                      **({"request_bound": self.bound()} if args.request_bound_profile else {}),
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
+    mcp = None
     try:
         if args.list_tool_packages:
             from baseagent.capabilities.assembly import BUILTIN_PACKAGES
@@ -737,6 +743,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                  else assemble_capabilities(workspace, packages=args.tool_package, skills=skills))
         if skills is not None:
             layers.append(SkillMiddleware(skills))
+        if not cached:
+            # MCP tools join the same registry, so policy, approval, ledger and hooks apply unchanged.
+            from baseagent.mcp import McpManager
+            mcp = McpManager.from_arguments(args.mcp_config, workspace.root, strict=args.mcp_strict,
+                                            client_version=version("baseagent"))
+            if mcp is not None:
+                mcp.start()
+                mcp.register(tools, allow_write=workspace.allow_write)
         base_layers = list(layers)
         chat_events = None
         if interactive:
@@ -856,6 +870,11 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,
                                           error="interrupted before the turn finished"))
         return 130
+    except McpStartupError as exc:
+        print(f"MCP error: {exc}", file=sys.stderr)
+        if machine.enabled:
+            machine.finish(machine_result(session_id=args.session, status="error", code=2, error=f"MCP error: {exc}"))
+        return 2
     except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:
         print(f"Session error: {exc}", file=sys.stderr)
         if machine.enabled:
@@ -863,6 +882,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         return 1
     finally:
         machine.stop()
+        if mcp is not None:
+            # Session or run over (normal end, error, Ctrl+C): stop every server process group.
+            mcp.close()
     print(f"Session: {state.session_id}", file=sys.stderr)
     print(f"Reported tokens: {state.total_tokens}; unknown usage calls: {state.unknown_usage_calls}", file=sys.stderr)
     # json/jsonl: stdout carries only JSON; the human lines below move to stderr.
