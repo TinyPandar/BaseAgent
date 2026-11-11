@@ -385,6 +385,18 @@ construction section. It was rebound with
 101 stored `evidence_sha256` values still matched. Gold ranges and answer
 summaries were not regenerated. Published hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-11, coding-agent-core merge)
+
+`corpus_version` moved from `513708831331d11f` to `b0c7bf0c7b86849c` when
+`plan/coding-agent-core` was merged, after file-snapshot checkpoints, permission
+presets, machine-readable output, leftover TUI/Web fixes, and the deletion of
+the README construction section. It was rebound with
+`python scripts/rebind_corpus_version.py --write`, which also found that
+stale-07's `src/baseagent/main.py:286-287` had drifted to `300-301` and moved
+the reference. The hash was unchanged. Every other stored `evidence_sha256`
+still matched. Gold ranges and answer summaries were not regenerated. Published
+hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
