@@ -20,11 +20,16 @@ class ToolRegistry:
     _tools: dict[str, tuple[dict[str, Any], Callable[..., Any], Draft202012Validator]] = field(default_factory=dict)
     _retry_safe: set[str] = field(default_factory=set)
     _contextual: set[str] = field(default_factory=set)
+    # Tools executed by an MCP server: registered name -> server id. Absent means a local handler.
+    _mcp_servers: dict[str, str] = field(default_factory=dict)
     capability_contract: dict[str, Any] | None = None
 
-    def register(self, name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Any], *, retry_safe: bool = False, contextual: bool = False) -> None:
+    def register(self, name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Any], *, retry_safe: bool = False, contextual: bool = False,
+                 mcp_server_id: str | None = None) -> None:
         if name in self._tools:
             raise ValueError(f"duplicate tool: {name}")
+        if mcp_server_id is not None and (not isinstance(mcp_server_id, str) or not mcp_server_id):
+            raise ValueError("mcp_server_id must be a nonempty string")
         parameters = deepcopy(parameters)
         if type(contextual) is not bool or (contextual and "context" in parameters.get("properties", {})):
             raise ValueError("contextual tools reserve the context argument")
@@ -44,6 +49,13 @@ class ToolRegistry:
             self._retry_safe.add(name)
         if contextual:
             self._contextual.add(name)
+        if mcp_server_id is not None:
+            self._mcp_servers[name] = mcp_server_id
+
+    def origin(self, name: str) -> tuple[str, str | None]:
+        """(source, mcp_server_id): ("mcp", server) for MCP-backed tools, ("local", None) otherwise."""
+        server = self._mcp_servers.get(name)
+        return ("mcp", server) if server is not None else ("local", None)
 
     def retry_safe(self, name: str) -> bool:
         return name in self._retry_safe
@@ -58,11 +70,15 @@ class ToolRegistry:
             spec, handler, _ = self._tools[name]
             definition = spec["function"]
             result.register(name, definition["description"], definition["parameters"], handler,
-                            retry_safe=self.retry_safe(name), contextual=name in self._contextual)
+                            retry_safe=self.retry_safe(name), contextual=name in self._contextual,
+                            mcp_server_id=self._mcp_servers.get(name))
         return result
 
     def contract(self) -> dict:
         value = {"specs": sorted(self.specs(), key=lambda spec: spec["function"]["name"]), "retry_safe_tools": sorted(self._retry_safe), "contextual_tools": sorted(self._contextual)}
+        if self._mcp_servers:
+            # Only present with MCP tools, so sessions without MCP keep their contract digest.
+            value["mcp_tools"] = dict(sorted(self._mcp_servers.items()))
         if self.capability_contract is not None:
             value["capabilities"] = deepcopy(self.capability_contract)
         return value

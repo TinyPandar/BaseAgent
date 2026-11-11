@@ -40,6 +40,7 @@ from .compaction import StructuredSummarizer, Summarizer, compact_history
 from .context import ContextLimitExceeded, ContextPolicy
 from .errors import BudgetExceeded, TaskPaused, WorkspaceChanged
 from .events import event
+from .gateway import RESTRICTIONS, GatewayPolicy, origin_fields
 from .guards import prior_reads, repeat_result, successful_write_since
 from .scope import ExecutionScope
 from .state import RunStatus, State
@@ -140,6 +141,7 @@ def _new_turn(state: State, user_input: str, max_steps: int | None, max_model_ca
         state.metadata.pop(key, None)
     state.metadata.pop("tool_approvals", None)
     state.metadata.pop("approval_request", None)
+    state.metadata.pop(RESTRICTIONS, None)
     state.metadata.pop("completion_report", None)
     state.metadata.pop("edited_this_turn", None)
     state.metadata.pop("wrapup_hint_injected", None)
@@ -209,7 +211,8 @@ def run_agent(
     if subtasks is not None:
         tools = subtasks.bind_tools(tools)
     from baseagent.tools.edit_policy import bind_edit_policy
-    policy = bind_edit_policy(tool_policy or ToolPolicy(), tools)
+    # Gateway policy: outermost, transparent unless MCP tools or hook restrictions are present.
+    policy = GatewayPolicy(bind_edit_policy(tool_policy or ToolPolicy(), tools), tools)
     # Preserve legacy contracts for the default permissive policy.
     config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "compaction", "guards", "stream", "parallel", "watchdog"}}
               if isinstance(runtime_config, dict) else runtime_config)
@@ -655,10 +658,10 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             if action == "ask":
                 state.metadata["approval_request"] = {"call_id": request.call_id, "turn_id": state.turn_id,
                     "name": request.name, "request_digest": request_digest(request.name, request.arguments),
-                    "policy": policy.fingerprint}
+                    "policy": policy.fingerprint, **origin_fields(request)}
                 state.status = RunStatus.AWAITING_APPROVAL
                 state.error = "tool requires an explicit approval or denial: " + request.call_id
-                checkpoint("approval_requested", call_id=request.call_id, name=request.name)
+                checkpoint("approval_requested", call_id=request.call_id, name=request.name, **origin_fields(request))
                 raise TaskStopped()
             state.metadata.pop("approval_request", None)
             try:
@@ -671,7 +674,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 store.start_call(state, request.call_id)
             else:
                 checkpoint("tool_started", call_id=request.call_id)
-            checkpoint("tool_call_started", call_id=request.call_id)
+            checkpoint("tool_call_started", call_id=request.call_id, **origin_fields(request))
             tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": action}
             self.record = record
             self.action = action
@@ -732,7 +735,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             else:
                 checkpoint("tool_completed", call_id=request.call_id, ok=result.ok, error_code=result.error.code if result.error else None)
             checkpoint("tool_call_finished", call_id=request.call_id, ok=result.ok,
-                       error_code=result.error.code if result.error else None)
+                       error_code=result.error.code if result.error else None, **origin_fields(request))
             try:
                 parsed = json.loads(request.arguments or "{}")
             except (ValueError, TypeError, RecursionError):
@@ -741,6 +744,10 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                             arguments=parsed if isinstance(parsed, dict) else {}, call_id=request.call_id, ok=result.ok,
                             raise_stop=False)
             tool_prep.pop(request.call_id, None)
+            if not (record and record["status"] == "completed"):
+                # Closing node hooks, once per committed call; a result replayed from the ledger was
+                # already reported. Local and MCP tools end here alike.
+                pipeline.finish_tool(request, result)
 
         def tool_returned(self, request, result, duration_seconds):
             return AgentEvent("tool_returned", data={"call_id": request.call_id, "ok": result.ok,

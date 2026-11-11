@@ -46,6 +46,13 @@ def _tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _tool_request(state, call, cancellation, tools) -> ToolCallRequest:
+    function = call["function"]
+    source, server = tools.origin(function["name"])
+    return ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation,
+                           source=source, mcp_server_id=server)
+
+
 def _pending_calls(state: KernelState) -> list[dict[str, Any]]:
     replies = set()
     for message in reversed(state.messages[state.turn_start:]):
@@ -200,7 +207,7 @@ class _SingleTaskHooks(LoopHooks):
         return self.pipeline.wrap_tool(execute_tool)(request)
 
     def commit_tool(self, request, result):
-        pass
+        self.pipeline.finish_tool(request, result)
 
     def tool_returned(self, request, result, duration_seconds):
         return self.checkpoint("tool_returned", call_id=request.call_id, ok=result.ok,
@@ -314,8 +321,7 @@ def iter_agent(
                 if can_parallel:
                     prepared = []
                     for call in pending:
-                        function = call["function"]
-                        request = ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation)
+                        request = _tool_request(state, call, cancellation, tools)
                         started = time.monotonic()
                         result = driver.prepare_tool(request)
                         if result is None:
@@ -351,8 +357,7 @@ def iter_agent(
                             yield finished(request, result)
                 else:
                     for call in pending:
-                        function = call["function"]
-                        request = ToolCallRequest(state, call["id"], function["name"], function["arguments"], cancellation)
+                        request = _tool_request(state, call, cancellation, tools)
                         started = time.monotonic()
                         result = driver.prepare_tool(request)
                         if result is None:

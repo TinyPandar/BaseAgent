@@ -28,6 +28,9 @@ class ToolCallRequest:
     arguments: str
     cancellation: Any = None
     remaining_seconds: Callable[[], float | None] | None = None
+    # Execution backend of the registered tool: "local" or "mcp" (then mcp_server_id names the server).
+    source: str = "local"
+    mcp_server_id: str | None = None
 
 
 class AgentMiddleware:
@@ -54,6 +57,14 @@ class AgentMiddleware:
 
     def before_tool(self, request: ToolCallRequest) -> None:
         """Preflight validation before a pending call enters its running ledger state."""
+        pass
+
+    def after_tool(self, request: ToolCallRequest, result: ToolResult) -> None:
+        """Observe every committed tool result (success or failure). Cannot change the result."""
+        pass
+
+    def on_tool_failure(self, request: ToolCallRequest, result: ToolResult) -> None:
+        """Observe a committed failed result (denied, blocked, timed out, crashed), after ``after_tool``."""
         pass
 
     def after_agent(self, state: State) -> None:
@@ -99,6 +110,20 @@ class MiddlewarePipeline:
     def after_model(self, state: State, message: dict[str, Any]) -> None:
         for layer in reversed(self.layers):
             layer.after_model(state, message)
+
+    def after_tool(self, request: ToolCallRequest, result: ToolResult) -> None:
+        for layer in reversed(self.layers):
+            layer.after_tool(request, result)
+
+    def on_tool_failure(self, request: ToolCallRequest, result: ToolResult) -> None:
+        for layer in reversed(self.layers):
+            layer.on_tool_failure(request, result)
+
+    def finish_tool(self, request: ToolCallRequest, result: ToolResult) -> None:
+        """Closing node hooks of one tool call: after_tool always, on_tool_failure for a failed result."""
+        self.after_tool(request, result)
+        if not result.ok:
+            self.on_tool_failure(request, result)
 
     def after_agent(self, state: State) -> None:
         first_error: Exception | None = None

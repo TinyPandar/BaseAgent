@@ -62,7 +62,7 @@ def infer_impacts(name: str, arguments: dict) -> list[dict]:
 
 
 def build_event(*, state, event_type: str, call_id: str, phase: str, payload: dict,
-                sources=(), causal_event_id=None, impacts=(), occurred_at=None) -> dict:
+                sources=(), causal_event_id=None, impacts=(), occurred_at=None, mcp_server_id=None) -> dict:
     sid = state.session_id or "baseagent-session"
     raw_key = (f"baseagent-{sid}-{call_id}-after" if phase == "after" else
                f"baseagent-{sid}-prompt-{call_id}" if phase == "prompt" else f"baseagent-{sid}-{call_id}")
@@ -72,7 +72,7 @@ def build_event(*, state, event_type: str, call_id: str, phase: str, payload: di
             "agent": {"agent_id": "baseagent-main", "agent_type": "baseagent", "agent_version": "unknown"},
             "session_id": _bounded_identifier(sid), "causal_event_id": causal_event_id, "payload": payload,
             "sources": list(sources), "trace": {"root_session_id": _bounded_identifier(sid), "parent_agent_id": None,
-            "mcp_server_id": None, "call_id": _bounded_identifier(call_id) if phase != "prompt" else None},
+            "mcp_server_id": _bounded_identifier(mcp_server_id), "call_id": _bounded_identifier(call_id) if phase != "prompt" else None},
             "impacts": list(impacts), "metadata": {}}
 
 
@@ -180,6 +180,7 @@ class HarnessKnightMiddleware(AgentMiddleware):
             parsed = {"_raw": arguments}
         event = build_event(state=state, event_type="tool.call.before", call_id=call_id, phase="before",
                             payload={"tool_name": name, "arguments": parsed}, impacts=infer_impacts(name, parsed),
+                            mcp_server_id=getattr(request, "mcp_server_id", None),
                             occurred_at=stamps.setdefault(stamp_key, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")))
         decision, messages = self.client.decide(event)
         self.client._tool_decisions[cache_key] = (decision, messages)
@@ -214,7 +215,8 @@ class HarnessKnightMiddleware(AgentMiddleware):
             event = build_event(state=state, event_type="tool.call.after", call_id=call_id, phase="after",
                                 payload={"tool_name": request.name, "output": output},
                                 sources=[{"source_id": _bounded_identifier(f"tool-result-{call_id}"), "kind": "tool_result"}],
-                                causal_event_id=before.get("event_id"), occurred_at=stamps.setdefault(stamp_key, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")))
+                                causal_event_id=before.get("event_id"), mcp_server_id=getattr(request, "mcp_server_id", None),
+                                occurred_at=stamps.setdefault(stamp_key, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")))
             self._after_events[cache_key] = event
         decision, messages = self.client.decide(event)
         hk.setdefault("after_decisions", {})[call_id] = {"decision": decision, "messages": messages}
