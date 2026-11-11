@@ -87,6 +87,21 @@ python -B scripts/demo_checkpoints.py
 
 同样的事不进对话也能做：`baseagent --session demo --checkpoints`、`baseagent --session demo --rewind last`（不调模型、不要密钥）。为什么按文件快照而不用影子 git，见 [checkpoints.md](checkpoints.md)。
 
+## 加演：MCP 工具 → 审批 → 调用成功
+
+```bash
+python -B scripts/demo_mcp.py
+```
+
+离线，费用 0，不联网。脚本在临时工作区里写一份 `.mcp.json`，指向仓库里的假 stdio 服务器 `tests/fixtures/fake_mcp_server.py`，再用真实的对话入口 `baseagent --mode edit --no-main-agent` 加脚本化输入和假模型。最后一行是 JSON 摘要（`note_written: true`、`server_stopped: true`）。`tests/test_demo_mcp.py` 自动走一遍。讲的时候按这个顺序：
+
+1. `[stderr] MCP: server 'demo' ready, 7 tool(s): mcp__demo__echo, mcp__demo__add_note, …` —— 启动时握手、`tools/list`，工具以 `mcp__<服务器>__<工具>` 注册进同一个 Registry。摘要里的 `mcp_tools` 是模型实际收到的工具名。
+2. agent 先调 `mcp__demo__echo`。配置里标了 `readOnly: true`，直接执行，不问。
+3. agent 再调 `mcp__demo__add_note`。没标只读，对话停下来：`Approval required: mcp__demo__add_note`，下面是参数和 call id，然后 `Allow mcp__demo__add_note? [y/N]`。回 `y` 之前笔记文件不存在；回 `y` 之后才发 `tools/call`，agent 回「笔记已记下」。
+4. `/exit` 后服务器进程已经退出（`server_stopped: true`）。
+
+走的是和 `write_file` 一样的那条路径：同一套策略、审批、账本和钩子。MCP 工具的副作用 `/undo` 撤不回。细节见 [mcp.md](mcp.md)。
+
 ## 2:00 指标
 
 ```bash

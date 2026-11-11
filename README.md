@@ -29,7 +29,7 @@
 | JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
 | 权限预设 | 有 | `--mode read-only\|edit\|full` 映射到 `--allow-write` / `--allow-command`；矛盾的显式标志直接报错；`--tool-policy` 只能再收紧 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
-| MCP 客户端 | 未做 | 不在本计划里 |
+| MCP 客户端 | 有，stdio，默认关闭 | 手写的工具子集客户端（`initialize` / `tools/list` / `tools/call`）加内部工具网关：MCP 工具与本地工具共用策略、审批、账本和钩子；有副作用的工具默认逐次审批；Streamable HTTP、resources、prompts 未做；不是对外 MCP 服务；离线测试，见 [docs/mcp.md](docs/mcp.md) |
 
 ## 失败与取舍
 
@@ -90,6 +90,48 @@
 
 ### 完成情况（实现者填写）
 做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出你自己拍板的点和理由，至少包括：网关是独立类型还是现有调度的收口文档、工具命名、配置文件查找顺序、默认 ask 的实现位置、传输接口怎么留、进程清理方式。
+
+测试文件缩写：`client` = `tests/test_mcp_client.py`，`gateway` = `tests/test_mcp_gateway.py`，`cli` = `tests/test_mcp_cli.py`。提交：`4d47b0b`（钩子与网关策略）、`72ff7fd`（MCP 客户端）、`6cc41aa`（CLI 接入与测试），文档和演示在其后一个提交。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 | 完成 | `gateway` `BypassTests.test_mcp_tools_do_not_run_outside_the_harness_gateway`、`test_only_the_registered_handler_reaches_the_transport`；`client` `test_a_registered_handler_refuses_calls_that_do_not_come_from_the_gateway` | MCP 工具只以 Registry 条目存在；handler 没有 harness 上下文（call id + 策略）就拒绝；静态测试保证只有 `mcp/manager.py` 调 `call_tool`、只有 `main.py` 导入 `baseagent.mcp` |
+| 2 | 完成 | `src/baseagent/agent/gateway.py`（模块说明即路径图）、`docs/mcp.md` | 没有第二套循环；HK / Watchdog 文件位置和判定规则未动 |
+| 3 | 完成 | `gateway` `HookTests.test_one_recorder_sees_local_and_mcp_calls_through_the_same_hooks`、`test_kernel_loop_runs_the_same_closing_hooks_for_local_tools` | `after_tool` 每次入账调用一次（成功失败都调），失败再调 `on_tool_failure`；从账本重放的结果不重复通知 |
+| 4 | 完成 | 同上（断言 `source` / `mcp_server_id`、事件里无参数原文）；`gateway` `test_existing_harnessknight_sees_the_server_id_and_review_uses_the_existing_approval` | 元数据事件只在 MCP 调用上加 `source` / `mcp_server_id` 两个字段；本地工具的事件形状不变（字段缺省即 null），否则 `test_kernel_compatibility` 的逐字基线会变 |
+| 5 | 完成 | `gateway` `HookTests.test_hooks_can_only_tighten_a_call` | 钩子通过 `restrict(request, "ask"\|"deny")` 收紧，网关取更严的结论；判定和审批仍在 `policy.action` |
+| 6 | 完成 | `gateway` `HarnessKnightAndWatchdogTests`（4 个）；`docs/mcp.md`「钩子：以后怎么接防护」 | `harnessknight.py` 只改了把 `mcp_server_id` 填进信封这一处；`watchdog.py` 未改 |
+| 7 | 完成 | `client` `ClientTests`（8 个）；`pyproject.toml` 未改 | 握手按 2025-11-25；结果形状兼容 2026-07-28（`resultType`、分页）。2026-07-28 已是无握手的无状态协议，本支按 AC 做 `initialize`，只会无握手协议的服务器连不上（见 `docs/mcp.md`「协议范围」） |
+| 8 | 完成 | `client` `ConfigTests`；`cli` `test_flag_takes_precedence_over_the_workspace_file`、`test_without_configuration_there_are_no_mcp_tools_and_no_mcp_output` | `readOnly` 写在 `tools.<名字>.readOnly`；harness `--config` 文件里没有加 MCP 字段 |
+| 9 | 完成 | `client` `test_names_are_prefixed_builtins_are_never_replaced_and_bad_names_are_skipped` | 含 `.` 等模型接口不接受字符的工具名跳过并警告，不改名 |
+| 10 | 完成 | `client` `test_read_only_mode_hides_tools_that_are_not_declared_read_only`；`gateway` `PolicyTests`；`cli` `ModeTests` | 策略里对非只读 MCP 工具写 `allow` 无效，仍 `ask`（见拍板点 4） |
+| 11 | 完成 | `client` `StartupTests`、`test_tool_error_rpc_error_and_non_json…`、`test_server_exit_during_a_call…`、`test_stderr_is_logging_capped…`；`cli` `FailureTests` | 配置文件整体读不了：默认警告并关闭 MCP，`--mcp-strict` 退出码 2；`--mcp-config` 指向不存在的文件总是退出码 2 |
+| 12 | 部分 | `client` `test_close_stops_the_server_and_its_child_process_group`、`test_call_timeout_deadline_and_cancellation_interrupt_a_hanging_call`；`cli` 各用例结尾的 `process_gone` 断言 | 正常结束、出错、Ctrl+C、SIGTERM、调用超时/取消都已覆盖。未做到的：BaseAgent 被 `kill -9` 时无法清理（依赖服务器在 stdin 关闭后自行退出）；Windows 的进程树清理写了但没有实测；SIGTERM 处理没有单独的自动化测试 |
+| 13 | 完成 | `cli` `FrontendTests`（CLI 提示 `Allow mcp__demo__add_note?`、Web 审批视图、TUI 弹窗）；`gateway` `test_wrong_digest_is_refused_and_an_approval_covers_one_call_only` | 服务器名和工具名从注册名 `mcp__<server>__<tool>` 读出；审批记录另存 `mcp_server_id` |
+| 14 | 完成 | `cli` `SessionTests.test_changing_servers_of_an_unfinished_session_needs_accept_config_changes` | 换过服务器后旧批准作废、重新询问；某服务器这次没起来也算配置变化 |
+| 15 | 完成 | `cli` `WorkerTests.test_workers_get_mcp_tools_by_write_grant_and_side_effect_calls_still_need_approval`；`docs/mcp.md`「会话与 Worker」 | 单写者规则未改，沿用原测试 |
+| 16 | 完成 | `tests/fixtures/fake_mcp_server.py` | 只用标准库，不联网 |
+| 17 | 完成 | 同 AC 1、AC 3 | 「审批停住」由记录器在 `after_agent` 里读到 `awaiting_approval` 和待批请求 |
+| 18 | 完成 | `cli` `ModeTests`（7 个）；`gateway` `PolicyTests` | |
+| 19 | 完成 | `client` `StartupTests`；`cli` `FailureTests`（3 个） | 被卡死的服务器在运行结束时同样被清掉（`slow` 用例） |
+| 20 | 完成 | `gateway` `HarnessKnightAndWatchdogTests` | 用的是测试内的假 transport，没有起服务；原有 HK / Watchdog / 审批 / mode 测试一条未改 |
+| 21 | 完成 | `cli` `FrontendTests`（CLI 2 个、Web 1 个、TUI 1 个）、`SessionTests.test_json_output_keeps_stdout_clean_and_names_the_pending_mcp_call` | TUI / Web 用例需要可选依赖，未安装时按原约定跳过 |
+| 22 | 完成 | `docs/mcp.md` | |
+| 23 | 完成 | README 对照表与「运行 CLI」；`docs/demo.md`；`scripts/demo_mcp.py`、`tests/test_demo_mcp.py` | |
+
+全量离线测试（macOS，2026-11-11）：pytest 1100 通过、9 失败、2 跳过。9 个失败在本支改动前就存在，改动前后名单相同：1 个是本施工段导致的语料版本测试（预期）；3 个是 macOS 临时目录 `/var` 与 `/private/var` 的路径比较（`test_backends`、`test_config`、`test_evaluate_retrieval_cli`）；其余 5 个原因未查（`test_coding` 的文件锁用例 1 个、`test_record_coding_scenario` 3 个、`test_project_assistant_coding` 1 个）。`scripts/check_kernel_isolation.py` 在这台机器上改动前后都因 `ensurepip` 崩溃而失败，未能验证；内核改动只用了标准库。
+
+自己拍板的点：
+
+1. **网关不是独立类型，是现有调度的收口。** 只加了 `agent/gateway.py`（`GatewayPolicy`、`restrict`、路径说明）和 Registry 上的来源标记；循环、账本、审批代码原地不动。理由：再包一层类型就是第二条调用链的开头，而这里要的正是只有一条。
+2. **命名 `mcp__<server>__<tool>`**，服务器名限定为字母、数字、连字符。重名或名字不合法就跳过并警告，不改名、不覆盖。理由：名字要稳定，策略文件和审批记录都按它匹配。
+3. **配置查找顺序：`--mcp-config` → `<工作区根>/.mcp.json` → 关闭。** 不合并两个文件。理由：一眼能说清当前用的是哪份配置。需要你留意：工作区里的 `.mcp.json` 会被自动执行，不可信的仓库有风险，启动时在 stderr 打印来源和命令，文档里写了。
+4. **默认 ask 放在 `GatewayPolicy`（策略链最外层）**，取原策略结论和「非只读 MCP 工具 = ask」里更严的一个。按 AC 10「只能再收紧」的字面意思，策略里写 `allow` 也不能关掉这次审批；免审批的唯一办法是在配置里声明 `readOnly`。如果你希望显式的按名 `allow` 能放行，改 `GatewayPolicy.action` 一处即可。
+5. **`readOnly: true` 等同于 `retry_safe=True`。** 理由：现有代码里只读 Worker 和并行只读批次都按 `retry_safe` 选工具，用同一个标记就不需要第二套判断。服务器自报的 `readOnlyHint` 不采信。
+6. **传输接口**是 `mcp/transport.py` 里的 `Transport` 协议（`start` / `request` / `notify` / `close`），`StdioTransport` 是唯一实现；`McpManager` 接受 `transport_factory`。加 HTTP 只需要新写一个实现。
+7. **进程清理**：每个服务器一个进程组；结束时关 stdin → 等 1 秒 → 对进程组 SIGTERM → 等 1 秒 → 对进程组 SIGKILL。`main` 的 `finally`、`atexit`、SIGTERM 处理三处触发。调用超时或被取消只结束这次等待并发 `notifications/cancelled`，不杀服务器；服务器崩溃后不自动重启。
+8. **服务器配置哈希进入工具契约和策略指纹**，所以换服务器既触发 `--accept-config-changes`，也让旧批准失效。
+9. **对话前端的服务器生命周期跟 `main` 走**（前端返回后在 `finally` 里关闭），没有改 `ChatSession`。TUI / Web 的 MCP 测试因此把脚本放在前端 runner 里跑。
 
 ## 库与 CLI
 
@@ -197,6 +239,9 @@ uv run baseagent "Fix the failing test and verify it" --root . --allow-write --a
 uv run baseagent "Fix the failing test and verify it" --root . --mode full   # 同上；--mode read-only|edit|full
 uv run baseagent "Explain the project structure" --root . --output-format json  # stdout 只有一个 JSON 对象
 uv run baseagent --config examples/harness.readonly.json "Explain the project"
+uv run baseagent "Search my notes" --root . --mcp-config mcp.json            # 接入 stdio MCP 服务器；工具名 mcp__<server>__<tool>
+uv run baseagent "Search my notes" --root .                                  # 同上：没传 flag 时读 <root>/.mcp.json，没有就不启用
+uv run baseagent "Add a note" --root . --mode edit --mcp-strict              # 任何 MCP 服务器起不来就退出（退出码 2）；默认是跳过并警告
 # 或直接用 venv：
 .venv/bin/python -m baseagent "Explain the project structure" --root .
 ```
@@ -248,6 +293,8 @@ uv run baseagent --session demo --rewind last [--force]  # 或 --rewind 3
 ```
 
 设计、表结构和限制（命令的副作用撤不回）见 [docs/checkpoints.md](docs/checkpoints.md)。
+
+MCP 工具（`--mcp-config path` 或工作区根目录的 `.mcp.json`，格式是常见的 `mcpServers`：`command` / `args` / `env`）在三个前端和一次性命令里都可用。`--mode read-only` 下只暴露配置里标了 `readOnly: true` 的工具；其它 MCP 工具在 `edit` / `full` 下每次调用都要审批，`--tool-policy` 只能再收紧。`/undo` 撤不回 MCP 工具的副作用。配置、命名、进程生命周期和限制见 [docs/mcp.md](docs/mcp.md)。
 
 ### 4. Project Assistant（RAG）离线演示
 
