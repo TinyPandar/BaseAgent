@@ -121,6 +121,8 @@
 
 全量离线测试（macOS，2026-11-11）：pytest 1100 通过、9 失败、2 跳过。9 个失败在本支改动前就存在，改动前后名单相同：1 个是本施工段导致的语料版本测试（预期）；3 个是 macOS 临时目录 `/var` 与 `/private/var` 的路径比较（`test_backends`、`test_config`、`test_evaluate_retrieval_cli`）；其余 5 个原因未查（`test_coding` 的文件锁用例 1 个、`test_record_coding_scenario` 3 个、`test_project_assistant_coding` 1 个）。`scripts/check_kernel_isolation.py` 在这台机器上改动前后都因 `ensurepip` 崩溃而失败，未能验证；内核改动只用了标准库。
 
+验收后补丁（2026-11-12）：① 修 stderr 摘录竞态——服务器启动失败时先 `close()` 让 stderr 到 EOF，再用 `stderr_text(wait=1.0)` 对 stderr 读线程做带超时的 join 后取摘录（`mcp/transport.py`、`mcp/manager.py`），断言未放宽，修复前 `client` `StartupTests.test_failing_servers_are_skipped…` 在全量套件里偶发缺 "refusing to start"；② 把 README「Extensions」段里「MCP … are future milestones」改成与现状一致。复测：MCP 四个测试文件（`client`、`gateway`、`cli`、`tests/test_demo_mcp.py`）连跑 5 遍均 49 通过；全量 pytest 1100 通过、9 失败、2 跳过，9 个失败与上面的既有名单相同。
+
 自己拍板的点：
 
 1. **网关不是独立类型，是现有调度的收口。** 只加了 `agent/gateway.py`（`GatewayPolicy`、`restrict`、路径说明）和 Registry 上的来源标记；循环、账本、审批代码原地不动。理由：再包一层类型就是第二条调用链的开头，而这里要的正是只有一条。
@@ -548,7 +550,9 @@ Library callers use `assemble_capabilities(workspace, packages=..., skills=...,
 extensions=[ToolPackage(name, version, install)])` and pass `SkillMiddleware(catalog)`
 alongside their other middleware. Each extension installer registers handlers on
 the supplied registry; duplicate tools are rejected. Version extension implementations
-when behavior changes. MCP and automatic installation are future milestones.
+when behavior changes. External tools from MCP servers are supported through
+`--mcp-config` / `.mcp.json` (stdio, tools only; see [docs/mcp.md](docs/mcp.md));
+automatic installation is a future milestone.
 
 Set `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and optionally `DEEPSEEK_MODEL` in `.env` (the file is ignored by Git). Then:
 

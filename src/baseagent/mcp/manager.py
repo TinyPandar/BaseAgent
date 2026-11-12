@@ -24,6 +24,7 @@ STARTUP_TIMEOUT = 10.0
 REGISTERED_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 DESCRIPTION_CHARS = 1024
 STDERR_NOTE_CHARS = 300
+STDERR_JOIN_SECONDS = 1.0
 
 
 class McpStartupError(Exception):
@@ -100,12 +101,14 @@ class McpManager:
             client.initialize(self.startup_timeout)
             tools = client.list_tools(self.startup_timeout)
         except McpError as exc:
+            # Stop the server first so its stderr reaches EOF, then wait briefly for the reader
+            # thread: reading the buffer earlier races the thread and can miss the last lines.
+            transport.close()
             detail = ""
             if hasattr(transport, "stderr_text"):
                 # Bounded excerpt of the server's own log; it is not a protocol message.
-                tail = transport.stderr_text().strip()[-STDERR_NOTE_CHARS:]
+                tail = transport.stderr_text(wait=STDERR_JOIN_SECONDS).strip()[-STDERR_NOTE_CHARS:]
                 detail = f"; server stderr: {tail!r}" if tail else ""
-            transport.close()
             self._problem(f"server '{config.name}' failed to start ({exc}){detail}; server skipped")
             return
         self.clients[config.name] = client

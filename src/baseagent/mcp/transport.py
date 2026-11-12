@@ -76,7 +76,11 @@ class StdioTransport:
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None and self._closed_reason is None
 
-    def stderr_text(self) -> str:
+    def stderr_text(self, wait: float = 0.0) -> str:
+        """Captured server stderr. ``wait`` > 0 first joins the stderr reader for at most that
+        many seconds, so an excerpt taken after a failure includes what the server wrote last."""
+        if wait > 0 and len(self._threads) > 1:
+            self._threads[1].join(timeout=wait)
         return bytes(self._stderr).decode("utf-8", errors="replace")
 
     def close(self) -> None:
