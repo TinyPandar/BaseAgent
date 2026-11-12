@@ -46,32 +46,33 @@
 现有入口（实现时以此为准，不要另起一条写入链）：
 
 - 写入入口：`Workspace._write_file`（`tools/workspace.py`）。`write_file`、`edit_file` 都走它：观察容量检查 → `allow_write` → 工作区边界 `_path` → `edit_policy.check_path` → `checkpoints.capture()` → `tools/edit_policy.py` 的 `write_file`（按 `expected_sha256` 做 CAS、单文件锁、临时文件 + fsync + 原子发布）→ `saved.commit(result)` / 失败时 `saved.abort()` → 观察记录与验证失效。
+- 文本替换：`apply_edits`（`tools/workspace.py`），`edit_file` 用它在内存里算出新内容再交给 `_write_file`。规则：1–20 条 `{old_text, new_text}`，每条 `old_text` 必须是非空字符串且在当前内容里恰好出现一次，按顺序替换；0 次或多次匹配、字段不合法，或替换后超过 200 KB，都抛 `ToolFailure`，一个字节都不写。
 - 检查点：`session/checkpoints.py`，每个用户轮次一个检查点，`MAX_BLOB_BYTES = 200_000`、`MAX_FILES_PER_TURN = 500`；`/checkpoints`、`/undo`、`/rewind N` 在 `ChatSession.command` 里，三个前端共用。设计见 [docs/checkpoints.md](docs/checkpoints.md)。
 - 后端：`backends/protocol.py` 的 `WorkspaceBackend` 现在只有 `write_file`，没有删除操作；CAS、锁和原子发布由后端在目标环境内完成。
-- 工具注册：`coding_tools(workspace)`（`tools/workspace.py`）里注册 `write_file` / `edit_file`；`ToolRegistry`（`kernel/tools.py`）做 JSON Schema 校验。
+- 工具注册：`coding_tools(workspace)`（`tools/workspace.py`）里注册 `write_file` / `edit_file`；`ToolRegistry`（`kernel/tools.py`）做 JSON Schema 校验。`write_file` 新建时 `expected_sha256` 用字符串 `"missing"`，不是 `null`。
 - 权限：`--mode read-only|edit|full` 映射 `--allow-write` / `--allow-command`；未开启的写工具由 `ExecutionGuidanceMiddleware`（`middleware/execution_guidance.py`）从模型工具列表隐藏，工作区边界再兜底返回 `permission_denied`。Worker 的写权限和「同时只有一个可写 Worker」按 `agent/router.py` 的 `WRITE_TOOLS` 判定。
 - 策略与审批：`ToolPolicy`（`tools/policy.py`），`allow|deny|ask` 按精确工具名匹配，只能在 mode 基础上收紧；`ask` 停在 `awaiting_approval`，批准绑定 call id、轮次、工具名、参数原文的 `request_digest(name, arguments)` 和策略指纹。MCP 合入后的外层是 `agent/gateway.py` 的 `GatewayPolicy`，本支不改。
 - 编辑策略：`EditPolicy`（`tools/edit_policy.py`）的路径 allowlist / denylist、`max_changed_lines`、`post_edit_check`。
 - 输出：`--output-format json|jsonl`，`schema_version` 1，字段只增不改，jsonl 事件只有元数据。见 [docs/output.md](docs/output.md)。
 
-入参用「完整新内容」，不用 unified diff。理由：① 和 `write_file` 一样按 `expected_sha256` 做乐观并发检查，底本对上就整文件替换，不需要写打补丁、模糊匹配和冲突处理的代码；② 审批 digest 直接覆盖每个文件的最终内容，批了什么就写什么；③ 展示用的 diff 由我们自己根据底本和新内容算出来，格式稳定，不依赖模型写对 diff 语法。代价是改大文件时 token 多，所以单文件上限沿用 200 KB，小改动继续用 `edit_file`。
+入参按操作分成三种，和现有写工具对齐，不用 unified diff 当入参。`modify` 复用 `edit_file` 的 `{old_text, new_text}` 精确替换（直接调用 `apply_edits`，语义一字不改）；`add` 用完整新内容和 `expected_sha256="missing"`，与 `write_file` 新建约定相同；`delete` 只带当前文件的 `expected_sha256`。理由：模型只学一套编辑格式，改文件时不必重传全文，比整文件内容更省 token；展示用的 diff 仍由我们根据底本和替换后的新内容自己算，格式稳定，不依赖模型写对 diff 语法。不要另写一套打补丁或模糊匹配。
 
 ### A. 工具与入参
-1. 在 `coding_tools` 里注册 `apply_patch`，参数（`additionalProperties: false`）：`operations` 数组，1 到 `MAX_PATCH_FILES` 项（常量，默认 50，写在代码和 `docs/patch.md` 里）。每项：`op`（`add` / `modify` / `delete`）、`path`、`expected_sha256`（`add` 必须为 `null`；`modify` / `delete` 必须是 64 位小写十六进制）、`expected_instructions`（与 `write_file` 相同的指令摘要，三种操作都要）、`content`（`add` / `modify` 必填，`delete` 不允许出现）。`add` 只能用于当前不存在的文件，`modify` / `delete` 只能用于已存在的文件。同一批里同一路径（按工作区规范化后比较，大小写不敏感的系统按系统规则）只能出现一次。
+1. 在 `coding_tools` 里注册 `apply_patch`，参数（`additionalProperties: false`）：`operations` 数组，1 到 `MAX_PATCH_FILES` 项（常量，默认 50，写在代码和 `docs/patch.md` 里）。每项都有 `op`（`add` / `modify` / `delete`）、`path`、`expected_sha256`、`expected_instructions`（与 `write_file` 相同的指令摘要，三种操作都要）。`expected_sha256` 三种操作都是字符串，不要用 `null`：`add` 必须为 `"missing"`（与 `write_file` 新建约定相同）；`modify` / `delete` 必须是当前文件的 64 位小写十六进制哈希。按 `op` 带不同字段：`add` 必填完整 `content`，不允许出现 `edits`；`modify` 必填 `edits`（与 `edit_file` 相同：1–20 项 `{old_text, new_text}` 精确唯一替换），不允许出现 `content`；`delete` 不允许出现 `content` 或 `edits`。`modify` 必须直接调用现有 `apply_edits`：每条 `old_text` 在该文件当前内容里必须恰好匹配一次，任一不匹配（0 次或多次）、字段不合法、或替换后超过 200 KB，整批失败、一个文件都不写。`add` 只能用于当前不存在的文件，`modify` / `delete` 只能用于已存在的文件。同一批里同一路径（按工作区规范化后比较，大小写不敏感的系统按系统规则）只能出现一次。
 2. 工具不是 `retry_safe`，不自动重试。`write_file` / `edit_file` 的名字、参数、描述和行为一字不改；不把一轮里多次 `write_file` 自动攒成事务。
-3. 成功返回的 `data` 至少包括：每个文件的 `path`、`op`、写前哈希（新建为 `missing`）、写后哈希（删除为 `missing`）、增删行数；整批 `diff`（unified diff，`a/` `b/` 路径前缀，新建以 `/dev/null` 为底，删除以 `/dev/null` 为目标）和 `diff_truncated`。diff 上限 `MAX_PATCH_DIFF_CHARS`（常量，默认 20000 字符，写进文档），超出时在末尾加明确的截断标记并写明省略了多少个文件 / 行。
+3. 成功返回的 `data` 至少包括：每个文件的 `path`、`op`、写前哈希（新建为 `missing`）、写后哈希（删除为 `missing`）、增删行数；整批 `diff`（unified diff，`a/` `b/` 路径前缀，新建以 `/dev/null` 为底，删除以 `/dev/null` 为目标）和 `diff_truncated`。diff 由底本和落盘后的新内容（`modify` 是 `apply_edits` 的结果）计算，不采用模型提交的 diff。diff 上限 `MAX_PATCH_DIFF_CHARS`（常量，默认 20000 字符，写进文档），超出时在末尾加明确的截断标记并写明省略了多少个文件 / 行。
 
 ### B. 原子性（全有或全无）
-4. 写任何文件之前先校验整批：每个路径过工作区边界、受保护路径和忽略规则、`EditPolicy` 路径规则、链接 / junction 别名；每个文件当前哈希等于 `expected_sha256`（`add` 时文件必须不存在）；指令摘要仍是当前值；每个文件新内容不超过 `MAX_BLOB_BYTES`（200 KB）、整批不超过文件数上限；这一轮检查点和观察记录的剩余容量够放整批。任一不通过：一个文件都不写，返回 `ToolFailure`，错误信息点名第一个出问题的文件和原因（哈希不符用现有的冲突错误码，越界用 `permission_denied`，超限用 `limit_exceeded`）。
+4. 写任何文件之前先校验整批：每个路径过工作区边界、受保护路径和忽略规则、`EditPolicy` 路径规则、链接 / junction 别名；每个文件当前哈希等于 `expected_sha256`（`add` 时文件必须不存在，且 `expected_sha256` 为 `"missing"`）；指令摘要仍是当前值；对每个 `modify` 在内存里跑一遍 `apply_edits`（语义与单独调用 `edit_file` 相同）；每个将要写入的新内容（`add` 的 `content`，或 `modify` 经 `apply_edits` 得到的全文）不超过 `MAX_BLOB_BYTES`（200 KB）、整批不超过文件数上限；这一轮检查点和观察记录的剩余容量够放整批。任一不通过（包括某条 `old_text` 不是恰好匹配一次）：一个文件都不写，返回 `ToolFailure`，错误信息点名第一个出问题的文件和原因（哈希不符或替换不唯一用现有的冲突错误码，越界用 `permission_denied`，超限用 `limit_exceeded`）。
 5. 校验通过后，先在内存里给受影响的文件做快照（原字节或「不存在」），再逐个写入。写到一半失败（后端写失败、写前最后一次 CAS 冲突、`post_edit_check` 失败、中断）：已经写下去的文件按快照倒序恢复，新建的删掉、删除的写回，工作区回到调用前的字节状态；返回 `ToolFailure`，点名失败的文件。
 6. 回滚成功后，这一批不在当前轮次检查点里留下改动记录（本轮之前其它写入的记录原样保留），`/checkpoints` 看不到这批文件被改过。回滚本身也失败（二次故障）时：检查点里这批的原貌记录保留，不丢；`ToolFailure` 列出状态未知的文件并提示用 `/undo` 恢复。
-7. 成功的修改和新建都经过 `Workspace._write_file` 落盘，从而走同一套边界、编辑策略、检查点捕获、CAS 和观察记录。删除没有现成入口：在 `Workspace` 上补一个与 `_write_file` 对称的删除入口（同样过边界、编辑策略、检查点捕获、观察记录），并在 `WorkspaceBackend` 协议里加一个带 `expected_sha256` CAS 的删除方法，`LocalBackend`、`DockerBackend` 和测试里的内存后端都要实现。不要绕开 Workspace 直接 `unlink`。
+7. 成功的修改和新建都经过 `Workspace._write_file` 落盘，从而走同一套边界、编辑策略、检查点捕获、CAS 和观察记录。`modify` 先用 `apply_edits` 算出全文，再把全文交给 `_write_file`（与 `edit_file` 相同）。删除没有现成入口：在 `Workspace` 上补一个与 `_write_file` 对称的删除入口（同样过边界、编辑策略、检查点捕获、观察记录），并在 `WorkspaceBackend` 协议里加一个带 `expected_sha256` CAS 的删除方法，`LocalBackend`、`DockerBackend` 和测试里的内存后端都要实现。不要绕开 Workspace 直接 `unlink`。
 8. 原子性只针对本工具自己的写入。外部编辑器在两次单文件发布之间改文件，仍按现有乐观检测处理（发布前 CAS 失败就整批回滚），不承诺文件系统级事务；文档写清这一点。
 
 ### C. 权限、策略与审批
 9. `--mode read-only` 下 `apply_patch` 不出现在发给模型的工具列表里（与 `write_file` 一样由 `ExecutionGuidanceMiddleware` 隐藏）；硬调用在工作区边界返回 `permission_denied`。`edit` / `full` 下可用。
 10. 未写 `--tool-policy`，或策略对它是 `allow`（含 `default: allow`）时，`apply_patch` 直接执行不停，不新增任何默认审批。`EditPolicy.max_changed_lines` 按整批增删行数合计判断，超出时整批改为待审批（只收紧）；`post_edit_check` 每个文件都跑，任一失败按 AC 5 整批回滚。
-11. 策略对 `apply_patch` 写了 `ask` 时，走现有 `awaiting_approval` 和 call id + digest 流程：待批信息里能看到整批文件列表和整批 diff（按 AC 3 的上限截断，截断时提示用 `--inspect-session` 看完整请求）；digest 覆盖整批参数，任一文件的路径、操作、底本哈希或内容变了，旧批准作废。批准只覆盖这一次调用，不执行；恢复时仍要通过 AC 4 的校验，批准后文件被别人改了照样整批拒绝。
+11. 策略对 `apply_patch` 写了 `ask` 时，走现有 `awaiting_approval` 和 call id + digest 流程：待批信息里能看到整批文件列表和整批 diff（按 AC 3 的上限截断，截断时提示用 `--inspect-session` 看完整请求）；digest 覆盖整批参数，任一文件的路径、操作、底本哈希、`edits` 或新建 `content` 变了，旧批准作废。批准只覆盖这一次调用，不执行；恢复时仍要通过 AC 4 的校验（包括再次跑 `apply_edits`），批准后文件被别人改了或替换不再唯一，照样整批拒绝。
 12. 钩子和策略只能收紧：`deny` 时不执行任何写入；中间件把它改成 `ask` / `deny` 可以，放宽 mode、工作区边界或受保护路径不行。
 13. `apply_patch` 计作写工具：Worker 只有拿到写权限时才看得到它，并遵守「同时只有一个可写 Worker」（把它加入 `agent/router.py` 的 `WRITE_TOOLS` 等权限判定处）。Watchdog 和 HarnessKnight 的写工具名单本支不改，文档里写明它们暂时不把 `apply_patch` 当文件写入识别。
 
@@ -84,18 +85,18 @@
 17. `--output-format json`：结果对象新增可选字段（例如 `patches`：每次成功调用的 `call_id`、文件列表、`diff`、`diff_truncated`），不改已有字段，`schema_version` 仍是 1；没用 `apply_patch` 时输出与 master 逐字一致。`jsonl` 只新增元数据事件（例如 `patch_applied`：call id、路径、操作、增删行数），不写 diff 正文、文件内容或参数原文。
 
 ### F. 测试（离线、确定性；已有测试不削弱）
-18. 全有或全无：一批三个文件，其中一个 `expected_sha256` 不对 → 三个文件字节都没变，错误点名那个文件；`add` 一个已存在的文件、`modify` 一个不存在的文件同样整批拒绝。
+18. 全有或全无：一批三个文件，其中一个 `expected_sha256` 不对 → 三个文件字节都没变，错误点名那个文件；`add` 一个已存在的文件、`modify` 一个不存在的文件同样整批拒绝；一批里某个 `modify` 的 `old_text` 匹配 0 次或多次 → 整批拒绝、一个文件都不写，错误点名那个文件。
 19. 写到一半失败的回滚：用故障注入（例如让后端或写入入口在第 2 个文件时抛错、或模拟中断）→ 第 1 个文件被恢复、新建的被删、删除的被写回，工作区与调用前逐字节相同，检查点没有残留；再测一次回滚本身失败时，原貌记录保留、能用 `/undo` 恢复。
 20. 路径：`..`、绝对路径、链接 / junction 别名、受保护路径（如 `.git`、凭据文件）、`EditPolicy` denylist、同一批重复路径，都在写入前拒绝且一个文件都不写。
-21. 一批里同时有 `delete` + `add` + `modify` → 全部生效，返回的哈希和增删行数正确，diff 里三种都在。
+21. 一批里同时有 `delete` + `add` + `modify`（`modify` 用 `edits`，`add` 用完整 `content` 和 `"missing"`）→ 全部生效，返回的哈希和增删行数正确，diff 里三种都在。
 22. `/undo`：成功的 `apply_patch` 之后 `/undo`（以及 `--rewind last`）把三种操作一起撤回；同一轮里先 `write_file` 再 `apply_patch` 同一文件，撤回到这一轮之前的原貌。
 23. 展示：CLI 文本输出里能看到 diff；diff 超过上限时有截断标记；`--output-format json` 结果里有整批 diff；`jsonl` 事件里没有 diff 正文和文件内容；不用 `apply_patch` 时 JSON / 文本输出的已有基线测试不变。
-24. 审批：策略 `{"tools": {"apply_patch": "ask"}}` 时停在 `awaiting_approval`，待批请求里有整批 diff；用旧 digest 批准改过一个文件内容的请求被拒绝；`deny` 时不写；没写策略时 `edit` 模式不停。
+24. 审批：策略 `{"tools": {"apply_patch": "ask"}}` 时停在 `awaiting_approval`，待批请求里有整批 diff；改过一条 `edits` 或新建 `content` 后，用旧 digest 批准被拒绝；`deny` 时不写；没写策略时 `edit` 模式不停。
 25. 权限：`read-only` 下工具列表里没有 `apply_patch`，硬调用返回 `permission_denied`；`edit` / `full` 下有；只读 Worker 看不到它。
-26. 上限：超过 `MAX_PATCH_FILES` 的批次被 schema 或校验拒绝；单个文件新内容超过 200 KB 整批拒绝；检查点每轮文件上限不够时整批拒绝；diff 截断按常量生效。
+26. 上限：超过 `MAX_PATCH_FILES` 的批次被 schema 或校验拒绝；`add` 的 `content` 或 `modify` 经 `apply_edits` 后的全文超过 200 KB，整批拒绝；检查点每轮文件上限不够时整批拒绝；diff 截断按常量生效。
 
 ### G. 文档
-27. 新建 `docs/patch.md`：工具入参和返回；为什么用完整新内容而不是 diff；校验 → 快照 → 写入 → 回滚的流程；和 `write_file` / `edit_file` 怎么选；审批跟 `--mode` / `--tool-policy` 走（默认不停，`ask` 才停）；检查点与 `/undo`；各上限常量；限制（不包 `run_command`、不是文件系统事务、Watchdog / HK 暂不识别为文件写入）。
+27. 新建 `docs/patch.md`：工具入参和返回（`modify` 用 `edit_file` 同款 `edits` 并调用 `apply_edits`，`add` 用完整内容和 `"missing"`，`delete` 只用当前哈希）；为什么不用 unified diff 当入参、也不对 `modify` 传全文（同一套编辑格式，更省 token）；校验 → 快照 → 写入 → 回滚的流程；和 `write_file` / `edit_file` 怎么选；审批跟 `--mode` / `--tool-policy` 走（默认不停，`ask` 才停）；检查点与 `/undo`；各上限常量；限制（不包 `run_command`、不是文件系统事务、Watchdog / HK 暂不识别为文件写入）。
 28. README：对照表新增一行「多文件原子补丁」，「检查点/撤销」那行补上 `apply_patch`；`--mode` 表里 `edit` 一栏的工具列表补上 `apply_patch`；`docs/demo.md` 加一段离线演示（假模型一次 `apply_patch` 改三个文件 → 打印 diff → `/undo` 整批撤回），费用 0。
 
 约束：只推到本分支，不 force-push，不开 PR；不新增核心运行时依赖；不改 `write_file` / `edit_file` 的行为，不包 `run_command`；不改 MCP、Watchdog、HarnessKnight、RAG / Layer 2、主 Agent 全双工；不跑付费 API，测试全部离线；已有测试不削弱，不用 `apply_patch` 时行为与 master 一致。会话库结构尽量不动；若必须改 `PRAGMA user_version` 或后端契约，写明原因和旧会话的处理方式。不用 Claude Code 泄露或未授权的源码。本段 README 会让语料版本测试失败，这是预期的：合并时我删掉本段，再用 `scripts/rebind_corpus_version.py --write` 重绑。
