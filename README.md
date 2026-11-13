@@ -40,6 +40,82 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：Docker 执行后端接入 CLI（本段合并进 master 前必须删除）
+
+> **给实现者（Claude Code）的工作方式，先读这一段。** 本段只写「做什么、为什么、怎么算做完」，不写技术方案；接口、数据形状和模块怎么拆由你来定。
+>
+> 1. **先读代码。** 摸清相关子系统现在怎么做、为什么这么做（看代码、`docs/`、`git log` / `git show` 里的历史提交）。下面「现状」是 PM 读代码时看到的，以代码为准；和描述不符的地方写进「完成情况」。
+> 2. **先写设计，再实现。** 在本段的「设计（实现者填写）」小节里写至少两套结构不同的方案：数据形状、接口、模块边界、影响面（会动哪些文件、哪些已有测试、旧会话 / 旧配置怎么办），选一个并写明理由，然后直接实现。Frank 已授权，不用停下来等确认。
+> 3. **偏最小改动、白盒可解释**，不新增核心运行时依赖。
+> 4. **测试离线、确定性**，已有测试不削弱。跑全量前清掉 `SAND_*` 环境变量，并删除 `.baseagent/live_answers_checkpoint.json`。预期内的失败只有两个：本段 README 导致的 corpus_version 测试，以及已有的 `tests/test_record_coding_scenario.py::test_all_real_recordings_replay_offline`。其它失败都要修。
+> 5. **小步提交，推送到本分支。** 不 force-push，不开 PR，不碰 master。最后在「完成情况（实现者填写）」表里逐条填 AC 状态和证据。
+>
+> **并行开发：** 另一个分支 `plan/fixes-and-gaps`（实测问题、文档旧表述、Watchdog / HK 认识 `apply_patch`、`.mcp.json` 首次信任、`AGENTS.md` 规则文件）同时在做，不要改它的范围。README 和 `applications/project_assistant/evaluation/questions.json` 的 corpus_version 冲突由 PM 合并时处理，你不用重绑。
+>
+> **全局约束：** 不拷贝 mewcode；不参考非公开的 Claude Code 源码（包括从 npm sourcemap 还原的）；不合并 Watchdog 和 HarnessKnight（HK 是可选外部服务，只留接口，不做内核依赖）；不做 OAuth；不做 Super Agent 全双工后续（消息排队、主动汇报、`cancel_worker` 工具等）；写文件默认不要求用户批准，审批跟随 `--mode` / `--tool-policy`；任何付费 API 都要单独授权并带 `--budget-cny`，本轮一个都不跑。
+
+目标：coding agent CLI 加上 `--backend local|docker`。选 `docker` 时，命令执行和文件读写都在容器里跑，默认断网，能力上对标 Codex 默认沙箱。检查点、`/undo`、`apply_patch` 的原子回滚在 docker 下照样成立。这是给明天的 Terminal-Bench 付费跑分做准备，本轮不跑付费。
+
+本分支不做：付费 API；多容器编排、远程 Docker 主机、Kubernetes；自研 Seatbelt / Landlock；改 Terminal-Bench 的评分逻辑（只确认它能用 `--backend docker` 调起）；实测问题、文档旧表述、Watchdog / HK、MCP 信任、`AGENTS.md` 规则文件（都是另一个分支的范围。`DockerBackend` 里读 `AGENTS.md` 的部分只在接入必需时改，改了要在完成情况里写明，方便 PM 合并时对冲突）。
+
+### 现状（PM 读代码所见，以代码为准）
+
+- `backends/docker.py` 已有 `DockerBackend`：一任务一容器，`docker run -d … --network none`，资源有默认上限（CPU / 内存 / 进程数），工作区以读写方式挂到容器的 `/workspace`。实现了 `read_bytes`、`file_hash`、`get_instructions`、`search_files`、`write_file`、`delete_file`、`execute`、`contract()`，测试在 `tests/test_docker_backend.py`，演示 `scripts/demo_docker.py`，文档 `docs/docker_backend.md`。目前只能从 Python 库调用，CLI 没接。
+- 容器名按工作区路径哈希生成，同一个目录同时跑两个会话会撞名。
+- `session/checkpoints.py` 的撤销明确拒绝非 LocalBackend（`reason="unsupported_backend"`）；`EditPolicy` 的 `post_edit_check` 注明「事务检查需要 LocalBackend」；`docs/patch.md` 写着 DockerBackend 下回滚靠后端的 `write_file` / `delete_file`，删除没有锁。
+- 后端 `contract()` 会绑定进工具恢复契约，换后端续跑会被拒绝。
+- `--mode full` 在 LocalBackend 下打印「不是沙箱，隔离请用 DockerBackend」的警告。
+- `scripts/evaluate_terminal_bench.py --live` 目前只打印计划就退出，不真正调起 agent；`--fixture` 用一个假 executor 记一题。
+
+### A. CLI 接入
+
+1. 新增 `--backend local|docker`，默认 `local`。不传这个参数时，所有行为和输出与 master 逐字一致（已有基线测试不改就能过）。
+2. docker 下的镜像、开网等选项由实现者定名字和默认值：默认断网，开网要显式打开。参数和 `--backend local` 搭配时报错（退出码 2）。资源上限沿用 `DockerBackend` 现有默认值，写进文档。
+3. 一次性任务、`--resume`、连续对话（`--ui cli|tui|web`）、主 Agent 派出的 Worker 都能用 docker 后端。一个会话 / 一个 Worker 对应几个容器、什么时候起停，由实现者定并写进文档，要符合「一任务一容器」的原意。用 local 起的会话换 docker 续跑（或反过来）沿用现有契约规则：被拒绝，提示清楚。
+4. `--mode full` 在 docker 下不再打印「LocalBackend 不是沙箱」的警告，改为说明用的是容器、网络状态如何。`--mode read-only|edit|full` 和 `--tool-policy` 的语义与 local 完全一致，docker 不放宽任何权限。
+
+### B. 隔离与文件边界
+
+5. 容器里只看得到本工作区：读不到工作区外的宿主路径，`..`、绝对路径、链接逃逸都被拒绝，和 local 一样（有 Docker 时用真实冒烟测试，没有时断言下发给 Docker 的参数）。
+6. 默认断网：容器里访问外网失败（真实冒烟测试）；显式开网后才能联网。
+7. 受保护路径与 local 一致（`.git`、`.env*`、`.baseagent`、会话库等，用 `write_file` / `apply_patch` 写会被拒绝）。另外，容器里执行的命令不能改写宿主上的会话库和检查点数据（`.baseagent/` 下），否则 `/undo` 和账本都不可信；`.git` 在容器里是只读、可写还是看不到，由实现者定并写明理由（要考虑 `git status` / `git diff` 这类工具仍然能用）。
+8. 文件属主：在 Linux 宿主上，agent 在容器里新建或修改的文件，任务结束后宿主用户能正常编辑和删除，不留下宿主用户动不了的 root 属主文件。做不到的平台写进文档的已知限制。
+9. 同一个工作区同时开两个 docker 会话不会撞容器名，也不会互相清掉对方的容器；或者第二个给出清楚的报错。任选一种，写明。
+
+### C. 检查点、撤销与原子补丁
+
+10. docker 下 `/checkpoints`、`/undo`、`/rewind N`、`--checkpoints`、`--rewind last` 都可用，行为与 local 相同（漂移检测、`--force`、等待审批时拒绝撤销），不再返回 `unsupported_backend`。撤销恢复的字节与写入前逐字节相同。
+11. docker 下 `apply_patch` 的全有或全无成立：整批校验失败一个文件都不写；写到一半失败按快照倒序回滚，工作区回到调用前的字节状态，检查点不留残留。用故障注入测试（例如让假后端在第 2 个文件时失败）。删除没有锁这一点，要么补上，要么在文档里写清风险。
+12. `EditPolicy` 的 `post_edit_check` 和 `max_changed_lines` 在 docker 下要么正常工作，要么启动时给出清楚的报错。不能静默跳过检查。
+
+### D. 失败与清理
+
+13. Docker 没装、daemon 没起、镜像不存在时，在调用模型之前就失败（费用 0），报错写清是哪种情况和怎么解决，退出码由实现者定，写进 `docs/output.md`，且与现有 0 / 1 / 2 / 130 约定不冲突。绝不静默退回 local。`--output-format json` 下这类失败的输出形状要写进文档。
+14. 运行中容器挂掉（OOM、被外部删掉、Docker 重启）时，工具返回清楚的错误，不卡死、不退回 local。会话状态能落盘，修好 Docker 后可以 `--resume`。
+15. 容器清理：正常结束、Ctrl+C（退出码 130）、未捕获异常、对话 `/exit`、TUI / Web 关闭，都要把本次启动的容器删掉。上次异常退出留下的同名容器，下次启动时能识别并处理（清掉或报清楚的错），不会因此起不来。每种情况都有测试（用假 Docker runner 断言 `rm` 被调用），真实冒烟测试至少覆盖正常结束和 Ctrl+C。
+
+### E. 输出与可见性
+
+16. `--output-format json` 能看出这次用的是哪个后端，以及 docker 下的镜像和网络状态（可选字段，`schema_version` 仍为 1，不含凭据）。`jsonl` 有对应的元数据事件或字段。`/status` 和文本模式的 stderr 也能看出后端。不传 `--backend` 时 json 是否带这个字段由实现者定：如果带，要说明为什么不算破坏「与 master 逐字一致」，并同步更新基线；如果不带，文档写明「没有该字段即 local」。
+
+### F. Terminal-Bench
+
+17. 确认 Terminal-Bench 管线能用 `--backend docker` 调起 agent：`--fixture` 路径能通过 docker 后端（假 runner 离线，有 Docker 时可选真实）跑完那道本地题；`--live` 打印的计划里写明用 `--backend docker`。评分逻辑（`score_records`、失败分类）不改。在完成情况里写清：明天真正付费跑之前还缺什么（例如 `--live` 目前不执行、和 Harbor 题目包怎么对接），只列出来，不在本分支实现付费路径。
+
+### G. 测试、演示与文档
+
+18. 没有 Docker 的 CI 上全部离线测试能跑：用假后端或假 Docker runner；需要真实 Docker 的用例在没有 Docker 时 `skip`，并写明原因。有 Docker 时有一组真实冒烟测试（拉镜像以外不联网），覆盖 AC 5、6、8、10、15。全量测试除两个预期内失败外全部通过；`tests/test_docker_backend.py` 和 `tests/test_apply_patch*.py` 连跑 3 遍稳定。
+19. 文档：更新 `docs/docker_backend.md`（CLI 用法、参数、容器生命周期、挂载与文件边界、属主、网络、清理、退出码、已知限制）；README 的 `--backend` 用法、对照表里「Docker 沙箱」那一行、「失败与取舍」里 Docker 那一条；`docs/patch.md` 和 `docs/checkpoints.md` 里「撤销只支持 LocalBackend」的说法。
+20. 离线演示：`docs/demo.md` 加一段用 `--backend docker` 的演示命令（假模型，费用 0）：改一个文件 → 跑一条命令 → 访问外网失败 → `/undo` 撤回 → 容器被清掉。没有 Docker 的机器上，这条命令给出 AC 13 的报错。
+
+### 设计（实现者填写）
+
+（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。）
+
+### 完成情况（实现者填写）
+
+做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：读代码时发现与本段描述不符的地方；你自己拍板的点和理由，至少包括：参数名和默认镜像、容器生命周期（会话 / Worker / 续跑）、`.baseagent` 和 `.git` 在容器里怎么处理、文件属主方案、撤销在 docker 下怎么实现、Docker 不可用时的退出码、json 字段名、Terminal-Bench 付费跑前还缺什么。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
