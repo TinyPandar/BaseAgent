@@ -1,6 +1,6 @@
 # 检查点与撤销（按文件快照）
 
-每个用户轮次一个检查点。agent 用 `write_file` / `edit_file` 第一次写某个文件之前，先把它的原貌存进会话库；之后可以按轮次把这些文件写回去。只覆盖文件工具，不扫仓库，不用 git。
+每个用户轮次一个检查点。agent 用 `write_file` / `edit_file` / `apply_patch` 第一次写（或删除）某个文件之前，先把它的原貌存进会话库；之后可以按轮次把这些文件写回去。只覆盖文件工具，不扫仓库，不用 git。
 
 ```text
 /checkpoints                 列出轮次号、时间、改动文件（新建/修改、来自哪个 worker）、是否已撤销
@@ -92,7 +92,7 @@ user /undo        ChatSession              checkpoints.rewind
 ## 限制
 
 - **`run_command` 的副作用撤不回。** 命令改的文件、装的依赖、删掉的东西都不在检查点里。需要可撤销的执行环境时用 DockerBackend（[docker_backend.md](docker_backend.md)），或者用 `--mode read-only` / `--mode edit` 不开命令。`--mode full` 在 LocalBackend 下会打印一行警告说明这一点。
-- **只覆盖文件工具。** 只有经过 `Workspace._write_file` 的写入（`write_file`、`edit_file`）有检查点；人手改、编辑器、其他进程的改动不记录，撤销时它们表现为冲突。
+- **只覆盖文件工具。** 只有经过 `Workspace._write_file` 的写入（`write_file`、`edit_file`、`apply_patch`）和经过 `Workspace._delete_file` 的删除（`apply_patch`，写后哈希记 `missing`，`/checkpoints` 显示「删除」，撤销时写回原貌）有检查点；一次 `apply_patch` 的所有文件在同一轮的检查点里，回滚成功的批次不留记录（[patch.md](patch.md)）；人手改、编辑器、其他进程的改动不记录，撤销时它们表现为冲突。
 - **不能 redo。** 撤销后的轮次关闭，不能再写入，也不能「撤销撤销」。轮次号继续往后编。
 - **单个原貌上限 200 KB，单轮最多 500 个文件。** 与读写工具、observed 文件上限一致；超出时那次写入直接失败，文件不变。
 - **新建的目录不删。** 撤销删除 agent 新建的文件，但不删它顺带建出的空目录。

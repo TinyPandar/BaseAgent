@@ -25,7 +25,8 @@
 | TUI / Web 前端 | 有，可选安装 | 连续对话的 Textual TUI 和本机 FastAPI + SSE 页面，与 CLI 共用一层会话/事件层；一个 Web 进程一个会话；离线测试，Windows Terminal 未实测 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
 | Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
-| 检查点/撤销 | 有，按文件快照 | 每个用户轮次一个检查点，`/checkpoints`、`/undo`、`/rewind N`；只覆盖 `write_file` / `edit_file`，`run_command` 的副作用撤不回；不用影子 git；离线测试 |
+| 检查点/撤销 | 有，按文件快照 | 每个用户轮次一个检查点，`/checkpoints`、`/undo`、`/rewind N`；只覆盖 `write_file` / `edit_file` / `apply_patch`（含删除），`run_command` 的副作用撤不回；不用影子 git；离线测试 |
+| 多文件原子补丁 | 有，`apply_patch` | 一次调用新增 / 修改 / 删除最多 50 个文件，全有或全无，失败按快照回滚；`modify` 复用 `edit_file` 的 `edits`；`--mode edit\|full` 下直接执行并展示整批 diff，`--tool-policy` 写 `ask` 才先批；`/undo` 整批撤回；不是文件系统事务，不包 `run_command`；离线测试，见 [docs/patch.md](docs/patch.md) |
 | JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
 | 权限预设 | 有 | `--mode read-only\|edit\|full` 映射到 `--allow-write` / `--allow-command`；矛盾的显式标志直接报错；`--tool-policy` 只能再收紧 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
@@ -102,7 +103,54 @@
 约束：只推到本分支，不 force-push，不开 PR；不新增核心运行时依赖；不改 `write_file` / `edit_file` 的行为，不包 `run_command`；不改 MCP、Watchdog、HarnessKnight、RAG / Layer 2、主 Agent 全双工；不跑付费 API，测试全部离线；已有测试不削弱，不用 `apply_patch` 时行为与 master 一致。会话库结构尽量不动；若必须改 `PRAGMA user_version` 或后端契约，写明原因和旧会话的处理方式。不用 Claude Code 泄露或未授权的源码。本段 README 会让语料版本测试失败，这是预期的：合并时我删掉本段，再用 `scripts/rebind_corpus_version.py --write` 重绑。
 
 ### 完成情况（实现者填写）
-做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出你自己拍板的点和理由，至少包括：删除入口和后端协议怎么加、回滚时检查点记录怎么撤、`max_changed_lines` 按整批计算的实现、diff 截断规则、JSON 新字段名、TUI / Web 展示位置。
+
+全部离线：新增 `tests/test_apply_patch.py`、`tests/test_apply_patch_session.py`、`tests/test_apply_patch_output.py`、`tests/test_demo_patch.py`（47 个用例），没有调用付费 API。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 | 完成 | `tests/test_apply_patch.py`：`SchemaAndRegistrationTests`、`AllOrNothingTests.test_paths_are_rejected_before_any_write` | schema 用扁平 item + `enum`，按 op 的必填/禁止字段在代码里查（见下「拍板」）；重复路径一律不分大小写 |
+| 2 | 完成 | `test_registered_with_strict_schema_and_not_retry_safe`；`write_file`/`edit_file` 已有测试全过 | 不是 `retry_safe`；没有把多次 `write_file` 攒成事务 |
+| 3 | 完成 | `MixedBatchTests.test_delete_add_modify_all_apply_with_hashes_counts_and_diff`、`LimitTests.test_diff_truncation_follows_the_constant` | diff 由快照和新内容计算 |
+| 4 | 完成 | `AllOrNothingTests`（6 个）、`LimitTests`、`test_observed_file_capacity_is_checked_for_the_whole_batch`、`tests/test_apply_patch_session.py::test_checkpoint_file_limit_rejects_the_whole_batch` | 「忽略规则」按 `Workspace._path` 的受保护路径执行；`.gitignore` 只管搜索，`write_file` 不看，这里也不看 |
+| 5 | 完成 | `RollbackTests`（第 4 个文件失败、`post_edit_check` 失败、取消、外部改动导致 CAS 冲突） | 逐字节比对整棵树；删除文件的权限位也恢复 |
+| 6 | 完成 | `tests/test_apply_patch_session.py::test_rolled_back_batch_leaves_no_checkpoint_record_and_earlier_records_stay`、`test_failed_rollback_keeps_the_originals_and_undo_recovers` |  |
+| 7 | 完成 | `tests/test_apply_patch_session.py::BackendTests`（Local CAS 删除、内存后端不碰宿主、Docker 先比哈希再 `rm`）；`tests/test_backends.py` 内存后端补了 `delete_file` | Docker 删除与它现有的 `write_file` 一样没有文件锁 |
+| 8 | 完成 | `test_external_change_between_validation_and_write_is_a_conflict_and_rolls_back`；`docs/patch.md` |  |
+| 9 | 完成 | `tests/test_apply_patch_session.py::test_read_only_hides_the_tool_and_a_forced_call_is_denied`、`tests/test_modes.py` 矩阵 |  |
+| 10 | 完成 | `test_no_policy_in_edit_mode_does_not_stop`、`test_max_changed_lines_counts_the_whole_batch`、`test_post_edit_check_failure_rolls_back_the_batch` | `post_edit_check` 在批次中间运行，检查命令要能容忍中间状态（已写进文档） |
+| 11 | 完成 | `tests/test_apply_patch_session.py::ApprovalTests`（`test_digest_covers_every_operation`、`test_approval_does_not_skip_validation_after_a_change`）、`tests/test_apply_patch_output.py::test_ask_policy_stops_and_shows_the_pending_diff` |  |
+| 12 | 完成 | `test_policy_deny_and_hooks_only_tighten` | Chainlit 启动器对 `apply_patch` 同样默认 `ask`/`deny` |
+| 13 | 完成 | `test_counts_as_a_write_tool_for_workers` | 已加入 `router.WRITE_TOOLS`；可写 Worker 唯一性实际按 `allow_writes` 判定，未改。Watchdog / HarnessKnight 名单未改，文档写明 |
+| 14 | 完成 | `tests/test_apply_patch_session.py::test_one_checkpoint_lists_created_modified_deleted_and_undo_restores_all` | Worker 写入挂主轮次走的是与 `write_file` 同一个 `capture()`，没有为 `apply_patch` 单独写 Worker 用例 |
+| 15 | 完成 | 同上 + `test_cli_rewind_last_undoes_the_batch`；已有 `tests/test_checkpoints.py` 全过 | `--force`、漂移、等待审批拒绝撤销未改 |
+| 16 | 完成 | `tests/test_apply_patch_output.py::test_text_mode_prints_the_batch_diff_under_the_result`、`test_cli_chat_ask_prompt_shows_file_count_and_diff_then_applies`、`test_shared_events_carry_the_diff_for_tui_and_web` | TUI/Web 通过共用事件层（`notice` 事件）验证，没有用 Textual pilot / Web TestClient 端到端点开界面 |
+| 17 | 完成 | `test_json_result_has_patches_and_jsonl_has_metadata_only`、`test_json_without_apply_patch_has_no_new_field`；`tests/test_output_format.py` 基线全过 | jsonl 最后的 `result` 行不带 `patches`（见下「拍板」） |
+| 18 | 完成 | `AllOrNothingTests` |  |
+| 19 | 完成 | `RollbackTests`、`test_rolled_back_batch_leaves_no_checkpoint_record_and_earlier_records_stay`、`test_failed_rollback_keeps_the_originals_and_undo_recovers` |  |
+| 20 | 完成 | `test_paths_are_rejected_before_any_write`、`test_edit_policy_allowlist_and_denylist_reject_the_batch` | `..`、绝对路径、软链接别名、`.git`、`.env`、`*.pem`、`secrets/**`、重复（含大小写、`./`、`sub/..`） |
+| 21 | 完成 | `test_delete_add_modify_all_apply_with_hashes_counts_and_diff` |  |
+| 22 | 完成 | `test_one_checkpoint_lists_created_modified_deleted_and_undo_restores_all`、`test_write_file_then_apply_patch_on_the_same_file_undoes_to_the_turn_start`、`test_cli_rewind_last_undoes_the_batch` |  |
+| 23 | 完成 | `tests/test_apply_patch_output.py`（文本 diff、截断标记、json `patches`、jsonl 无正文、无 `apply_patch` 时字段不变） |  |
+| 24 | 完成 | `ApprovalTests` |  |
+| 25 | 完成 | `PermissionTests`、`tests/test_modes.py` | 只读 Worker：用 Worker 选工具的同一条件（`retry_safe`）验证，没有跑端到端 Worker 用例 |
+| 26 | 完成 | `LimitTests`、`test_checkpoint_file_limit_rejects_the_whole_batch` |  |
+| 27 | 完成 | `docs/patch.md` |  |
+| 28 | 完成 | README 对照表两行、`--mode` 表；`docs/demo.md` 新段；`scripts/demo_patch.py`、`tests/test_demo_patch.py` |  |
+
+拍板的点（细节见 [docs/patch.md](docs/patch.md)）：
+
+- **删除入口与后端协议**：`WorkspaceBackend` 加 `delete_file(path, expected_sha256, expected_instructions)`（Local：同一把文件锁内两次比对哈希再 `unlink`；Docker：比对后 `rm`；测试内存后端同样实现）。`Workspace._delete_file` 与 `_write_file` 对称（边界 → `EditPolicy` → `capture(content=None)` → `edit_policy.delete_file` → 观察记录）。各后端 `contract()`、会话库结构和 `PRAGMA user_version` 都没变，旧会话照常打开；第三方后端要补 `delete_file`。
+- **回滚时检查点记录怎么撤**：`_write_file` / `_delete_file` 多一个可选的 `captures` 列表收集本批的 `Capture`；全部文件恢复成功后倒序调用现有的 `Capture.abort()`（新记录删掉，已有记录写后哈希改回上一次），本轮的观察记录和验证记录也恢复到调用前。回滚二次失败时一条都不撤，原貌留给 `/undo`。失败的那个文件如果我们的写入没落盘（例如 CAS 冲突），不动它，也不算状态未知。
+- **回滚失败怎么提示**：`execution_failed`，`<失败文件>: <原因>; rollback failed: state unknown for <文件…>. Their originals stay in this turn's checkpoint; inspect them and use /undo (or --rewind last) to restore`。
+- **`max_changed_lines` 按整批**：`EditToolPolicy` 对 `apply_patch` 预演整批（`preview_patch`，与执行同一套校验和 `apply_edits`），合计增删行数超限就改成 `ask`；`apply_patch` 执行前再按整批检查一次，没有批准就在写入前拒绝。
+- **diff 截断**：正文最多 `MAX_PATCH_DIFF_CHARS`（20000）字符，按整行截，末尾加一行 `[diff truncated at 20000 characters: N more lines in M file(s) not shown; …--inspect-session]`。
+- **JSON 字段名**：`json` 结果新增可选 `patches: [{call_id, files, diff, diff_truncated}]`（从工具账本读）；jsonl 新增元数据事件 `patch_applied: {call_id, file_count, files: [{path, op, added, removed}]}`。为了让 jsonl 不出现 diff 正文，jsonl 最后的 `result` 行不带 `patches`，这是与 `json` 对象唯一的差别。
+- **TUI / Web 展示位置**：都走共用事件层的 `notice` 事件（两个前端本来就渲染）：成功后由 `ToolEventMiddleware` 发整批 diff，待批时由 `ChatSession` 在 `approval_requested` 之前发待批 diff（审批视图另带 `patch` 字段）。CLI 文本模式用 `PatchDisplayMiddleware` 打到 stderr，CLI 审批提示直接打印。
+- **重复路径**：所有系统上都按不分大小写比较（只会更严）。
+- **schema**：没用 `oneOf`，避免部分模型服务不支持；按 op 的字段约束在代码里检查并点名文件。
+- **只处理 UTF-8 文本**：`modify` / `delete` 的目标必须能按 UTF-8 解码（diff 和回滚都要文本）。
+
+测试结果（本机 macOS，Python 3.12）：`pytest tests` 10 failed / 1146 passed / 2 skipped，10 个失败与改动前的基线（10 failed / 1099 passed）逐条相同：macOS `/private/var` 临时路径 3 个、本机文件锁行为 1 个、`test_chat_events` 全量跑时的时序偶发 1 个（单独跑通过），以及本施工段改了 README 导致的语料版本 / coding 录像回放 5 个（预期）。`unittest discover` 同样无新增失败。全量跑时偶发的时序失败：`test_chat_events` 的游标溢出、`test_frontend_options`、`test_mcp_cli` 的 Web 审批（审批请求早于回合线程结束，返回 `busy`），单独或分组重跑都稳定通过，不走 `apply_patch` 路径。
 
 ## 库与 CLI
 
@@ -633,8 +681,8 @@ Deleting an unfinished session requires the explicit discard flag. A held sessio
 
 | `--mode` | 等价标志 | 模型能看到的写/命令工具 | 说明 |
 | --- | --- | --- | --- |
-| `read-only` | 不传标志时的默认值 | 无：`write_file`、`edit_file`、`run_command`、`verify_command` 都不暴露 | 读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
-| `edit` | `--allow-write` | `write_file`、`edit_file` | 文件写入都有检查点，可 `/undo` |
+| `read-only` | 不传标志时的默认值 | 无：`write_file`、`edit_file`、`apply_patch`、`run_command`、`verify_command` 都不暴露 | 读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
+| `edit` | `--allow-write` | `write_file`、`edit_file`、`apply_patch` | 文件写入都有检查点，可 `/undo` |
 | `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend |
 
 未开启的工具不出现在发给模型的工具列表里（`ExecutionGuidanceMiddleware`），模型硬要调用也会在工作区边界返回 `permission_denied`。`publish_memory` / `withdraw_memory` 另由 `--allow-memory-publish` 控制，不在 `--mode` 里。

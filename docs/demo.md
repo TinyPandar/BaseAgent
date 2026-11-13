@@ -87,6 +87,20 @@ python -B scripts/demo_checkpoints.py
 
 同样的事不进对话也能做：`baseagent --session demo --checkpoints`、`baseagent --session demo --rewind last`（不调模型、不要密钥）。为什么按文件快照而不用影子 git，见 [checkpoints.md](checkpoints.md)。
 
+## 加演：一次 `apply_patch` 改 3 个文件 → diff → `/undo` 整批撤回
+
+```bash
+python -B scripts/demo_patch.py
+```
+
+离线，费用 0，不需要 git。脚本用真实的对话入口 `baseagent --mode edit --no-main-agent` 加脚本化输入和假模型，最后一行是 JSON 摘要（`diff_printed: true`、`files_restored: true`）。`tests/test_demo_patch.py` 自动走一遍。讲的时候按这个顺序：
+
+1. `> 问候改成中文，加一份 notes.md，删掉 old.txt` —— 假模型只发**一次** `apply_patch`：`modify app.py`（与 `edit_file` 相同的 `edits`）、`add notes.md`（完整内容，`expected_sha256: "missing"`）、`delete old.txt`（只带当前哈希）。`--mode edit` 下直接执行不停；工具结果下面打印 `apply_patch 已应用：3 个文件（新建 1，修改 1，删除 1），+3 -2 行` 和整批 unified diff。整批先校验再写，任一文件不对一个都不写；写到一半失败按快照倒序回滚。
+2. `> /checkpoints` —— `第 1 轮 … 3 个文件`：`修改 app.py`、`新建 notes.md`、`删除 old.txt`，同一个检查点。
+3. `> /undo` —— 「已撤回第 1 轮的文件改动：恢复 2 个文件，删除 1 个新建文件」：app.py 和 old.txt 写回原貌，notes.md 删除。
+
+要先看再批：`--tool-policy` 里写 `{"default": "allow", "tools": {"apply_patch": "ask"}}`，对话会先打印 `apply_patch 待审批：3 个文件` 和 diff 再问 `Allow apply_patch? [y/N]`。细节见 [patch.md](patch.md)。
+
 ## 加演：MCP 工具 → 审批 → 调用成功
 
 ```bash
