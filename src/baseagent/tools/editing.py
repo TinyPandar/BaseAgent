@@ -122,3 +122,52 @@ def atomic_write(workspace, path, content, expected_sha256, expected_instruction
             post_edit_check(target, original_bytes)
     return {"path": str(target.relative_to(workspace.root)), "bytes": len(value), "sha256": sha256(value).hexdigest(),
             "instruction_digest": final_instruction_digest}
+
+
+def atomic_delete(workspace, path, expected_sha256, expected_instructions, *, post_delete_check=None):
+    """Delete one existing file if it still has ``expected_sha256`` (optimistic CAS, same lock as writes).
+
+    The hash is checked twice under the cooperating-writer lock, the second time right before
+    ``unlink``. POSIX has no compare-and-unlink, so a noncooperating writer between those two
+    instructions is not detected; ``apply_patch`` documents this (docs/patch.md).
+    ``post_delete_check(target, original_bytes, mode)`` runs under the lock after the unlink.
+    """
+    if not workspace.allow_write:
+        raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
+    if not isinstance(expected_sha256, str) or not re.fullmatch("[0-9a-f]{64}", expected_sha256):
+        raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "expected_sha256 must be the current file digest")
+    target = write_target(workspace, path)
+    with file_lock(workspace, target):
+        original = file_hash(target)
+        if original == "missing":
+            raise ToolFailure(ErrorCode.CONFLICT, "file does not exist; read the current workspace state")
+        if original != expected_sha256:
+            raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file before editing")
+        instructions = workspace.get_instructions(path)
+        if expected_instructions is not None and expected_instructions != instructions["digest"]:
+            raise ToolFailure(ErrorCode.CONFLICT, "repository instructions changed; reload them before editing")
+        original_bytes = read_bytes(target) if post_delete_check is not None else None
+        mode = stat.S_IMODE(target.stat().st_mode)
+        if write_target(workspace, path) != target or file_hash(target) != original:
+            raise ToolFailure(ErrorCode.CONFLICT, "file changed while preparing the delete")
+        target.unlink()
+        if post_delete_check is not None:
+            post_delete_check(target, original_bytes, mode)
+    return {"path": str(target.relative_to(workspace.root)), "bytes": 0, "sha256": "missing",
+            "instruction_digest": workspace.get_instructions(path)["digest"]}
+
+
+def restore_bytes(target, value, mode=None):
+    """Write exact bytes back (temporary file + fsync + atomic replace), keeping ``mode`` when given."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".baseagent-edit-", dir=target.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(name, mode)
+        os.replace(name, target)
+    finally:
+        Path(name).unlink(missing_ok=True)

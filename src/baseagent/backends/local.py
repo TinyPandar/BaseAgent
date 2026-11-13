@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from baseagent.tools.editing import atomic_write, file_hash, read_bytes
+from baseagent.tools.editing import atomic_delete, atomic_write, file_hash, read_bytes
 from baseagent.tools.process import run_process
 from baseagent.tools.result import ErrorCode, ToolFailure
 
@@ -49,6 +49,9 @@ class LocalBackend:
 
     def write_file(self, path, content, expected_sha256, expected_instructions):
         return atomic_write(self, path, content, expected_sha256, expected_instructions)
+
+    def delete_file(self, path, expected_sha256, expected_instructions):
+        return atomic_delete(self, path, expected_sha256, expected_instructions)
 
     def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
         return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation)

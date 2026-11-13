@@ -191,6 +191,20 @@ class DockerBackend:
             raise DockerError(explain_docker_failure(stderr, image=self.image))
         return {"path": relative, "bytes": len(data), "sha256": sha256(data).hexdigest()}
 
+    def delete_file(self, path, expected_sha256, expected_instructions):
+        relative = self._relative(path)
+        current = self.file_hash(relative)
+        if current == "missing":
+            raise ToolFailure(ErrorCode.CONFLICT, "file does not exist")
+        if expected_sha256 != current:
+            raise ToolFailure(ErrorCode.CONFLICT, "file version changed; read the current file")
+        if expected_instructions is not None and expected_instructions != self.get_instructions(relative)["digest"]:
+            raise ToolFailure(ErrorCode.CONFLICT, "repository instructions changed; reload them before editing")
+        code, stdout, stderr = self._exec(["rm", "--", relative])
+        if code != 0:
+            raise DockerError(explain_docker_failure(stderr, image=self.image))
+        return {"path": relative, "bytes": 0, "sha256": "missing"}
+
     def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
         if cancellation is not None and cancellation.cancelled():
             return ToolResult.failure(ErrorCode.CANCELLED, "command cancelled before Docker exec")

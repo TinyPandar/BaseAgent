@@ -59,6 +59,13 @@ class MemoryBackend:
         self.files[path] = content.encode()
         return {'path': path, 'bytes': len(self.files[path]), 'sha256': self.file_hash(path), 'instruction_digest': self.get_instructions(path)['digest']}
 
+    def delete_file(self, path, expected_sha256, expected_instructions):
+        self.calls.append(('delete', path))
+        if path not in self.files or self.file_hash(path) != expected_sha256 or self.get_instructions(path)['digest'] != expected_instructions:
+            raise ToolFailure(ErrorCode.CONFLICT, 'stale')
+        del self.files[path]
+        return {'path': path, 'bytes': 0, 'sha256': 'missing', 'instruction_digest': self.get_instructions(path)['digest']}
+
     def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
         self.calls.append(('execute', list(argv), timeout, output_limit, cancellation))
         return ToolResult(data={'exit_code': 0, 'stdout': 'ok', 'stderr': ''})

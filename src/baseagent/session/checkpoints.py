@@ -1,9 +1,10 @@
 """Per-turn file checkpoints and undo (file snapshots, not a shadow git).
 
-Only files written through ``Workspace._write_file`` (``write_file`` / ``edit_file``)
-are captured. The first write of a file in a user turn stores its original bytes
+Only files written through ``Workspace._write_file`` (``write_file`` / ``edit_file`` /
+``apply_patch``) or deleted through ``Workspace._delete_file`` (``apply_patch``) are
+captured. The first write of a file in a user turn stores its original bytes
 (or ``missing`` for a new file); later writes of the same file in that turn only
-update the expected after-hash. Contents are addressed by SHA-256 and stored once
+update the expected after-hash (``missing`` after a delete). Contents are addressed by SHA-256 and stored once
 in the session database. Nothing scans the repository, and command side effects
 (``run_command``) are not captured. See docs/checkpoints.md.
 
@@ -171,13 +172,16 @@ class Capture:
 
 
 def capture(workspace, path, content, context):
-    """Save a file's original before its first write in this turn. Raises ToolFailure (fail closed)."""
+    """Save a file's original before its first write in this turn. Raises ToolFailure (fail closed).
+
+    ``content`` None means the file is about to be deleted (after-hash ``missing``).
+    """
     owner = _owner(context)
     if owner is None:
         return None
     store, session_id, turn, worker_id, writer = owner
     relative = workspace._path(path).relative_to(workspace.root).as_posix()
-    after = sha256(content.encode("utf-8")).hexdigest()
+    after = "missing" if content is None else sha256(content.encode("utf-8")).hexdigest()
     try:
         current = workspace.backend.file_hash(path)
         original = None if current == "missing" else workspace.backend.read_bytes(path, MAX_BLOB_BYTES)
@@ -223,6 +227,31 @@ def capture(workspace, path, content, context):
                    new_entry=True, new_checkpoint=row is None, previous_after=None)
 
 
+def check_capacity(workspace, paths, context):
+    """Batch pre-check (``apply_patch``): the turn's checkpoint is open and has room for every path.
+
+    Raises the same ToolFailure codes as ``capture`` but writes nothing. Without a store: no-op.
+    """
+    owner = _owner(context)
+    if owner is None:
+        return
+    store, session_id, turn, _, _ = owner
+    relatives = {workspace._path(path).relative_to(workspace.root).as_posix() for path in paths}
+    try:
+        with store._connection() as connection:
+            row = connection.execute("SELECT restored_at FROM checkpoints WHERE session_id=? AND turn=?",
+                                     (session_id, turn)).fetchone()
+            if row is not None and row["restored_at"] is not None:
+                raise ToolFailure(ErrorCode.CONFLICT, f"turn {turn} was already undone; its checkpoint is closed")
+            existing = {item["path"] for item in connection.execute(
+                "SELECT path FROM checkpoint_files WHERE session_id=? AND turn=?", (session_id, turn))}
+    except sqlite3.Error as exc:
+        raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"checkpoint could not be read ({type(exc).__name__})") from None
+    if len(existing | relatives) > MAX_FILES_PER_TURN:
+        raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, f"checkpoint file limit is {MAX_FILES_PER_TURN} per turn; "
+                          f"{len(existing)} already recorded, the patch needs {len(relatives - existing)} more")
+
+
 def _collect_blobs(connection, hashes=None):
     """Delete content blocks no checkpoint file refers to (all, or only the given hashes)."""
     query = "DELETE FROM checkpoint_blobs WHERE NOT EXISTS (SELECT 1 FROM checkpoint_files WHERE before_sha256=checkpoint_blobs.sha256)"
@@ -246,6 +275,12 @@ def _iso(value):
     return None if value is None else datetime.fromtimestamp(value, tz=UTC).isoformat(timespec="seconds")
 
 
+def _change(before, after):
+    if before == "missing":
+        return "created"
+    return "deleted" if after == "missing" else "modified"
+
+
 def list_checkpoints(store, session_id):
     """Every checkpoint of a session, oldest turn first (no file contents)."""
     with store._connection() as connection:
@@ -257,7 +292,7 @@ def list_checkpoints(store, session_id):
     by_turn = {}
     for item in files:
         by_turn.setdefault(item["turn"], []).append({
-            "path": item["path"], "change": "created" if item["before_sha256"] == "missing" else "modified",
+            "path": item["path"], "change": _change(item["before_sha256"], item["after_sha256"]),
             "worker_id": item["worker_id"], "before_sha256": item["before_sha256"], "after_sha256": item["after_sha256"]})
     checkpoints = []
     for row in rows:
@@ -281,7 +316,7 @@ def describe(listing):
         state = "  已撤销" if item["restored"] else ""
         lines.append(f"  第 {item['turn']} 轮  {when}  {item['file_count']} 个文件{state}")
         for entry in item["files"]:
-            change = "新建" if entry["change"] == "created" else "修改"
+            change = {"created": "新建", "deleted": "删除"}.get(entry["change"], "修改")
             source = f"  (worker {entry['worker_id']})" if entry["worker_id"] else ""
             lines.append(f"    {change} {entry['path']}{source}")
     lines.append("/undo 撤回最近一个未撤销的轮次；/rewind N 撤回第 N 轮及之后的所有轮次；冲突时加 --force。")
@@ -520,6 +555,7 @@ __all__ = [
     "MAX_FILES_PER_TURN",
     "CheckpointError",
     "capture",
+    "check_capacity",
     "describe",
     "list_checkpoints",
     "parse_target",

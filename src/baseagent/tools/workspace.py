@@ -167,7 +167,7 @@ class Workspace:
         return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
                                request=("write_file", {"path": path, "content": content, "expected_sha256": expected_sha256, "expected_instructions": expected_instructions}))
 
-    def _write_file(self, path, content, expected_sha256, expected_instructions, *, context, request):
+    def _write_file(self, path, content, expected_sha256, expected_instructions, *, context, request, captures=None):
         self._check_observation_capacity(path, context)
         if not self.allow_write:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
@@ -176,6 +176,8 @@ class Workspace:
         from baseagent.session.checkpoints import capture
         # Save the original before the first write of this turn; a failed save writes nothing.
         saved = capture(self, path, content, context)
+        if captures is not None and saved is not None:
+            captures.append(saved)      # apply_patch: withdrawn again when the batch rolls back
         try:
             result = policy_write_file(self, path, content, expected_sha256, expected_instructions, context=context, request=request)
         except BaseException:
@@ -184,6 +186,33 @@ class Workspace:
             raise
         if saved is not None:
             saved.commit(result)
+        return self._after_change(path, result, context)
+
+    def _delete_file(self, path, expected_sha256, expected_instructions, *, context, request, captures=None):
+        """The delete counterpart of ``_write_file``: same boundary, edit policy, checkpoint and observation."""
+        self._check_observation_capacity(path, context)
+        if not self.allow_write:
+            raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
+        self._path(path)
+        self.edit_policy.check_path(self, path)
+        from baseagent.session.checkpoints import capture
+
+        from .edit_policy import delete_file as policy_delete_file
+        saved = capture(self, path, None, context)
+        if captures is not None and saved is not None:
+            captures.append(saved)
+        try:
+            result = policy_delete_file(self, path, expected_sha256, expected_instructions, context=context, request=request)
+        except BaseException:
+            if saved is not None:
+                saved.abort()
+            raise
+        if saved is not None:
+            saved.commit(result)
+        result.setdefault("instruction_digest", self.get_instructions(path)["digest"])
+        return self._after_change(path, result, context)
+
+    def _after_change(self, path, result, context):
         self._observe(result, context)
         if context is not None:
             from .workflow import invalidate_verifications

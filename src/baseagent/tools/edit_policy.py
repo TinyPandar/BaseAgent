@@ -175,6 +175,40 @@ def write_file(workspace, path, content, expected_sha256, expected_instructions,
                         post_edit_check=check if policy.post_edit_check is not None else None)
 
 
+def delete_file(workspace, path, expected_sha256, expected_instructions, *, context, request):
+    """The delete counterpart of ``write_file``: path rules, diff limit and post_edit_check."""
+    policy = workspace.edit_policy
+    policy.check_path(workspace, path)
+    if policy.max_changed_lines is not None:
+        original = workspace.backend.read_bytes(path).decode("utf-8")
+        if policy.requires_approval(original, "") and not _approved(context, *request):
+            raise ToolFailure(ErrorCode.PERMISSION_DENIED, "edit exceeds max_changed_lines; explicit tool approval required")
+    from baseagent.backends import LocalBackend
+    if policy.post_edit_check is None:
+        return workspace.backend.delete_file(path, expected_sha256, expected_instructions)
+    if not isinstance(workspace.backend, LocalBackend):
+        raise ToolFailure(ErrorCode.PERMISSION_DENIED, "post_edit_check requires a transactional local backend")
+    from .editing import atomic_delete, restore_bytes
+
+    def check(target, original, mode):
+        interrupted = None
+        try:
+            result = workspace._run_bounded_command(list(policy.post_edit_check), policy.post_edit_check_timeout, context=context)
+            if result.ok and workspace.backend.file_hash(path) == "missing":
+                return
+            output = result.data or {}
+            message = (result.error.message if result.error else "check recreated the deleted file") + "\n" + output.get("stdout", "") + output.get("stderr", "")
+        except BaseException as exc:
+            interrupted = exc if not isinstance(exc, Exception) else None
+            message = f"{type(exc).__name__}: {exc}"
+        restore_bytes(target, original, mode)   # still under the write lock
+        if interrupted is not None:
+            raise interrupted
+        raise ToolFailure(ErrorCode.EXECUTION_FAILED, "post-edit check failed; delete rolled back: " + message)
+
+    return atomic_delete(workspace.backend, path, expected_sha256, expected_instructions, post_delete_check=check)
+
+
 class EditToolPolicy:
     """Intersect host tool policy with diff limits using existing approvals."""
 
