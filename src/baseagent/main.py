@@ -106,7 +106,7 @@ DEFAULT_MODEL_RETRIES = 2
 MODES = {"read-only": (False, False), "edit": (True, False), "full": (True, True)}
 OUTPUT_FORMATS = ("text", "json", "jsonl")
 FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machine; LocalBackend is not a sandbox. "
-                     "/undo restores files written by write_file/edit_file, not changes made by commands. "
+                     "/undo restores files written by write_file/edit_file/apply_patch, not changes made by commands. "
                      "For isolation use DockerBackend (docs/docker_backend.md).")
 CHAT_MAX_STEPS = 16
 CHAT_WRAPUP_HINT_STEPS = 2
@@ -753,15 +753,22 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 mcp.register(tools, allow_write=workspace.allow_write)
         base_layers = list(layers)
         chat_events = None
+        from baseagent.chat.middleware import PatchDisplayMiddleware
         if interactive:
             from baseagent.chat import EventBuffer, ToolEventMiddleware
             chat_events = EventBuffer()
             # Previews for chat frontends; observes only. The TUI/Web show these instead of stderr trace lines.
             layers.append(ToolEventMiddleware(chat_events))
             if args.ui == "cli":
+                # Outside the trace layer, so the apply_patch diff prints under its "tool result" line.
+                layers.append(PatchDisplayMiddleware(lambda text: print(text, file=sys.stderr)))
                 layers.append(TraceMiddleware(preview_chars=200, steps=args.trace))
-        elif args.trace:
-            layers.append(TraceMiddleware())
+        else:
+            if not machine.enabled:
+                # Text mode shows the whole apply_patch diff on stderr; json/jsonl keep stderr unchanged.
+                layers.append(PatchDisplayMiddleware(lambda text: print(text, file=sys.stderr)))
+            if args.trace:
+                layers.append(TraceMiddleware())
         retry_layers = []
         if args.model_retries or args.tool_retries:
             retry_layers.append(RetryMiddleware(model_retries=args.model_retries, tool_retries=args.tool_retries))
@@ -783,6 +790,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 return run_agent(
                     model, user_input, tools=tools,
                     middleware=[SessionTagMiddleware(**metadata), *base_layers,
+                                PatchDisplayMiddleware(emit),
                                 TraceMiddleware(preview_chars=200, steps=args.trace, emit=emit),
                                 *([ToolEventMiddleware(chat_events, worker=metadata.get("worker_id"))] if chat_events else []),
                                 *retry_layers, *middleware],
@@ -900,8 +908,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             print(stop_explanation(state, interactive=False), file=sys.stderr)
         if state.blocked_tool_calls:
             print("Inspect with --inspect-session; verify external effects before --resolve-tool.", file=sys.stderr)
+        request = state.metadata.get("approval_request") or {}
+        if state.status == "awaiting_approval" and request.get("name") == "apply_patch" and not machine.enabled:
+            from baseagent.chat.text import call_request_json, patch_approval_text
+            text = patch_approval_text(workspace, call_request_json(store, state, request.get("call_id")))
+            if text:
+                print(text, file=sys.stderr)
+                print(f"Approve with --approve-tool {request.get('call_id')} --approval-digest "
+                      f"{request.get('request_digest')} --session {state.session_id}", file=sys.stderr)
     if machine.enabled:
-        machine.finish(machine_result(state, model_name=config["model"], store=store))
+        machine.finish(machine_result(state, model_name=config["model"], store=store,
+                                      include_patches=machine.format == "json"))
     if state.status != "completed":
         return 130 if state.status == "interrupted" else 1
     return 0

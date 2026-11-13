@@ -23,6 +23,39 @@ def arguments_preview(store, state, call_id, limit=300):
     return _preview(arguments, limit)
 
 
+def patch_approval_text(workspace, request_json):
+    """Pending apply_patch: header, file count and the whole-batch diff computed against the workspace now.
+
+    None for any other tool. The diff is bounded by MAX_PATCH_DIFF_CHARS; the marker then points to
+    --inspect-session for the full request. Nothing is written.
+    """
+    try:
+        function = json.loads(request_json)["function"]
+        if function.get("name") != "apply_patch" or workspace is None:
+            return None
+        operations = json.loads(function["arguments"])["operations"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    from baseagent.tools.patch import describe, preview_patch
+    from baseagent.tools.result import ToolFailure
+    try:
+        return describe(preview_patch(workspace, operations), pending=True)
+    except (ToolFailure, OSError) as exc:
+        count = len(operations) if isinstance(operations, list) else 0
+        return (f"apply_patch 待审批：{count} 个文件；现在无法预览 diff：{exc}。"
+                "批准后执行前还会整批校验，同样会被拒绝。完整请求见 --inspect-session。")
+
+
+def call_request_json(store, state, call_id, node=None):
+    if node is not None:
+        return next((record.get("request_json") for record in node.get("tool_calls", ())
+                     if record.get("call_id") == call_id), None)
+    try:
+        return store.call(state, call_id)["request_json"]
+    except (ValueError, KeyError, TypeError, sqlite3.Error):
+        return None
+
+
 def node_arguments_preview(node, call_id, limit=300):
     for record in node.get("tool_calls", ()):
         if record.get("call_id") == call_id:

@@ -179,6 +179,8 @@ def _ask_worker_approval(session, view, line, out, err):
     print(f"  task: {view['task']}", file=out)
     if view["arguments"]:
         print(f"  arguments: {view['arguments']}", file=out)
+    if view.get("patch"):
+        print(view["patch"], file=out)
     print(f"  call: {view['call_id']}", file=out)
     if view["pending"] > 0:
         print(f"  ({view['pending']} more pending; they are asked one at a time after this one)", file=out)
@@ -210,6 +212,8 @@ def _ask_root_approval(view, out, err):
         print(f"  requested by: worker {view['node'][:8]}", file=out)
     if view["arguments"]:
         print(f"  arguments: {view['arguments']}", file=out)
+    if view.get("patch"):
+        print(view["patch"], file=out)
     print(f"  call: {view['call_id']}", file=out)
     eof = False
     try:

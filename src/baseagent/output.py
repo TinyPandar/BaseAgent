@@ -11,6 +11,7 @@ output) goes to stderr in both formats.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import threading
 import time
@@ -66,15 +67,48 @@ def pending_approval(state, store=None):
     return value
 
 
-def result(state=None, *, session_id=None, error=None, status=None, code=None, model_name=None, store=None):
-    """The ``json`` object (and the ``data`` of the final ``jsonl`` line)."""
+def patches(state, store):
+    """Successful ``apply_patch`` calls of this turn, from the tool ledger (full result, not the clipped transcript)."""
+    if state is None or store is None or not state.session_id or not state.turn_id:
+        return []
+    try:
+        records = store.calls(state.session_id, state.turn_id)
+    except (ValueError, OSError, sqlite3.Error):
+        return []
+    values = []
+    for record in records:
+        try:
+            if json.loads(record["request_json"])["function"]["name"] != "apply_patch" or not record.get("result_json"):
+                continue
+            outcome = json.loads(record["result_json"])
+            if not outcome.get("ok"):
+                continue
+            data = outcome["data"]
+            values.append({"call_id": record["call_id"], "files": data["files"], "diff": data["diff"],
+                           "diff_truncated": data["diff_truncated"]})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return values
+
+
+def result(state=None, *, session_id=None, error=None, status=None, code=None, model_name=None, store=None,
+           include_patches=False):
+    """The ``json`` object (and the ``data`` of the final ``jsonl`` line).
+
+    ``include_patches`` (``json`` only): adds ``patches`` when this turn has successful ``apply_patch``
+    calls. jsonl never carries diff text, so its result line leaves it out (docs/patch.md).
+    """
     if state is not None:
         status = RunStatus(state.status).value if status is None else status
         code = exit_code(state.status) if code is None else code
         session_id = state.session_id or session_id
-    return {"schema_version": SCHEMA_VERSION, "status": status, "final_answer": state.final_answer if state else None,
-            "error": error if error is not None else (state.error if state else None), "session_id": session_id,
-            "usage": usage(state, model_name), "exit_code": code, "pending_approval": pending_approval(state, store)}
+    value = {"schema_version": SCHEMA_VERSION, "status": status, "final_answer": state.final_answer if state else None,
+             "error": error if error is not None else (state.error if state else None), "session_id": session_id,
+             "usage": usage(state, model_name), "exit_code": code, "pending_approval": pending_approval(state, store)}
+    applied = patches(state, store) if include_patches else []
+    if applied:
+        value["patches"] = applied
+    return value
 
 
 def envelope(item):

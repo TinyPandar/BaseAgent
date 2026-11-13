@@ -28,7 +28,7 @@ from baseagent.session.checkpoints import describe as describe_checkpoints
 from baseagent.session.checkpoints import summary as checkpoint_summary
 
 from .events import EventBuffer
-from .text import (arguments_preview, node_arguments_preview, pending_worker, status_lines, stop_explanation,
+from .text import (arguments_preview, call_request_json, node_arguments_preview, patch_approval_text, pending_worker, status_lines, stop_explanation,
                    worker_explanation, worker_nodes)
 
 ERRORS = (ValueError, SessionBusy, OSError, sqlite3.Error)
@@ -212,7 +212,7 @@ class ChatSession:
             if view is None:
                 self._say("err", "Approval state is missing its exact request; inspect the session before continuing.")
                 return state
-            self.events.publish("approval_requested", **view)
+            self._publish_approval(view)
             decision, stop = ask(view)
             if decision is None:
                 return state
@@ -251,7 +251,7 @@ class ChatSession:
                       + ". Inspect with --inspect-session and resolve them before resuming.")
 
     # ----- approvals --------------------------------------------------------------------
-    def root_approval(self, state):
+    def root_approval(self, state, *, previews=True):
         """The pending main-agent (or legacy subtask node) call, or None when the request is incomplete."""
         approval = state.metadata.get("approval_request") or {}
         # A worker's pending call lives in its node; the root only records the pause.
@@ -263,11 +263,29 @@ class ChatSession:
             return None
         arguments = (node_arguments_preview(node, call_id) if node is not None
                      else arguments_preview(self.store, state, call_id))
-        return {"worker": None, "node": node["task_id"] if node is not None else None, "call_id": call_id,
+        view = {"worker": None, "node": node["task_id"] if node is not None else None, "call_id": call_id,
                 "digest": digest, "name": approval.get("name", "tool"), "arguments": arguments,
                 "session_id": state.session_id, "task": None}
+        if not previews:
+            return view
+        return self._with_patch(view, call_request_json(self.store, state, call_id, node))
 
-    def approval_view(self, record):
+    def _with_patch(self, view, request_json):
+        """apply_patch approvals also carry ``patch``: file count and whole-batch diff (other tools: unchanged)."""
+        if view.get("name") == "apply_patch" and request_json:
+            text = patch_approval_text(self.workspace, request_json)
+            if text:
+                view["patch"] = text
+        return view
+
+    def _publish_approval(self, view):
+        if view.get("patch"):
+            # TUI/Web render notices as text: the diff appears beside the approval without a frontend branch.
+            prefix = f"[{view['worker']}] " if view.get("worker") else ""
+            self.events.publish("notice", stream="out", text=prefix + view["patch"])
+        self.events.publish("approval_requested", **view)
+
+    def approval_view(self, record, *, previews=True):
         """What the user must see before answering a worker's call (CLI prints exactly these fields)."""
         approval = record.approval or {}
         try:
@@ -277,10 +295,13 @@ class ChatSession:
         arguments = arguments_preview(self.store, worker_state, approval["call_id"]) if worker_state is not None else ""
         with self.workers._lock:
             waiting = sum(1 for other in self.workers.records.values() if other.status == AWAITING) - 1
-        return {"worker": record.id, "node": None, "call_id": approval.get("call_id"),
+        view = {"worker": record.id, "node": None, "call_id": approval.get("call_id"),
                 "digest": approval.get("request_digest"), "name": approval.get("name", "tool"),
                 "arguments": arguments, "session_id": record.session_id, "task": preview(record.task, 120),
                 "pending": max(waiting, 0)}
+        if previews and view["name"] == "apply_patch" and worker_state is not None:
+            view = self._with_patch(view, call_request_json(self.store, worker_state, approval["call_id"]))
+        return view
 
     def next_worker_approval(self):
         """The next parked worker approval in arrival order (view), or None."""
@@ -289,8 +310,11 @@ class ChatSession:
         record = self.workers.next_approval()
         return None if record is None else self.approval_view(record)
 
-    def pending_approvals(self):
-        """Every pending approval, oldest first: parked workers, then the main agent's own call."""
+    def pending_approvals(self, *, previews=True):
+        """Every pending approval, oldest first: parked workers, then the main agent's own call.
+
+        ``previews=False`` skips the apply_patch diff preview (status counts only need the views).
+        """
         views = []
         if self.workers is not None:
             with self.workers._lock:
@@ -298,10 +322,11 @@ class ChatSession:
                 records = [self.workers.records[worker_id] for worker_id in order if worker_id in self.workers.records]
                 records += [record for record in self.workers.records.values()
                             if record.status == AWAITING and record.id not in order]
-            views += [self.approval_view(record) for record in records if record.status == AWAITING and record.approval]
+            views += [self.approval_view(record, previews=previews) for record in records
+                      if record.status == AWAITING and record.approval]
         state = self._stored_state()
         if state is not None and state.status == RunStatus.AWAITING_APPROVAL:
-            view = self.root_approval(state)
+            view = self.root_approval(state, previews=previews)
             if view is not None:
                 views.append(view)
         return views
@@ -323,7 +348,7 @@ class ChatSession:
         if worker is None or worker is ANY:
             state = self._stored_state()
             if state is not None and state.status == RunStatus.AWAITING_APPROVAL:
-                view = self.root_approval(state)
+                view = self.root_approval(state, previews=False)
                 if view is not None and view["call_id"] == call_id:
                     if view["digest"] != digest:
                         raise ApprovalMismatch(f"request digest does not match the pending call {call_id}")
@@ -684,7 +709,7 @@ class ChatSession:
         elif kind == "worker_cancelled":
             self.events.publish(kind, worker=record.id, detail=record.detail, text=data.get("text", ""))
         elif kind == "approval_requested" and record.approval:
-            self.events.publish(kind, **self.approval_view(record))
+            self._publish_approval(self.approval_view(record))
         self.publish_status(force=True)
 
     # ----- status and snapshots ---------------------------------------------------------
@@ -738,7 +763,7 @@ class ChatSession:
             "max_total_tokens": state.max_total_tokens if state is not None else None,
             "budget": budget, "workers": workers,
             "max_workers": self.workers.max_workers if self.workers is not None else 0,
-            "pending_approvals": len(self.pending_approvals()),
+            "pending_approvals": len(self.pending_approvals(previews=False)),
         }
 
     def publish_status(self, *, force=False):
