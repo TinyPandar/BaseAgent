@@ -40,6 +40,81 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：补尾巴与修实测问题（本段合并进 master 前必须删除）
+
+> **给实现者（Claude Code）的工作方式，先读这一段。** 本段只写「做什么、为什么、怎么算做完」，不写技术方案；接口、数据形状和模块怎么拆由你来定。
+>
+> 1. **先读代码。** 摸清相关子系统现在怎么做、为什么这么做（看代码、`docs/`、`git log` / `git show` 里的历史提交）。下面「现状」是 PM 读代码时看到的，以代码为准；和描述不符的地方写进「完成情况」。
+> 2. **先写设计，再实现。** 在本段的「设计（实现者填写）」小节里写至少两套结构不同的方案：数据形状、接口、模块边界、影响面（会动哪些文件、哪些已有测试、旧会话 / 旧配置怎么办），选一个并写明理由，然后直接实现。Frank 已授权，不用停下来等确认。
+> 3. **偏最小改动、白盒可解释**，不新增核心运行时依赖。
+> 4. **测试离线、确定性**，已有测试不削弱。跑全量前清掉 `SAND_*` 环境变量，并删除 `.baseagent/live_answers_checkpoint.json`。预期内的失败只有两个：本段 README 导致的 corpus_version 测试，以及已有的 `tests/test_record_coding_scenario.py::test_all_real_recordings_replay_offline`。其它失败都要修。
+> 5. **小步提交，推送到本分支。** 不 force-push，不开 PR，不碰 master。最后在「完成情况（实现者填写）」表里逐条填 AC 状态和证据。
+>
+> **并行开发：** 另一个分支 `plan/docker-backend`（`--backend docker` 接入 CLI、容器隔离与清理、docker 下的检查点和撤销）同时在做，不要改它的范围。README 和 `applications/project_assistant/evaluation/questions.json` 的 corpus_version 冲突由 PM 合并时处理，你不用重绑。
+>
+> **全局约束：** 不拷贝 mewcode；不参考非公开的 Claude Code 源码（包括从 npm sourcemap 还原的）；不合并 Watchdog 和 HarnessKnight（HK 是可选外部服务，只留接口，不做内核依赖）；不做 OAuth；不做 Super Agent 全双工后续（消息排队、主动汇报、`cancel_worker` 工具等）；写文件默认不要求用户批准，审批跟随 `--mode` / `--tool-policy`；任何付费 API 都要单独授权并带 `--budget-cny`，本轮一个都不跑。
+
+目标：把 coding agent 已知的尾巴一次收掉，包括 Frank 亲自跑出来的实测问题、文档里的旧表述、Watchdog / HK 识别 `apply_patch`、项目 `.mcp.json` 首次信任确认，以及项目规则文件 `AGENTS.md`。全程离线，费用 0。
+
+本分支不做：`--backend docker` 和 Docker 相关的一切（另一个分支的范围，包括 README 对照表里「Docker 沙箱」那一行、`docs/docker_backend.md`、`docs/patch.md` 里「撤销只支持 LocalBackend」那一条）；新工具；Chainlit 启动器（`baseagent-ui`）；三层上下文 / RAG；HK 仓库本身。
+
+### 现状（PM 读代码所见，以代码为准）
+
+- 实测问题 a–e 大部分已在 `cdcf54a`（`plan/cli-chat-ux`，2026-11-08）修过，`tests/test_cli_chat.py` 里有对应测试：寒暄约束写进了投影提示词（`main.py`、`agent/router.py`），glob / grep 预览给条数，交互对话默认 16 步、一次性任务仍是 8 步，上限报错写明「已用/上限」和 `--resume` 命令，`--model-retries` 默认 2（`RetryMiddleware` 指数退避，上限 8 秒），`--list-sessions` / 导出的 `updated_at` 带 `+00:00`。这些项的目标是用回归测试证明仍然成立，并补上还没覆盖到的入口，不要重做。
+- 仍存在的缺口：交互对话里撞上限时，提示是「在这里再发消息会用同样的上限再停一次，请 /exit 后用 --resume 提高上限」，也就是在对话里没法继续。时间戳也只有部分入口带了时区。
+- `AGENTS.md`：已经有了。`RepositoryMiddleware` 每次模型调用把根目录 `AGENTS.md` 作为参考数据注入；`get_instructions` 按目录链读取，单个文件 20 KB、合计 40 KB，超出时报 `LIMIT_EXCEEDED` 而不是截断。它的摘要参与写文件的 `expected_instructions` CAS 和漂移检测。缺的是截断提示、可见性、开关，以及是否兼容 `CLAUDE.md`。
+- MCP 配置只有两个来源：`--mcp-config PATH` 和工作区根目录的 `.mcp.json`。没有单独的「用户级配置文件」；本段说的「用户自己点名的配置」就是 `--mcp-config`。
+- 写工具名单：`agent/router.py`、`agent/guards.py` 已经认识 `apply_patch`；`agent/watchdog.py` 的 `WRITE_TOOLS` 和 `middleware/harnessknight.py` 的 `infer_impacts` 还只认 `write_file` / `edit_file`。
+- `delete_file` 不是模型工具，只是 `WorkspaceBackend` 和 `Workspace` 的删除入口；模型删除文件只能用 `apply_patch` 的 `delete`。文档里不要把它写成工具。
+
+### A. 实测问题（一律叫「实测问题」）
+
+1. **寒暄不调工具。** 回归测试证明：一次性任务、单 Agent 连续对话和主 Agent / Worker 模式下，发给模型的提示里都有「寒暄、闲聊、不依赖历史的问题直接回答，不调 `get_task_state` / `recall_memory` / `read_history`」的约束。主 Agent 模式下 `hi` 不派 Worker（`agent/router.py` 里已有寒暄的判定路径，用它测）。用户问「上次做到哪了」这类问题时，这些工具仍然可用。不写死关键词表，不关掉 memory / history 工具包。
+2. **列表预览给剩余条数。** 回归测试证明：CLI 里 `glob` / `grep` 结果预览写明总数、显示了几条、省略了几条，并区分「预览省略」和「工具自身的 `max_results` / `max_matches` 截断」。TUI 和 Web 的工具结果展示也满足同样要求：如果它们复用同一段渲染，用测试证明；没复用就补上。`glob` 的匹配语义不变。
+3. **上限说清楚，并且能在对话里继续。** 回归测试证明默认值（交互 16 / 一次性 8，显式参数优先）和撞上限时的文案（点名是哪个上限，给出已用/上限）。全仓库不再出现 `no error detail was recorded`；任何未完成且没有错误详情的停止都要给出已用/上限和继续办法。新增要求：在 CLI / TUI / Web 对话里撞上限后，用户不退出对话就能提高本轮上限并继续这一轮。怎么做由实现者定（例如一个命令），已用计数不清零、不重做已完成的工具调用，提示文案直接告诉用户怎么操作。一次性任务的 `--resume` 用法不变。
+4. **超时和传输错误自动重试。** 回归测试证明，未传 `--model-retries` 时，一次性任务、连续对话、Worker 都默认对传输超时（`ModelTimeoutError`）、连接失败和 408/409/429/5xx 重试。默认最多重试 2 次，即同一步最多 3 次请求；允许范围 0–4，`--model-retries 0` 可以关闭。退避逐次变长且有上限（用假时钟测出等待序列），遵守 `Retry-After` 和任务截止时间。鉴权失败等非瞬时错误不重试。模型重试只重发模型请求，不会重复执行已经执行过的工具，尤其是有副作用的工具（`tool_retries` 默认仍为 0，不安全的工具调用永不自动重试），这一点要有测试。README 写明每次重试都按一次付费请求计费，也计入 `--max-model-calls`。
+5. **时间戳带时区。** 盘点所有给人或程序看的时间戳：`--list-sessions`、`--inspect-session`、导出、`--task-tree`、`/status`、`/checkpoints`、`--checkpoints`、jsonl 事件的 `timestamp`、TUI / Web。每一个都要么带时区标记，要么转成本地时间并标明时区。选哪种由实现者定，全仓库统一，并写进文档。存储格式不变；旧会话库里已有的时间值照样能读、能正确显示。每个入口至少一条测试。
+
+### B. 文档旧表述
+
+6. README 和 `docs/` 里列举写工具、检查点覆盖范围、审批示例的地方都补上 `apply_patch`（删除走 `apply_patch` 的 `delete`），不把 `delete_file` 写成模型工具。PM 已知的位置有：README「三个前端都有检查点命令」那段（只写了 `write_file` / `edit_file`）、`Tool execution contract`、`Tool policy and durable approval` 里「写操作都要 ask」的示例策略（缺 `apply_patch`，照抄会漏审批）、`Edit policy` 段、`docs/router_worker.md`（主 Agent 没有的工具、Worker 检查点）、`docs/mcp.md`（检查点只管哪些工具）、`docs/checkpoints.md`（「钩子只有一个」那段），以及本分支做完 C 之后 `docs/patch.md` 的「Watchdog 和 HarnessKnight 暂不识别」。以 `rg` 全量盘点为准，在完成情况里列出改了哪些地方。
+7. README「和 Claude Code / Codex 的对照」：为本分支的新能力加行或改行（`AGENTS.md` 项目规则、MCP 首次信任、在对话里继续），措辞跟表里现有行一致，只写做没做，不写排名。「Docker 沙箱」这一行不改，那是另一个分支的。
+
+### C. Watchdog 与 HarnessKnight 认识 `apply_patch`
+
+8. Watchdog 把 `apply_patch`（成功的调用）算作「这一步有写入」，停滞判断与 `write_file` / `edit_file` 一致。补一条测试：只用 `apply_patch` 改文件的任务不会被判为停滞。
+9. HK 适配层（`middleware/harnessknight.py`）给 `apply_patch` 报告影响：批里的每个文件各一条，`add` / `modify` 是写入，`delete` 是删除。HK 现有协议如果没有「删除」这个操作值，就按写入上报，并在文档里写明。路径数量和长度有上限，不能因为一批 50 个文件就发出超大请求。只改 BaseAgent 这一侧，不改 HK 仓库，HK 仍是可选的。
+10. 在完成情况里列一张表：仓库里所有「写工具名单」或按工具名判断写入的地方，以及每处是否已认识 `apply_patch`。漏了的补上；不该补的写明理由。
+
+### D. 项目 `.mcp.json` 首次信任
+
+11. 第一次在某个项目加载根目录 `.mcp.json` 时，交互模式（CLI / TUI / Web）先列出要启动的服务器：名字、命令、参数、`env` 的键名（不显示值），问「是否信任并启动」。用户信任之前不启动任何服务器进程。拒绝后本次会话照常运行，只是没有 MCP 工具，并提示以后怎么再信任。
+12. 信任结果按项目持久化，下次不再问。`.mcp.json` 内容一变（任何字段，包括 `env` 的值），旧信任就失效，要重新确认。信任记录不能放在仓库能自带的位置：一个克隆下来的仓库自带「已信任」记录也不能算数。存放位置和格式由实现者定，写进文档。要有办法撤销信任。
+13. 非交互场景（一次性任务、`--output-format json|jsonl`、stdin 不是终端）下的默认行为由实现者定，但必须安全：没信任就不启动。stderr 写明原因和怎么信任；json / jsonl 里能看出 MCP 因未信任被跳过。`--mcp-strict` 遇到未信任时怎么处理（退出码）由实现者定，写进文档。
+14. `--mcp-config PATH`（用户自己点名的配置）不受影响，行为与 master 一致。没有 `.mcp.json` 的项目行为与 master 逐字一致。
+15. 测试用现有的离线假 MCP 服务器：首次询问；拒绝时不启动进程（断言没有起进程）；信任后下次不再问；改一个字节后重新询问；仓库自带的伪造信任记录无效；非交互默认不启动；`--mcp-config` 不询问。
+
+### E. 项目规则文件
+
+16. 仓库根目录的 `AGENTS.md` 每次会话自动作为项目约定读入上下文：一次性任务、连续对话、Worker 都要有，主 Agent 是否需要由实现者定并写明。是否兼容 `CLAUDE.md` 由实现者权衡：如果兼容，写清两个都存在时怎么处理，测试覆盖。不改现有「按目录链读取下级 `AGENTS.md`」的行为。
+17. 大小上限：超出时截断并给出提示（模型看得到「已截断」，用户在 `/status` 或 stderr 也看得到），不再让整轮失败。上限值写进文档。截断不能破坏现有的指令摘要语义：写文件的 `expected_instructions` CAS 和漂移检测仍然正确，测试覆盖「截断后改文件仍按摘要检测到漂移」。
+18. 可见性：`/status` 和 `--output-format json`（可选字段，`schema_version` 仍为 1）能看出是否加载、加载了哪个文件、多大、有没有截断。jsonl 只放元数据，不放正文。
+19. 可以关闭（命令行开关，或已有配置项）。关闭后模型看不到规则内容；写文件的 CAS 和漂移规则怎么处理由实现者定，但不能变成更不安全的状态，写进文档。
+20. 文件不存在时，发给模型的提示、文本输出、json 输出都与 master 逐字一致（用已有的基线测试证明）。规则文件只是参考数据，不能放宽 `--mode`、`--tool-policy` 和工作区边界，回归测试证明。
+
+### F. 测试与文档
+
+21. 上面每条 AC 至少一条离线测试；全量测试除两个预期内失败外全部通过；`tests/test_apply_patch*.py` 和 `tests/test_cli_chat.py` 连跑 3 遍稳定。
+22. 文档：`docs/mcp.md` 加「首次信任」一节；README 或 `docs/` 加「项目规则文件」一节（读哪些文件、上限、截断、开关、可见性）；README 写清「在对话里继续」和时间戳约定；`docs/demo.md` 加一段离线演示（假模型，费用 0），至少演示 `.mcp.json` 首次询问和 `AGENTS.md` 被加载后在 `/status` 里可见。
+
+### 设计（实现者填写）
+
+（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。）
+
+### 完成情况（实现者填写）
+
+做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：哪些 AC 是「回归测试证明已修」；读代码时发现与本段描述不符的地方；你自己拍板的点和理由，至少包括：「在对话里继续」的交互方式、时间戳约定、信任记录存哪和怎么撤销、非交互下 MCP 的默认行为和退出码、`AGENTS.md` 的上限 / 开关 / 是否兼容 `CLAUDE.md`。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
