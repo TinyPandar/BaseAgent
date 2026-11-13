@@ -65,7 +65,14 @@ def successful_write_since(state, path, after_index):
         if message.get("role") != "tool":
             continue
         call = calls.get(message.get("tool_call_id"))
-        if not call or call[0] not in {"write_file", "edit_file"} or call[1].get("path") != path:
+        if not call or call[0] not in {"write_file", "edit_file", "apply_patch"}:
+            continue
+        if call[0] == "apply_patch":
+            operations = call[1].get("operations")
+            if not isinstance(operations, list) or not any(isinstance(item, dict) and item.get("path") == path
+                                                           for item in operations):
+                continue
+        elif call[1].get("path") != path:
             continue
         try:
             if json.loads(message.get("content", "{}")).get("ok"):

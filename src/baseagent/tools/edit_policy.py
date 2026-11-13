@@ -230,7 +230,16 @@ class EditToolPolicy:
         if action == "deny":
             return action
         workspace = self.workspaces.get(name)
-        if workspace is not None:
+        if workspace is not None and name == "apply_patch":
+            # The whole batch counts against max_changed_lines (docs/patch.md).
+            try:
+                from .patch import preview_patch
+                operations = _strict_arguments(arguments)["operations"]
+                if preview_patch(workspace, operations)["changed_lines"] > workspace.edit_policy.max_changed_lines:
+                    action = "ask"
+            except (ToolFailure, OSError, ValueError, TypeError, KeyError, RecursionError):
+                pass  # the tool's own batch validation reports the error
+        elif workspace is not None:
             try:
                 args = _strict_arguments(arguments)
                 path = args["path"]
@@ -256,7 +265,7 @@ class EditToolPolicy:
 
 def bind_edit_policy(policy, tools):
     workspaces = {}
-    for name in ("write_file", "edit_file"):
+    for name in ("write_file", "edit_file", "apply_patch"):
         entry = tools._tools.get(name)
         workspace = getattr(entry[1], "__self__", None) if entry else None
         if getattr(workspace, "edit_policy", None) is not None and workspace.edit_policy.max_changed_lines is not None:

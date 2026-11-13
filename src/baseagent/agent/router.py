@@ -37,7 +37,7 @@ DELEGATE = "delegate"
 CLARIFY = "clarify"
 DELEGATE_TOOL = "delegate_task"
 WORKER = "worker"
-WRITE_TOOLS = frozenset({"write_file", "edit_file", "run_command"})
+WRITE_TOOLS = frozenset({"write_file", "edit_file", "apply_patch", "run_command"})
 CITATION_RE = re.compile(r"[A-Za-z0-9_./-]+\.(?:py|md):\d+-\d+")
 SPILL_RE = re.compile(r"spill[_-]?(?:id|ref)[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9_-]+)")
 

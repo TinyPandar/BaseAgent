@@ -22,11 +22,11 @@ from baseagent.session import SessionStore
 
 FLAGS = ([], ["--allow-write"], ["--no-allow-write"], ["--allow-command"], ["--no-allow-command"],
          ["--allow-write", "--allow-command"])
-TOOLS = ["get_instructions", "read_file", "search_files", "grep", "glob", "write_file", "edit_file", "run_command",
+TOOLS = ["get_instructions", "read_file", "search_files", "grep", "glob", "write_file", "edit_file", "apply_patch", "run_command",
          "update_plan", "get_task_state", "verify_command", "git_diff", "git_status", "remember", "forget_memory",
          "recall_memory", "read_history", "set_history_summary", "publish_memory", "search_shared_memory",
          "withdraw_memory"]
-WRITE_TOOLS = {"write_file", "edit_file"}
+WRITE_TOOLS = {"write_file", "edit_file", "apply_patch"}
 COMMAND_TOOLS = {"run_command", "verify_command"}
 PUBLISH_TOOLS = {"publish_memory", "withdraw_memory"}        # need --allow-memory-publish, outside --mode
 

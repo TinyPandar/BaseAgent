@@ -37,9 +37,9 @@ def main():
     framework.mkdir()
     (framework/'config.toml').write_text('[project]\nallow_origins = ["http://127.0.0.1:'+str(args.port)+'", "http://localhost:'+str(args.port)+'"]\n[features]\nedit_message = false\n[features.spontaneous_file_upload]\nenabled = false\n[UI]\nname = "BaseAgent"\n[meta]\ngenerated_by = "'+version("chainlit")+'"\n', encoding='utf-8')
     policy = directory/'policy.json'
-    rules = {name: 'ask' for name in ('write_file', 'edit_file', 'run_command', 'verify_command')}
+    rules = {name: 'ask' for name in ('write_file', 'edit_file', 'apply_patch', 'run_command', 'verify_command')}
     if not args.allow_write:
-        rules.update(write_file='deny', edit_file='deny')
+        rules.update(write_file='deny', edit_file='deny', apply_patch='deny')
     if not args.allow_command:
         rules.update(run_command='deny', verify_command='deny')
     policy.write_text(json.dumps({'default': 'allow', 'tools': rules}), encoding='utf-8')

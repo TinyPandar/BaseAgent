@@ -66,6 +66,9 @@ class ExecutionGuidanceMiddleware(AgentMiddleware):
         disabled = set()
         if not self.workspace.allow_write:
             disabled.update(('write_file', 'edit_file'))
+            # Listed only when registered, so prompts without apply_patch stay byte-identical.
+            if any(tool['function']['name'] == 'apply_patch' for tool in request.tools):
+                disabled.add('apply_patch')
         if not self.workspace.allow_command:
             disabled.update(('run_command', 'verify_command'))
         if not self.workspace.allow_memory_publish:

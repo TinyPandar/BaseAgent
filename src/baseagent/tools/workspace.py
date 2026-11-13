@@ -230,6 +230,10 @@ class Workspace:
             if relative not in files and len(files) >= 500:
                 raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "observed file limit is 500 per turn")
 
+    def apply_patch(self, operations: list[dict], *, context=None) -> dict:
+        from .patch import apply_patch
+        return apply_patch(self, operations, context=context)
+
     def edit_file(self, path: str, edits: list[dict], expected_sha256: str, expected_instructions: str, *, context=None) -> dict:
         if not self.allow_write:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "file writes disabled; start with --allow-write")
@@ -350,6 +354,9 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     registry.register("write_file", "Create with expected_sha256='missing', or replace using the SHA-256 and instruction digest from a fresh read", params({**write_fields, "content": string}, [*write_fields, "content"]), workspace.write_file, contextual=True)
     edits = {"type": "array", "minItems": 1, "maxItems": 20, "items": params({"old_text": {"type": "string", "minLength": 1, "maxLength": 200000}, "new_text": {"type": "string", "maxLength": 200000}}, ["old_text", "new_text"])}
     registry.register("edit_file", "Atomically apply 1-20 exact unique text replacements using a fresh file hash and instruction digest; a mismatch applies no edit", params({**write_fields, "expected_sha256": digest, "edits": edits}, [*write_fields, "edits"]), workspace.edit_file, contextual=True)
+    from .patch import DESCRIPTION as PATCH_DESCRIPTION
+    from .patch import schema as patch_schema
+    registry.register("apply_patch", PATCH_DESCRIPTION, patch_schema(), workspace.apply_patch, contextual=True)
     command_fields = {"argv": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}, "timeout": {"type": "integer", "minimum": 1, "maximum": 60}}
     registry.register("run_command", "Run an argv command in the workspace", params(command_fields, ["argv"]), workspace.run_command, contextual=True)
     steps = {"type": "array", "maxItems": 50, "items": params({"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}, "title": {"type": "string", "minLength": 1, "maxLength": 300}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "blocked"]}}, ["id", "title", "status"])}
