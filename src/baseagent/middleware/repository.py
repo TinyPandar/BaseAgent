@@ -21,12 +21,17 @@ class RepositoryMiddleware(AgentMiddleware):
         saved = state.metadata.get("root_instruction_digest")
         if saved is not None and saved != root["digest"]:
             changed.append("AGENTS.md guidance")
-        for path, observation in state.metadata.get("observed_files", {}).items():
-            try:
-                current = self.workspace.file_hash(path)
-                instructions = self.workspace.get_instructions(path)["digest"]
-            except (OSError, ToolFailure):
-                current, instructions = "unavailable", "unavailable"
+        observed = state.metadata.get("observed_files", {})
+        values = self.workspace.observe_many(list(observed)) if hasattr(self.workspace, "observe_many") else None
+        for path, observation in observed.items():
+            if values is not None:
+                current, instructions = values[path]
+            else:
+                try:
+                    current = self.workspace.file_hash(path)
+                    instructions = self.workspace.get_instructions(path)["digest"]
+                except (OSError, ToolFailure):
+                    current, instructions = "unavailable", "unavailable"
             if current != observation["sha256"] or instructions != observation["instruction_digest"]:
                 changed.append(path)
         invalidate_verifications(self.workspace, state)

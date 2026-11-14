@@ -251,14 +251,37 @@ class Workspace:
         return self._write_file(path, content, expected_sha256, expected_instructions, context=context,
                                 request=("edit_file", {"path": path, "edits": edits, "expected_sha256": expected_sha256, "expected_instructions": expected_instructions}))
 
+    def observe_many(self, paths):
+        """{path: (sha256, instruction digest)}, ``("unavailable", "unavailable")`` when unreadable.
+
+        Drift checks run before every model and tool call. LocalBackend asks file by file; a
+        backend with ``observe_many`` (DockerBackend) answers the whole list in one exec.
+        """
+        batch = getattr(self.backend, "observe_many", None)
+        if not callable(batch) or isinstance(self.backend, LocalBackend):
+            values = {}
+            for path in paths:
+                try:
+                    values[path] = (self.file_hash(path), self.get_instructions(path)["digest"])
+                except (OSError, ToolFailure):
+                    values[path] = ("unavailable", "unavailable")
+            return values
+        values, valid = {}, []
+        for path in paths:
+            try:
+                self._path(path)
+                valid.append(path)
+            except (OSError, ToolFailure):
+                values[path] = ("unavailable", "unavailable")
+        values.update(batch(valid) if valid else {})
+        return values
+
     def refresh_observed(self, state):
         changed = []
-        for path, observation in state.metadata.get("observed_files", {}).items():
-            try:
-                current = self.file_hash(path)
-                instructions = self.get_instructions(path)["digest"]
-            except (OSError, ToolFailure):
-                current, instructions = "unavailable", "unavailable"
+        observed = state.metadata.get("observed_files", {})
+        current_values = self.observe_many(list(observed))
+        for path, observation in observed.items():
+            current, instructions = current_values[path]
             if current != observation["sha256"] or instructions != observation["instruction_digest"]:
                 changed.append(path)
                 observation.update(sha256=current, instruction_digest=instructions)

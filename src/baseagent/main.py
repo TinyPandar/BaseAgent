@@ -848,6 +848,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             mcp = McpManager.from_arguments(args.mcp_config, workspace.root, strict=args.mcp_strict,
                                             client_version=version("baseagent"))
             if mcp is not None:
+                if backend is not None:
+                    print("Note: MCP servers run on the host, not inside the Docker container.", file=sys.stderr)
                 mcp.start()
                 mcp.register(tools, allow_write=workspace.allow_write)
         base_layers = list(layers)

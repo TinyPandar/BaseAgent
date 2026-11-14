@@ -362,6 +362,14 @@ class DockerBackend:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "session storage is protected")
         return relative.as_posix()
 
+    def _guidance_relative(self, path):
+        """The path whose directories carry guidance: links resolved on the namespace, as LocalBackend does."""
+        relative = self._relative(path or ".")
+        if relative == ".":
+            return relative
+        resolved = (self.root / relative).resolve().relative_to(self.root).as_posix()
+        return resolved or "."
+
     # ----- reads ------------------------------------------------------------------------
     def _probe(self, entries, limit):
         """[(status, size)] and {relative: bytes} for ``r:`` / ``i:`` / ``s:`` entries, one exec per batch."""
@@ -439,7 +447,7 @@ class DockerBackend:
         return self.stat_files([path])[path][1]
 
     def get_instructions(self, path="."):
-        relative = self._relative(path or ".")
+        relative = self._guidance_relative(path)
         parts = [] if relative == "." else relative.split("/")
         prefixes = [""] + ["/".join(parts[:index]) for index in range(1, len(parts) + 1)]
         candidates = ["AGENTS.md" if not prefix else prefix + "/AGENTS.md" for prefix in prefixes]
@@ -467,6 +475,50 @@ class DockerBackend:
             values.append({"path": candidate, "sha256": sha256(content).hexdigest(), "content": content.decode("utf-8")})
         from baseagent.tools.instructions import instruction_digest
         return {"scope": "/".join(parts) or ".", "instructions": values, "digest": instruction_digest(values)}
+
+    def observe_many(self, paths):
+        """{path: (sha256 | "missing", instruction digest)} for drift checks, in one exec.
+
+        Same answers as ``file_hash`` + ``get_instructions`` per path; a path whose hash or
+        guidance cannot be read maps to ``("unavailable", "unavailable")``.
+        """
+        from baseagent.tools.instructions import instruction_digest
+        relatives = {path: self._guidance_relative(path) for path in paths}
+        chains, wanted = {}, []
+        for path, relative in relatives.items():
+            parts = [] if relative == "." else relative.split("/")
+            chain = ["AGENTS.md" if not index else "/".join(parts[:index]) + "/AGENTS.md"
+                     for index in range(len(parts) + 1)]
+            chains[path] = chain
+            wanted += [item for item in chain if item not in wanted]
+        entries = [f"r:{relative}" for relative in relatives.values()] + [f"i:{item}" for item in wanted]
+        statuses, contents = self._probe(entries, READ_LIMIT)
+        files = dict(zip(relatives.values(), statuses[:len(relatives)]))
+        guidance = dict(zip(wanted, statuses[len(relatives):]))
+        values = {}
+        for path, relative in relatives.items():
+            status = files[relative][0]
+            if status == "missing":
+                current = "missing"
+            elif status == "ok" and relative in contents and len(contents[relative]) <= READ_LIMIT:
+                current = sha256(contents[relative]).hexdigest()
+            else:
+                values[path] = ("unavailable", "unavailable")
+                continue
+            chain = chains[path][:-1]          # a file (or a missing path) has no AGENTS.md inside it
+            found, total, broken = [], 0, False
+            for item in chain:
+                kind = guidance[item][0]
+                if kind in ("missing", "dir", "notfile"):
+                    continue
+                content = contents.get(item)
+                if kind != "ok" or content is None or len(content) > 20_000:
+                    broken = True
+                    break
+                total += len(content)
+                found.append({"path": item, "sha256": sha256(content).hexdigest()})
+            values[path] = ("unavailable", "unavailable") if broken or total > 40_000 else (current, instruction_digest(found))
+        return values
 
     def list_files(self, path="."):
         """(files, directories) under ``path``: sorted workspace-relative POSIX paths, links excluded."""
