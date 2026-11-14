@@ -109,7 +109,41 @@
 
 ### 设计（实现者填写）
 
-（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。）
+两套整体方案的差别在「新东西放在哪一层」。
+
+**方案一（选定）：就地补，在已有模块里各自收口，只新增一个小模块 `mcp/trust.py`。**
+
+- 在对话里继续：内核不动。`ChatSession` 加一个对话命令 `/continue [N]`，三个前端共用（CLI 同步执行；TUI / Web 走已有的后台轮次线程）。`main.py` 的 `run_turn(text, limits=None)` 多一个可选参数，把本轮的新上限传给 `run_agent` 已有的 `max_steps` / `max_model_calls` / `max_tool_calls`（内核的 `_set_limits` 本来就会在续跑时改写上限，计数不清零，账本里已完成的调用不会重做）。主 Agent 模式下同一组数字同时放大共享的 `TurnBudget`。另外修一个相邻的坑：对话里续跑一律不把已存上限降回默认值（以前每次都传 16，放大过的上限会被压回去）。数据形状不变，只是 `State` 里已有的三个上限字段变大。
+- 时间戳：沿用仓库里已经出现的「UTC + 明确标记」：JSON 字符串一律 ISO 8601 带 `+00:00`，人看的文本写 `YYYY-MM-DD HH:MM:SS UTC`，数字型字段是 Unix 纪元秒（定义上就是 UTC）。存储不变，只在输出时转换；数字字段旁边补一个 `*_utc` 字符串（jsonl 信封除外，见拍板）。
+- `AGENTS.md`：只改 `tools/instructions.py` 一个读取函数：超限时截断内容但摘要仍按整个文件的 SHA-256 算（摘要只依赖 `{path, sha256}`，所以 CAS 和漂移检测完全不变）；截断时条目多带 `truncated` / `size_bytes` / `shown_bytes`，没截断时输出逐字不变。开关 `--project-rules/--no-project-rules`（也能写在 `--config` 的 `run.project_rules`）。关闭时 `Workspace` 只把规则正文从模型能看到的地方（注入的参考消息、`get_instructions`、`read_file` 的 `instructions`）拿掉，摘要照算照比。可见性：`/status` 一行、json 可选字段 `project_rules`、jsonl 结果行同一个对象（只有元数据）、一次性任务截断时 stderr 一行。
+- MCP 首次信任：新模块 `mcp/trust.py`（信任库读写 + 询问文案），`main.py` 在 `McpManager.start()` 之前调用一次。`McpManager`、`--mcp-config` 路径、库接口全都不变。交互模式在启动前用发起它的终端问（TUI / Web 都是从终端启动的，界面起来之前问），非交互不问、不启动。
+- Watchdog / HK：`watchdog.WRITE_TOOLS` 加 `apply_patch`；`harnessknight.infer_impacts` 给 `apply_patch` 逐文件出影响，数量和长度有上限。
+- 预览：把 `main._list_preview` 挪到 `chat/text.py` 作为共用函数（`main` 里保留同名导入），`ToolEventMiddleware` 对 `glob` / `grep` 用它生成 `tool_result.preview`，TUI / Web 自动得到同样的文字。
+
+影响面：`main.py`、`chat/session.py`、`chat/text.py`、`chat/middleware.py`、`tools/instructions.py`、`tools/workspace.py`、`middleware/repository.py`、`config.py`、`output.py`、`session/checkpoints.py`（只是文本）、`agent/watchdog.py`、`middleware/harnessknight.py`、新增 `mcp/trust.py`。已有测试里只有用 `.mcp.json` 跑一次性任务的 MCP 测试要先登记信任（行为按 AC 本来就要变）；旧会话：上限、摘要、存储格式都不变，旧会话照常续跑。
+
+**方案二（不选）：新增一层「项目上下文 / 启动前置」模块，内核加「追加额度」记录。**
+
+- 新建 `baseagent/project.py`，统一负责项目级启动：读规则文件、做 `.mcp.json` 信任、产出一个 `ProjectContext`（规则正文、摘要、MCP 服务器清单、信任结论），`main.py` 和 `ChatSession` 都只认它；规则不再由 `RepositoryMiddleware` 每步重读，而是启动时快照一次塞进系统提示。
+- 在对话里继续：内核 `State` 新增 `limit_extensions: [{at_step, steps, model_calls, tool_calls, ts}]`，`RunStatus` 新增「等待追加额度」状态，前端发一个结构化事件批准追加；一次性任务的 `--resume` 也改走同一套记录。
+- MCP 信任：前端各自做一个信任对话框（TUI 模态框、Web 页面按钮），服务器延迟到用户在界面里点了信任才启动，工具注册改成会话中途可变。
+- 时间戳：存储层统一改成 ISO 字符串并做一次数据迁移。
+
+不选的理由：方案二要改内核状态和 `RunStatus`（会话格式变、旧会话要迁移）、规则快照会让「会话中途改 `AGENTS.md`」的漂移检测语义变掉、工具注册中途可变会碰到运行时契约（`runtime_contract`）和审批摘要、存储迁移违反「存储格式不变」，也明显超出「偏最小改动」。方案一每一项都落在已有的接缝上（内核已支持续跑时改上限、摘要本来就只认文件哈希、MCP 启动本来就集中在 `main.py` 一处），能用现有测试逐项证明没有回归。
+
+**方案一里几处的二选一：**
+
+| 点 | 选了 | 没选 | 理由 |
+| --- | --- | --- | --- |
+| 继续的交互 | `/continue [N]`：本轮再给 N 步和 N 次模型调用（默认 = 对话的每轮步数，16），工具调用额度再加一份（默认 32） | 撞上限时弹 y/N「要不要再给 16 步」 | 命令三个前端都能用，不打断 TUI / Web 的异步流程；弹窗在 Web 里没有阻塞式输入 |
+| 截断后的摘要 | 摘要按完整文件哈希算，内容截断 | 摘要按截断后的内容算 | 后者会让「截断部分之后被改」检测不到；前者与未截断时完全同一套语义 |
+| `CLAUDE.md` | 不读（`/status` 提示存在但未读） | 根目录没有 `AGENTS.md` 时读 `CLAUDE.md` | 兼容会改变「没有 `AGENTS.md` 但有 `CLAUDE.md`」的仓库的提示词和写入摘要，旧会话恢复时会报规则漂移；`CLAUDE.md` 常写着另一工具专用的指令；需要时复制一份成 `AGENTS.md` 即可（规则文件不允许是符号链接） |
+| 关闭规则后的 CAS | 照常按摘要比对 | 关闭后不再校验摘要 | 不校验就比打开时更不安全；照常校验只是模型看不到正文，写入仍按读取时拿到的摘要 |
+| 信任记录位置 | 用户配置目录下 `baseagent/mcp-trust.json`（`BASEAGENT_CONFIG_HOME` 可改），记录在工作区里时拒绝使用 | 工作区 `.baseagent/` 下 | 工作区里的文件可以随仓库一起克隆下来，不能当信任凭证 |
+| 信任的键 | `.mcp.json` 的真实路径 → 整个文件字节的 SHA-256 | 按服务器条目分别记 | 整文件哈希最简单，任何字节（含 `env` 的值）变化都失效；信任库里不存 `env` 的值 |
+| 交互询问时机 | 启动前在终端问一次 | 在 TUI / Web 界面里问 | 界面里问需要服务器延迟启动、工具中途注册（见方案二）；从终端启动时问一次足够 |
+| 非交互 + `--mcp-strict` | 未信任就以退出码 2 结束（与「配置的服务器用不了」同一退出码） | 忽略 strict 照常跳过 | strict 的含义就是「配置的 MCP 用不了就失败」 |
+| jsonl 时间戳 | `timestamp` 仍是 Unix 秒（UTC 纪元），不加新键 | 加一个 ISO 键 | 已有测试和 `docs/output.md` 规定信封只有 `type` / `timestamp` / `data` 三个键，`schema_version` 1 不能改形状 |
 
 ### 完成情况（实现者填写）
 
