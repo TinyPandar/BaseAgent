@@ -91,12 +91,12 @@ user /undo        ChatSession              checkpoints.rewind
 
 ## 限制
 
-- **`run_command` 的副作用撤不回。** 命令改的文件、装的依赖、删掉的东西都不在检查点里。需要可撤销的执行环境时用 DockerBackend（[docker_backend.md](docker_backend.md)），或者用 `--mode read-only` / `--mode edit` 不开命令。`--mode full` 在 LocalBackend 下会打印一行警告说明这一点。
+- **`run_command` 的副作用撤不回。** 命令改的文件、装的依赖、删掉的东西都不在检查点里。`--backend docker` 也一样：工作区是 bind mount，命令对工作区的改动直接落在宿主上；它隔离的是工作区以外的宿主和网络（[docker_backend.md](docker_backend.md)）。不想让命令动文件就用 `--mode read-only` / `--mode edit` 不开命令。`--mode full` 在 LocalBackend 下会打印一行警告说明这一点，docker 下打印容器和网络状态。
 - **只覆盖文件工具。** 只有经过 `Workspace._write_file` 的写入（`write_file`、`edit_file`、`apply_patch`）和经过 `Workspace._delete_file` 的删除（`apply_patch`，写后哈希记 `missing`，`/checkpoints` 显示「删除」，撤销时写回原貌）有检查点；一次 `apply_patch` 的所有文件在同一轮的检查点里，回滚成功的批次不留记录（[patch.md](patch.md)）；人手改、编辑器、其他进程的改动不记录，撤销时它们表现为冲突。
 - **不能 redo。** 撤销后的轮次关闭，不能再写入，也不能「撤销撤销」。轮次号继续往后编。
 - **单个原貌上限 200 KB，单轮最多 500 个文件。** 与读写工具、observed 文件上限一致；超出时那次写入直接失败，文件不变。
 - **新建的目录不删。** 撤销删除 agent 新建的文件，但不删它顺带建出的空目录。
-- **撤销只支持 LocalBackend。** 写回直接操作本机文件；其他后端会拒绝撤销（记录照常保存，`--checkpoints` 照常列出）。
+- **撤销支持 LocalBackend 和 DockerBackend。** docker 下对话里的 `/undo`、`/rewind` 在容器里比哈希、写回（`stat_files` / `restore_bytes`，同一把文件锁），行为与 local 相同；`--rewind` 这个运维操作不起容器，在宿主上写回，不需要 Docker。其它没有 `restore_bytes` 的后端会拒绝撤销（`reason="unsupported_backend"`，记录照常保存，`--checkpoints` 照常列出）。
 - **没有会话库就没有检查点。** 直接调用 `Workspace.write_file(context=None)` 或不带 `store` 的 `run_agent` 不记录。
 - **撤销中途被别人改动。** 每个文件在锁内会再比一次哈希；万一在两个文件之间被改，已写回的文件会列在错误里，剩下的不动。
 

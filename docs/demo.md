@@ -101,6 +101,22 @@ python -B scripts/demo_patch.py
 
 要先看再批：`--tool-policy` 里写 `{"default": "allow", "tools": {"apply_patch": "ask"}}`，对话会先打印 `apply_patch 待审批：3 个文件` 和 diff 再问 `Allow apply_patch? [y/N]`。细节见 [patch.md](patch.md)。
 
+## 加演：`--backend docker`：改文件 → 跑命令 → 外网失败 → `/undo` → 容器删掉
+
+```bash
+docker pull python:3.12-slim          # 只需一次
+python -B scripts/demo_docker.py
+```
+
+假模型，费用 0。脚本用真实的对话入口 `baseagent --backend docker --mode full --no-main-agent` 加脚本化输入，最后一行是 JSON 摘要（`file_written`、`network_blocked`、`undo_restored`、`container_removed` 都是 `true`）。讲的时候按这个顺序：
+
+1. stderr 先打印 `Backend: docker, image python:3.12-slim, no network access, container baseagent-…` 和 `--mode full` 的容器说明（没有「LocalBackend 不是沙箱」的警告）。
+2. `> 写一个 hello.txt，读回来，再试试能不能访问外网` —— 假模型一次发三个调用：`write_file hello.txt`（在容器里写）、`run_command sh -c "cat hello.txt && uname -s"`（输出 `Linux`：命令在容器里）、`run_command python3 -c "urllib…example.com"`（失败：容器没有网络）。
+3. `> /undo` —— 「已撤回第 1 轮的文件改动：…删除 1 个新建文件」，`hello.txt` 没了。
+4. `> /exit` —— 容器被删，`docker ps -a` 里找不到它。
+
+没有 Docker 的机器上同一条命令在调用模型之前停下：stderr 打印 `Docker error (cli_missing): Docker is not installed …`（或 `daemon_unreachable` / `image_missing` 和解决办法），退出码 3，摘要里 `status: "docker_unavailable"`。离线排练可以加 `--fake-docker`：同一流程走假 Docker（不隔离，命令其实在本机跑，所以 `uname -s` 打印的是本机系统），`tests/test_demo_docker.py` 自动走一遍。细节见 [docker_backend.md](docker_backend.md)。
+
 ## 加演：MCP 工具 → 审批 → 调用成功
 
 ```bash

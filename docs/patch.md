@@ -53,7 +53,7 @@
 
 ## 删除入口与后端协议（拍板）
 
-- `WorkspaceBackend` 协议新增 `delete_file(path, expected_sha256, expected_instructions) -> dict`，返回 `sha256: "missing"`。哈希不符或文件不存在是 `conflict`。实现：`LocalBackend`（`tools/editing.py::atomic_delete`：同一把文件锁、两次比对、`unlink`，可选删除后检查）、`DockerBackend`（比对哈希后 `docker exec rm --`）、测试里的内存后端。
+- `WorkspaceBackend` 协议新增 `delete_file(path, expected_sha256, expected_instructions) -> dict`，返回 `sha256: "missing"`。哈希不符或文件不存在是 `conflict`。实现：`LocalBackend`（`tools/editing.py::atomic_delete`：同一把文件锁、两次比对、`unlink`，可选删除后检查）、`DockerBackend`（宿主上同一把文件锁，容器里比对哈希后 `rm`，可选删除后检查）、测试里的内存后端。
 - `Workspace._delete_file` 与 `_write_file` 对称：观察容量 → `allow_write` → `_path` → `EditPolicy.check_path` → `checkpoints.capture(content=None)`（写后哈希记 `missing`）→ `edit_policy.delete_file`（`max_changed_lines`、`post_edit_check`，失败时在锁内把原字节写回）→ `commit` / `abort` → 观察记录与验证失效。不绕开 Workspace 直接 `unlink`。
 - `_write_file` / `_delete_file` 多了一个只给 `apply_patch` 用的可选参数 `captures`，用来收集这批的检查点记录，以便回滚时撤掉；不传时行为不变。
 - 契约变化：`WorkspaceBackend` 是 `runtime_checkable` 协议，第三方后端要补 `delete_file` 才能再传给 `Workspace`。各后端的 `contract()` 没变，会话库结构和 `PRAGMA user_version` 没变；旧会话照常打开。代码改动本身会改变 `harness_source` 摘要，未完成的旧会话续跑照旧需要 `--accept-config-changes`（与任何代码升级相同）。
@@ -106,4 +106,4 @@
 - 不是文件系统事务：见上面的乐观检测说明。
 - 只处理 UTF-8 文本：`modify` / `delete` 的目标必须能按 UTF-8 解码（diff 和回滚都需要文本）。
 - Watchdog 和 HarnessKnight 都认识 `apply_patch`：Watchdog 的 `WRITE_TOOLS` 含 `apply_patch`，成功的调用算「这一步有写入」，停滞判断与 `write_file` / `edit_file` 一致；HarnessKnight 的 `infer_impacts` 给批里每个文件一条 `file` 影响，`add` / `modify` 报 `write`，`delete` 报 `delete`（HK 协议的 `operation` 是自由字符串，它的污点规则把 `delete` 与 `write` 同等看待），最多 50 条、每条路径最多 1024 字符（超长的截断并接哈希），一批 50 个文件也不会发出超大请求。
-- 撤销只支持 LocalBackend（与检查点相同）；DockerBackend 下回滚靠后端的 `write_file` / `delete_file`，删除没有锁。
+- `--backend docker` 下全有或全无同样成立：校验在容器里读完、算完才写；回滚用 `DockerBackend.restore_bytes` 在同一把文件锁内把原字节和权限位写回（删除也有锁）；`/undo` 也支持（[docker_backend.md](docker_backend.md)）。其它没有 `restore_bytes` 的第三方后端，回滚仍靠它的 `write_file` / `delete_file`。
