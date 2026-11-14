@@ -805,12 +805,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                     estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model,
                 )
 
-            def turn_budget(resuming=False):
+            def turn_budget(resuming=False, limits=None):
                 steps = args.max_steps
                 calls = args.max_model_calls
                 current = store.load(session["id"]) if resuming and session["id"] else None
                 if current is not None:
-                    steps, calls = steps or current.max_steps, calls or current.max_model_calls
+                    # A resumed turn keeps limits raised earlier (for example by /continue); never lower them.
+                    steps, calls = max(steps or 0, current.max_steps), max(calls or 0, current.max_model_calls)
+                if limits is not None:
+                    steps, calls = limits[0], limits[1]
                 steps = steps or CHAT_MAX_STEPS
                 budget = TurnBudget(calls or steps, steps, budget_cny=args.budget_cny)
                 if current is not None:
@@ -823,18 +826,32 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             subtasks = workers
             prompt = MAIN_AGENT_PROMPT
 
-        def run_turn(user_input):
+        def turn_limits(user_input, limits):
+            """Limits for this run_agent call. /continue passes raised ``limits`` for the current turn; any other
+            chat resume keeps the stored limits when they are higher than the chat defaults."""
+            if limits is not None:
+                return limits
+            values = (args.max_steps, args.max_model_calls, args.max_tool_calls)
+            if user_input is None and interactive and session["id"]:
+                current = store.load(session["id"])
+                if current is not None and current.status != "completed":
+                    values = tuple(None if value is None else max(value, stored) for value, stored in
+                                   zip(values, (current.max_steps, current.max_model_calls, current.max_tool_calls)))
+            return values
+
+        def run_turn(user_input, limits=None):
             extra = []
+            max_steps, max_model_calls, max_tool_calls = turn_limits(user_input, limits)
             if workers is not None:
                 # One shared budget per main-agent turn; workers started in it draw from the same pool.
                 # A resumed turn gets a fresh pool seeded with the main agent's own usage so far.
-                workers.budget = turn_budget(resuming=user_input is None)
+                workers.budget = turn_budget(resuming=user_input is None, limits=limits)
                 extra.append(SharedBudgetMiddleware(workers.budget, worker=False))
             state = run_agent(
                 model, user_input, tools=tools,
                 middleware=[*layers, *extra],
-                system_prompt=prompt, max_steps=args.max_steps,
-                max_model_calls=args.max_model_calls, max_tool_calls=args.max_tool_calls,
+                system_prompt=prompt, max_steps=max_steps,
+                max_model_calls=max_model_calls, max_tool_calls=max_tool_calls,
                 store=store, session_id=session["id"], workspace_root=workspace.root,
                 compaction_max_chars=args.compaction_max_chars, compaction_keep_turns=args.compaction_keep_turns,
                 max_context_bytes=args.max_context_bytes, max_tool_context_bytes=args.max_tool_context_bytes,
@@ -851,7 +868,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if interactive:
             from baseagent.chat import ChatSession
             chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
-                               workers=workers, main_agent=main_agent, events=chat_events)
+                               workers=workers, main_agent=main_agent, events=chat_events,
+                               continue_steps=args.max_steps or CHAT_MAX_STEPS,
+                               continue_tool_calls=args.max_tool_calls or 32)
             if args.ui == "tui":
                 from baseagent.tui.app import run_tui
                 return run_tui(chat)

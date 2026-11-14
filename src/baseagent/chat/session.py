@@ -34,6 +34,11 @@ from .text import (arguments_preview, call_request_json, node_arguments_preview,
 ERRORS = (ValueError, SessionBusy, OSError, sqlite3.Error)
 EXIT_COMMANDS = frozenset({"/exit", "/quit"})
 CHECKPOINT_COMMANDS = frozenset({"/checkpoints", "/undo", "/rewind"})
+CONTINUE_COMMAND = "/continue"
+# Defaults of /continue: the interactive per-turn step limit and the per-turn tool-call limit.
+CONTINUE_STEPS = 16
+CONTINUE_TOOL_CALLS = 32
+MAX_CONTINUE = 1000
 ANY = object()
 STATUS_INTERVAL = 1.0
 HISTORY_LIMIT = 200
@@ -57,8 +62,13 @@ class ChatSession:
     """
 
     def __init__(self, *, run_turn, store, workspace, session_id=None, workers=None, main_agent=False,
-                 events=None, printer=None, status_events=True):
+                 events=None, printer=None, status_events=True, continue_steps=CONTINUE_STEPS,
+                 continue_tool_calls=CONTINUE_TOOL_CALLS, project_rules=None):
         self.run_turn = run_turn
+        # /continue: how much more the current turn gets by default (the chat's per-turn allowance).
+        self.continue_steps, self.continue_tool_calls = continue_steps, continue_tool_calls
+        # Display-only summary of the project rules file (AGENTS.md) for /status; None = not reported.
+        self.project_rules = project_rules
         self.store, self.workspace, self.workers = store, workspace, workers
         self.main_agent = bool(main_agent or workers is not None)
         self.requested_session_id = session_id
@@ -168,8 +178,9 @@ class ChatSession:
                     return None
             self.report(state)
             if state.status != RunStatus.COMPLETED:
-                self._say("err", "The previous turn is still unfinished; your new message was not sent. Inspect or "
-                                 f"resume it with --session {state.session_id or '<id>'} --resume.")
+                self._say("err", "The previous turn is still unfinished; your new message was not sent. Type "
+                                 "/continue to give it more steps and finish it here, or inspect or resume it with "
+                                 f"--session {state.session_id or '<id>'} --resume.")
                 return state
         compose = self.workers.compose if self.workers is not None else None
         state = self._invoke(compose(text) if compose else text)
@@ -180,9 +191,9 @@ class ChatSession:
             self.report(state)
         return state
 
-    def continue_turn(self, ask):
-        """Continue the current turn after a main-agent approval decision."""
-        state = self._invoke(None)
+    def continue_turn(self, ask, limits=None):
+        """Continue the current turn after a main-agent approval decision, or with raised ``limits`` (/continue)."""
+        state = self._invoke(None, limits=limits)
         if state is not None:
             state = self._approvals(state, ask)
             if state is not None:
@@ -191,9 +202,10 @@ class ChatSession:
         self.persist()
         return state
 
-    def _invoke(self, user_input):
+    def _invoke(self, user_input, limits=None):
         try:
-            state = self.run_turn(user_input)
+            # Older run_turn callables take one argument; limits are passed only by /continue.
+            state = self.run_turn(user_input, limits=limits) if limits is not None else self.run_turn(user_input)
         except KeyboardInterrupt:
             self._say("out", "")
             self._say("err", "Turn cancelled. Type another message to continue.")
@@ -386,8 +398,10 @@ class ChatSession:
             self.workers.skip_approval(record)
 
     # ----- commands ---------------------------------------------------------------------
-    def command(self, text, *, blocking=True):
-        """/status, /checkpoints, /undo, /rewind always; /wait, /cancel, /tell in main-agent chat.
+    def command(self, text, *, blocking=True, ask=None):
+        """/status, /checkpoints, /undo, /rewind, /continue always; /wait, /cancel, /tell in main-agent chat.
+
+        ``ask`` answers a main-agent approval reached while /continue runs (CLI); GUIs leave it pending.
 
         False means: an ordinary chat line.
         """
@@ -399,6 +413,9 @@ class ChatSession:
         rest = rest.strip()
         if command in CHECKPOINT_COMMANDS:
             self.checkpoint_command(command, rest)
+            return True
+        if command == CONTINUE_COMMAND:
+            self.continue_command(rest, blocking=blocking, ask=ask)
             return True
         if self.workers is None:
             return False
@@ -430,6 +447,52 @@ class ChatSession:
             self.tell(worker_id, note.strip())
             return True
         return False
+
+    # ----- /continue: raise this turn's limits and keep going -----------------------------
+    def continue_limits(self, state, extra=None):
+        """(max_steps, max_model_calls, max_tool_calls) for /continue: N more steps and model calls, one more
+        tool allowance. Used counts stay; a limit is never lowered."""
+        steps = self.continue_steps if extra is None else extra
+        return (max(state.max_steps, state.step + steps),
+                max(state.max_model_calls, state.model_calls + steps),
+                max(state.max_tool_calls, state.tool_calls + self.continue_tool_calls))
+
+    def continue_command(self, rest, *, blocking=True, ask=None):
+        """``/continue [N]``. Returns the new limits, or None when nothing was continued."""
+        extra = None
+        if rest:
+            if not rest.isdigit() or not 1 <= int(rest) <= MAX_CONTINUE:
+                self._fail(f"Usage: /continue [N]  (N = 1-{MAX_CONTINUE} more steps for the current turn; "
+                           f"default {self.continue_steps})")
+                return None
+            extra = int(rest)
+        state = self._stored_state()
+        if state is None or state.status == RunStatus.COMPLETED:
+            self._say("out", "Nothing to continue: the last turn finished. Type a message to start a new turn.")
+            return None
+        if state.status == RunStatus.AWAITING_APPROVAL:
+            self._fail("The current turn is waiting for an approval; answer it first (/continue does not approve).")
+            return None
+        if state.blocked_tool_calls or state.status == RunStatus.NEEDS_RECOVERY:
+            self._fail("The current turn has tool calls with unknown outcomes; raising limits does not resolve them. "
+                       f"Inspect with baseagent --session {state.session_id} --inspect-session.")
+            return None
+        limits = self.continue_limits(state, extra)
+        if not blocking:
+            if not self._turn.acquire(blocking=False):
+                self._fail("上一条消息还在处理中：等主 Agent 回复后再 /continue。")
+                return None
+            self._announce_continue(state, limits)
+            self._background(lambda: self.continue_turn(self._defer, limits))
+            return limits
+        self._announce_continue(state, limits)
+        self.continue_turn(ask or self._defer, limits)
+        return limits
+
+    def _announce_continue(self, state, limits):
+        self._say("out", f"Continuing this turn with raised limits: steps {state.step}/{limits[0]}, model calls "
+                         f"{state.model_calls}/{limits[1]}, tool calls {state.tool_calls}/{limits[2]} (used counts kept; "
+                         "finished tool calls are not repeated).")
 
     # ----- checkpoints (/checkpoints, /undo, /rewind) -------------------------------------
     def checkpoint_command(self, command, rest):

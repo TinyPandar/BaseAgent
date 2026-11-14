@@ -167,8 +167,9 @@ def _usage_detail(state):
     """Used/limit counters and how to continue, for stops that recorded no error text."""
     sid = state.session_id or "<id>"
     return (f"used steps {state.step}/{state.max_steps}, model calls {state.model_calls}/{state.max_model_calls}, "
-            f"tool calls {state.tool_calls}/{state.max_tool_calls}. Send another message to resume this turn in chat, "
-            f"or exit and run: baseagent --session {sid} --resume (raise --max-steps / --max-model-calls / "
+            f"tool calls {state.tool_calls}/{state.max_tool_calls}. In chat, send another message to resume this turn "
+            "or type /continue to also raise its limits; otherwise run: "
+            f"baseagent --session {sid} --resume (raise --max-steps / --max-model-calls / "
             "--max-tool-calls above the used values if one of them is the reason).")
 
 
@@ -196,8 +197,9 @@ def _limit_explanation(state, status, interactive):
                         f"{shared['model_calls']}/{shared['max_model_calls']}, steps {shared['steps']}/{shared['max_steps']}"
                         + (f", CNY {shared['cost_cny']}/{shared['budget_cny']}" if "budget_cny" in shared else "") + ".")
     if interactive:
-        lines.append("Sending another message here resumes the same turn with the same limits and stops "
-                     "again; exit (/exit) and run the command above. /status shows the session ID and usage.")
+        lines.append("To keep going here, type /continue: this turn gets one more per-turn allowance of steps and "
+                     "model calls (/continue N gives N more), the used counts are kept and finished tool calls are not "
+                     "repeated. A plain message does not raise the limits. /status shows the session ID and usage.")
     return "\n".join(lines)
 
 

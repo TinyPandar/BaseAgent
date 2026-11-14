@@ -93,12 +93,12 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
     if workers is not None:
         print(f"Main agent: answers directly and runs workspace work in background workers "
               f"(up to {workers.max_workers} at once, one writer at a time); results are pushed here.", file=out)
-        print("Type a task, /status, /wait, /cancel <id|all>, /tell <id> <text>, /exit or /quit. "
+        print("Type a task, /status, /continue [N], /wait, /cancel <id|all>, /tell <id> <text>, /exit or /quit. "
               "Ctrl+C cancels the current turn.", file=out)
     else:
         if session.main_agent:
             print("Main agent: answers directly and hands workspace work to one worker at a time.", file=out)
-        print("Type a task, /status, /exit or /quit. Ctrl+C cancels the current turn.", file=out)
+        print("Type a task, /status, /continue [N], /exit or /quit. Ctrl+C cancels the current turn.", file=out)
     print("File checkpoints: /checkpoints lists them, /undo or /rewind <N> restores files written by the agent.", file=out)
     session.start()
     line = PromptLine(out, live=live)
@@ -131,7 +131,7 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
                 if workers is not None and workers.running() and not _confirm_exit(session, line, out):
                     continue
                 break
-            if session.command(text):
+            if session.command(text, ask=ask):
                 continue
             session.turn(text, ask)
     finally:
