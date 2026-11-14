@@ -42,6 +42,93 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：Docker 后端集成进新 master（本段合并进 master 前必须删除）
+
+> **给实现者（Claude Code）的工作方式，先读这一段。** 本段只写「做什么、为什么、怎么算做完」，不写技术方案；接口、数据形状和模块怎么拆由你来定。
+>
+> 1. **先读代码。** 摸清相关子系统现在怎么做、为什么这么做（看代码、`docs/`、`git log` / `git show` 里的历史提交，尤其是 `origin/plan/docker-backend` 上那 10 个提交和它们 README 里的「设计」「完成情况」）。下面「现状」是 PM 读代码时看到的，以代码为准；和描述不符的地方写进「完成情况」。
+> 2. **先写设计，再实现。** 在本段的「设计（实现者填写）」小节里写至少两套结构不同的方案：数据形状、接口、模块边界、影响面（会动哪些文件、哪些已有测试、旧会话 / 旧配置怎么办），选一个并写明理由，然后直接实现。只有真的存在不同取舍的点才需要备选，不要为了凑数写方案。Frank 已授权，不用停下来等确认。
+> 3. **偏最小改动、白盒可解释**，不新增核心运行时依赖。
+> 4. **测试离线、确定性**，已有测试不削弱。跑全量前清掉 `SAND_*` 环境变量，并删除 `.baseagent/live_answers_checkpoint.json`。预期内的失败只有两个：本段 README 导致的 corpus_version 测试，以及已有的 `tests/test_record_coding_scenario.py::test_all_real_recordings_replay_offline`。其它失败都要修（`tests/test_chat_events.py::ChatSessionTests::test_overflowed_cursor_returns_a_resync_snapshot` 是已知的计时偶发，单独重跑通过即可，写进完成情况）。
+> 5. **小步提交，推送到本分支。** 不 force-push，不开 PR，不做 merge commit，不碰 master。最后在「完成情况（实现者填写）」表里逐条填 AC 状态和证据。
+>
+> **全局约束：** 不拷贝 mewcode；不参考非公开的 Claude Code 源码（包括从 npm sourcemap 还原的）；不合并 Watchdog 和 HarnessKnight（HK 是可选外部服务，只留接口，不做内核依赖）；不做 OAuth；不做 Super Agent 全双工后续（消息排队、主动汇报、`cancel_worker` 工具等）；写文件默认不要求用户批准，审批跟随 `--mode` / `--tool-policy`；任何付费 API 都要单独授权并带 `--budget-cny`，本轮一个都不跑。
+>
+> **名词：**
+> - **Watchdog**：BaseAgent 内部的任务级运行监控（停滞、重复、预算、超时），默认关闭，代码在 `agent/watchdog.py`。不是调用前的安全拦截。
+> - **HarnessKnight（HK）**：Frank 的另一个独立项目，可选的外部安全审查服务，对提示和工具事件返回 ALLOW / REVIEW / BLOCK。BaseAgent 里只有适配层 `middleware/harnessknight.py`，不改 HK 仓库。
+> - 两者职责不同，**永远不合并**。
+> - **项目规则文件**：工作区根目录（及目录链）的 `AGENTS.md`，`plan/fixes-and-gaps` 已合入 master：超限截断而不是报错、摘要按整个文件算、`--no-project-rules` 开关、`/status` 和 json `project_rules` 可见。见 README「项目规则文件」。
+> - **`.mcp.json` 首次信任**：同样已合入 master，见 `docs/mcp.md`「首次信任」。
+
+目标：`plan/docker-backend`（`--backend local|docker`）是和 `plan/fixes-and-gaps` 并行开发的，后者已经合进 master，前者不能再快进。本分支把 docker 的 10 个提交搬到新 master 上，解决冲突，把两边的功能接好（尤其是 `AGENTS.md` 规则在 docker 下的语义），再顺手做两处小的收尾和容器加固。全程离线，费用 0。
+
+做法要求：从本分支（基于新 master）上 `git cherry-pick 3fb6462^..b49cd2f`（`origin/plan/docker-backend` 上的 10 个提交：3fb6462、782f033、16c13e1、e70bf38、ddd6282、30a1c26、12905a0、117efe8、0c02cfb、b49cd2f）。旧分支 README 里的「施工中：Docker 执行后端接入 CLI」段（含它的设计和完成情况表）不要带过来，本段替代它；它写的永久文档（README 用法、对照表 Docker 行、失败与取舍、`docs/*.md`）全部保留。旧分支「设计」里的拍板（方案 A：文件读写在容器里、参数名、生命周期、`.baseagent` tmpfs、`.git` 只读、属主、退出码 3、json 字段）默认沿用，要改就在本段「设计」里写明理由。不要 force-push 旧分支，也不要改 `plan/docker-backend`。
+
+本分支不做（留给以后的分支）：真实 Terminal-Bench 执行器（`--live` 真跑、Harbor 题目包下载与逐题环境）；把题目目录挂到 `/app`；为判分保留容器；网络 / 内存等资源参数；镜像里装 `git`；一次性任务支持 `--budget-cny`；`/continue` 后主 Agent `TurnBudget` 的人民币花费被重置的修复。实测问题、MCP 信任、Watchdog / HK 的其它改动也不做。
+
+### 现状（PM 读代码所见，以代码为准）
+
+- master 已含 `plan/fixes-and-gaps`。PM 在 scratch 里试合过两支：冲突文件是 `README.md`（Edit policy 段，外加两个施工段）、`docs/output.md`（字段表）、`docs/patch.md`（限制条目）、`src/baseagent/main.py`（3 处：变量初始化、构造 `Workspace`、`machine_result` 字段）、`src/baseagent/tools/workspace.py`（`project_rules` 与 `post_edit_check` 后端校验）。`chat/session.py`、`chat/text.py`、`middleware/repository.py`、`docs/checkpoints.md`、`docs/demo.md` 自动合并，但要确认语义。
+- 不报冲突的语义缺口：
+  - docker 分支构造 `Workspace(backend=...)` 时不传 `project_rules`，`--no-project-rules` 在 docker 下不生效。
+  - `DockerBackend.get_instructions` / `observe_many` 仍是旧语义：单文件超过 20 KB 或合计超过 40 KB 报 `LIMIT_EXCEEDED` 或返回 `unavailable`；容器里只读前 20 KB，算不出整文件哈希。master 上 LocalBackend 已改成截断 + 整文件哈希（`tools/instructions.py::read_rules_file`）。
+  - `/status` 和 json 的规则信息（`rules_summary`）直接在宿主上按 `workspace.root` 读 `AGENTS.md` 元数据；docker 分支的原则是宿主不跟随容器里建的符号链接。
+- `docs/patch.md`：docker 分支写着「Watchdog 和 HarnessKnight 本支没改、不识别 `apply_patch`」，已过时（master 已识别）；master 写着「撤销只支持 LocalBackend」，在 docker 合入后过时。
+- local 下 `--mode full` 的警告仍写「For isolation use DockerBackend」。
+- `docker run` 没有 `--cap-drop` / `--security-opt no-new-privileges`，命令以镜像默认用户（通常 root）跑。
+- box 和实现者的 Mac 都没有 Docker，`tests/test_docker_smoke.py` 从没真跑过。
+
+### A. 搬运与冲突（来自 `plan/docker-backend` 的原 AC，全部仍需满足）
+
+原 AC 原文如下，证据可以沿用旧分支的测试，但要在新 master 上重新跑过。
+
+1. 新增 `--backend local|docker`，默认 `local`。不传这个参数时，所有行为和输出与 master 逐字一致（已有基线测试不改就能过）。
+2. docker 下的镜像、开网等选项由实现者定名字和默认值：默认断网，开网要显式打开。参数和 `--backend local` 搭配时报错（退出码 2）。资源上限沿用 `DockerBackend` 现有默认值，写进文档。
+3. 一次性任务、`--resume`、连续对话（`--ui cli|tui|web`）、主 Agent 派出的 Worker 都能用 docker 后端。一个会话 / 一个 Worker 对应几个容器、什么时候起停，由实现者定并写进文档，要符合「一任务一容器」的原意。用 local 起的会话换 docker 续跑（或反过来）沿用现有契约规则：被拒绝，提示清楚。
+4. `--mode full` 在 docker 下不再打印「LocalBackend 不是沙箱」的警告，改为说明用的是容器、网络状态如何。`--mode read-only|edit|full` 和 `--tool-policy` 的语义与 local 完全一致，docker 不放宽任何权限。
+5. 容器里只看得到本工作区：读不到工作区外的宿主路径，`..`、绝对路径、链接逃逸都被拒绝，和 local 一样（有 Docker 时用真实冒烟测试，没有时断言下发给 Docker 的参数）。
+6. 默认断网：容器里访问外网失败（真实冒烟测试）；显式开网后才能联网。
+7. 受保护路径与 local 一致（`.git`、`.env*`、`.baseagent`、会话库等，用 `write_file` / `apply_patch` 写会被拒绝）。另外，容器里执行的命令不能改写宿主上的会话库和检查点数据（`.baseagent/` 下）；`.git` 在容器里的处理写明理由。
+8. 文件属主：在 Linux 宿主上，agent 在容器里新建或修改的文件，任务结束后宿主用户能正常编辑和删除，不留下 root 属主文件。做不到的平台写进文档的已知限制。
+9. 同一个工作区同时开两个 docker 会话不会撞容器名，也不会互相清掉对方的容器；或者第二个给出清楚的报错。
+10. docker 下 `/checkpoints`、`/undo`、`/rewind N`、`--checkpoints`、`--rewind last` 都可用，行为与 local 相同（漂移检测、`--force`、等待审批时拒绝撤销），不再返回 `unsupported_backend`。撤销恢复的字节与写入前逐字节相同。
+11. docker 下 `apply_patch` 的全有或全无成立：整批校验失败一个文件都不写；写到一半失败按快照倒序回滚，工作区回到调用前的字节状态，检查点不留残留。用故障注入测试。删除要么有锁，要么文档写清风险。
+12. `EditPolicy` 的 `post_edit_check` 和 `max_changed_lines` 在 docker 下要么正常工作，要么启动时给出清楚的报错。不能静默跳过检查。
+13. Docker 没装、daemon 没起、镜像不存在时，在调用模型之前就失败（费用 0），报错写清是哪种情况和怎么解决，退出码写进 `docs/output.md`，且与 0 / 1 / 2 / 130 不冲突。绝不静默退回 local。`--output-format json` 下的输出形状写进文档。
+14. 运行中容器挂掉（OOM、被外部删掉、Docker 重启）时，工具返回清楚的错误，不卡死、不退回 local。会话状态能落盘，修好 Docker 后可以 `--resume`。
+15. 容器清理：正常结束、Ctrl+C（130）、未捕获异常、对话 `/exit`、TUI / Web 关闭，都删掉本次启动的容器。上次异常退出留下的容器，下次启动能识别并处理。每种情况都有测试（假 Docker runner 断言 `rm` 被调用），真实冒烟至少覆盖正常结束和 Ctrl+C。
+16. `--output-format json` 能看出用的是哪个后端，以及 docker 下的镜像和网络状态（可选字段，`schema_version` 仍为 1，不含凭据）。`jsonl` 有对应的元数据。`/status` 和文本模式 stderr 也能看出后端。不传 `--backend` 时文档写明「没有该字段即 local」（或带字段并说明理由、更新基线）。
+17. Terminal-Bench：`--fixture` 路径能通过 docker 后端（假 runner 离线）跑完那道本地题；`--live` 打印的计划里写明用 `--backend docker`。评分逻辑（`score_records`、失败分类）不改。完成情况里列出付费跑前还缺什么，只列出来，不实现。
+18. 没有 Docker 的环境上全部离线测试能跑：真实 Docker 用例在没有 Docker 时 `skip` 并写明原因；有 Docker 时有一组真实冒烟测试（拉镜像以外不联网），覆盖 AC 5、6、8、10、15。`tests/test_docker_backend.py`、`tests/test_docker_cli.py` 和 `tests/test_apply_patch*.py` 连跑 3 遍稳定。
+19. 文档：`docs/docker_backend.md`（CLI 用法、参数、生命周期、挂载与文件边界、属主、网络、清理、退出码、已知限制）；README 的 `--backend` 用法、对照表「Docker 沙箱」行、「失败与取舍」Docker 条；`docs/patch.md` 和 `docs/checkpoints.md` 里「撤销只支持 LocalBackend」的说法。
+20. 离线演示：`docs/demo.md` 有一段 `--backend docker` 的演示（假模型，费用 0）：改文件 → 跑命令 → 访问外网失败 → `/undo` → 容器被清掉。没有 Docker 的机器上给出 AC 13 的报错。
+
+### B. 与已合入功能的集成（新增）
+
+21. **规则开关在 docker 下生效。** docker 路径构造工作区时带上项目规则开关；`--no-project-rules` / `run.project_rules: false` 在 `--backend docker` 下与 local 行为一致（模型看不到正文，摘要照算照比），有测试（假 Docker）。
+22. **`AGENTS.md` 截断语义在 docker 下一致。** `DockerBackend` 读规则（`get_instructions` 和漂移检查用的批量观察）与 master 的 LocalBackend 同一语义：给模型的正文单文件 20000 字节、目录链合计 40000 字节，超出截断（完整 UTF-8 字符边界）并带 `truncated` / `size_bytes` / `shown_bytes` 和提示；摘要按整个文件的 SHA-256 算；不再报 `LIMIT_EXCEEDED`，也不因超长返回 `unavailable`；写入 CAS 和漂移检测不变。测试（假 Docker）：一个大于 20 KB 的 `AGENTS.md`，断言截断字段、整文件哈希与 local 相同、截断部分之后被改能检测到漂移 / CAS 冲突、同一仓库 local 和 docker 的指令摘要相同。
+23. **`/status` 和 json 的规则信息在 docker 下可信。** 规则元数据（`/status` 规则行、json `project_rules`）的读取方式与 docker 分支「宿主不跟随容器里建的符号链接」的原则一致：要么证明现在的宿主侧读取不会跟随容器里建的链接（例如 `AGENTS.md` 被换成指向宿主文件的链接时不报出宿主文件的大小 / 哈希），要么改成经后端读取。二选一写明理由，有测试。
+24. **冲突解决后的文档。** `docs/output.md` 字段表同时保留 `project_rules`、`mcp`、`backend`；`docs/patch.md` 的 Watchdog / HK 条用 master 的表述（已识别 `apply_patch`），撤销 / 回滚条用 docker 的表述（docker 下支持 `/undo`，回滚有锁）；README「Edit policy」段合并两边（`apply_patch` 逐文件 + DockerBackend 事务检查）。全仓库 `rg` 不再有「撤销只支持 LocalBackend」「Watchdog 和 HarnessKnight 暂不识别 / 本支没改」这类过时说法。
+25. **json / jsonl 同时带多个可选字段时正确。** 一次 docker 运行里如果同时有 `AGENTS.md`、未信任的 `.mcp.json` 和 `apply_patch`，json 结果同时带 `project_rules`、`mcp`、`backend`、`patches`，jsonl 不带正文和 diff；有测试。不传 `--backend` 且无这些文件时与 master 逐字一致（已有基线）。
+
+### C. 收尾与加固（新增）
+
+26. local 下 `--mode full` 的警告改成指向 `--backend docker`（不再写 `DockerBackend`），更新受影响的基线并在完成情况里说明这是有意的输出变化。
+27. **容器加固。** 容器以 `--cap-drop ALL` 和 `--security-opt no-new-privileges` 启动；如果某个能力是必需的（例如 chown 回宿主属主），只加回最小集合并写明理由。测试断言生成的 `docker run` 参数；`docs/docker_backend.md` 写明。不能因此破坏 AC 8 的属主方案和 AC 15 的清理。
+
+### D. 测试与文档
+
+28. 每条新增 AC 至少一条离线测试；全量测试除两个预期内失败外全部通过（见开头第 4 条）；AC 18 的稳定性要求仍然成立。完成情况里写清：搬运时每个冲突文件怎么解决、cherry-pick 后新增的提交各做了什么、真实 Docker 冒烟有没有跑（没有就写明原因）。
+
+### 设计（实现者填写）
+
+（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。重点是 AC 22 / 23：规则读取放在后端还是 `Workspace` 层、容器里怎么算整文件哈希。）
+
+### 完成情况（实现者填写）
+
+做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：冲突解决清单；读代码时发现与本段描述不符的地方；你自己拍板的点和理由；Terminal-Bench 付费跑前还缺什么（沿用旧分支的清单并更新）。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
