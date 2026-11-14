@@ -76,7 +76,8 @@ def http_error(status, body=None, headers=None):
         cls = RateLimitError
     elif status in {408, 504}:
         cls = ModelTimeoutError
-    elif status == 408 or 500 <= status <= 599:
+    elif status == 409 or 500 <= status <= 599:
+        # 409 (conflict, for example a provider-side concurrent request) is transient like 5xx.
         cls = TransientError
     elif status in {400, 413, 422} and any(term in details for term in ("context_length", "context length", "context window", "too many tokens", "prompt is too long")):
         cls = ContextLengthError

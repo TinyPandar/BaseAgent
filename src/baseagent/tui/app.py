@@ -26,6 +26,7 @@ from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, St
 
 POLL_SECONDS = 0.05
 TOOL_CHARS = 140   # tool previews are 300 chars; the transcript shows a shorter line
+LIST_HEADER_CHARS = 300   # glob/grep count line (total, shown, omitted, tool truncation) is never cut
 STYLES = {"user": "bold", "assistant": "", "system": "dim", "tool": "dim italic", "warn": "yellow",
           "push": "green", "failed": "red"}
 PREFIX = {"user": "你 › ", "assistant": "主 Agent › "}
@@ -172,7 +173,11 @@ class ChatApp(App):
         elif kind == "tool_call":
             self.write("tool", _clip(f"{_who(data)}→ {data['name']} {data['arguments']}"))
         elif kind == "tool_result":
-            self.write("tool", _clip(f"{_who(data)}← {data['name']} {'ok' if data['ok'] else '失败'}: {data['preview']}"))
+            head, *items = data["preview"].split("\n")
+            # A list preview keeps its count line whole; each listed item is clipped like other tool lines.
+            line = f"{_who(data)}← {data['name']} {'ok' if data['ok'] else '失败'}: {head}"
+            self.write("tool", "\n".join([_clip(line, LIST_HEADER_CHARS if items else TOOL_CHARS),
+                                           *(_clip(item) for item in items)]))
         elif kind == "worker_started":
             mode = "可写" if data["allow_writes"] else "只读"
             self.write("system", f"已派出 {data['worker']}（{mode}）：{data['task']}")

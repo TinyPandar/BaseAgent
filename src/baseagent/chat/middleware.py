@@ -5,6 +5,10 @@ from __future__ import annotations
 from baseagent.middleware import AgentMiddleware
 
 from .events import preview
+from .text import list_preview
+
+# Characters per listed item in a list preview (the CLI trace uses the same 200).
+LIST_ITEM_CHARS = 200
 
 
 class ToolEventMiddleware(AgentMiddleware):
@@ -17,7 +21,12 @@ class ToolEventMiddleware(AgentMiddleware):
         self.events.publish("tool_call", worker=self.worker, call_id=request.call_id, name=request.name,
                             arguments=preview(request.arguments, self.chars))
         result = handler(request)
-        if result.ok:
+        listing = list_preview(request.name, request.arguments, result.data, LIST_ITEM_CHARS) if result.ok else None
+        if listing is not None:
+            # glob/grep and other list results: the same counts as the CLI trace (total, shown, omitted, and
+            # whether the tool itself stopped at max_results/max_matches), then the first items, one per line.
+            shown = listing.removeprefix("tool result: ")
+        elif result.ok:
             shown = preview(result.data, self.chars)
         else:
             shown = preview(f"{result.error.code}: {result.error.message}", self.chars)

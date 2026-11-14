@@ -89,6 +89,49 @@ def _preview(value, limit):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+# Tool-side result caps: (argument name, default) used to explain truncation.
+RESULT_LIMITS = {"glob": ("max_results", 200), "grep": ("max_matches", 100)}
+PREVIEW_ITEMS = 10
+
+
+def list_preview(name, arguments, data, limit, max_items=PREVIEW_ITEMS):
+    """Describe list-shaped results by count; None when the result is not a list."""
+    if isinstance(data, list):
+        items, truncated = data, False
+    elif isinstance(data, dict):
+        lists = [value for value in data.values() if isinstance(value, list)]
+        if len(lists) != 1:
+            return None
+        items, truncated = lists[0], data.get("truncated") is True
+    else:
+        return None
+    try:
+        values = json.loads(arguments or "{}")
+    except ValueError:
+        values = {}
+    key, default = RESULT_LIMITS.get(name, (None, None))
+    cap = values.get(key, default) if isinstance(values, dict) else default
+    if type(cap) is not int:
+        cap = default
+    if truncated and cap is not None and len(items) >= cap:
+        tool = f"tool stopped at {key}={cap}; more may exist"
+    elif truncated and name == "grep":
+        tool = "tool returned all matches; some long lines were clipped"
+    elif truncated:
+        tool = "tool reported its result as truncated"
+    else:
+        tool = "tool returned the complete result"
+    shown = items[:max_items]
+    omitted = len(items) - len(shown)
+    lines = [f"tool result: {len(items)} item{'' if len(items) == 1 else 's'} ({tool}); "
+             + (f"preview shows first {len(shown)}, {omitted} more not shown" if omitted else "preview shows all")]
+    for item in shown:
+        if isinstance(item, dict) and {"path", "line"} <= item.keys():
+            item = f"{item['path']}:{item['line']}: {item.get('text', '')}"
+        lines.append("  " + _preview(item, limit))
+    return "\n".join(lines)
+
+
 WORKER_STATUS = {
     RunStatus.RUNNING: "运行中",
     RunStatus.AWAITING_APPROVAL: "等待审批",
