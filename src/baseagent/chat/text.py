@@ -12,6 +12,7 @@ import sqlite3
 from baseagent.agent.router import is_main_agent_session
 from baseagent.agent.state import RunStatus
 from baseagent.agent.workers import ACTIVE, preview, worker_label as duplex_worker_label
+from baseagent.timestamps import text_utc
 
 
 def arguments_preview(store, state, call_id, limit=300):
@@ -287,6 +288,9 @@ def status_lines(store, state, session_id, workspace, workers=None):
     out.append(f"Status: {current.status.value}")
     out.append(f"Workspace: {current.workspace_root or workspace.root}")
     out.append(f"Turn: {current.turn_id or '(none)'}")
+    started = text_utc(current.turn_started_at)
+    if started:
+        out.append(f"Turn started: {started}")
     out.append(f"Tokens: {current.total_tokens} reported; {current.unknown_usage_calls} unknown usage calls")
     out.append(f"Attempts: steps {current.step}/{current.max_steps}, model {current.model_calls}/{current.max_model_calls}, "
                f"tools {current.tool_calls}/{current.max_tool_calls}")

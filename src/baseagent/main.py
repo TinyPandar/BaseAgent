@@ -569,9 +569,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             print("Node bound violation acknowledged. Charged usage and limits are preserved.")
             return 0
         if args.task_tree:
-            print(json.dumps(store.task_tree(args.session), ensure_ascii=False, indent=2))
+            from baseagent.timestamps import TIME_ZONE, iso_utc
+            tree = store.task_tree(args.session)
+            # Numbers stay Unix seconds; the *_utc strings mark the time zone for people reading the output.
+            tree["time_zone"] = TIME_ZONE
+            tree["current_root_turn_started_at_utc"] = iso_utc(tree["current_root_state"].get("turn_started_at"))
+            for node in tree["nodes"]:
+                node["turn_started_at_utc"] = iso_utc((node.get("state") or {}).get("turn_started_at"))
+            print(json.dumps(tree, ensure_ascii=False, indent=2))
             return 0
         if args.inspect_session:
+            from baseagent.timestamps import TIME_ZONE, iso_utc
             existing, ledger = store.inspect_session(args.session)
             print(json.dumps({"session_id": args.session, "status": existing.status, "workspace_root": existing.workspace_root,
                               "turn_id": existing.turn_id, "steps": existing.step, "model_calls": existing.model_calls,
@@ -582,6 +590,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                               "max_total_tokens": existing.max_total_tokens, "max_duration_seconds": existing.max_duration_seconds,
                               "estimate_model": existing.estimate_model, "preauthorize_model": existing.preauthorize_model, "model_reservations": existing.model_reservations,
                               "turn_started_at": existing.turn_started_at,
+                              "turn_started_at_utc": iso_utc(existing.turn_started_at), "time_zone": TIME_ZONE,
                               "plan": existing.plan, "plan_revision": existing.plan_revision, "verifications": existing.verifications,
                               "memory_revision": existing.memory_revision, "memory_notes": existing.memory_notes,
                               "history_summary": existing.history_summary,

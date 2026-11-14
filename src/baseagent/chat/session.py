@@ -27,6 +27,8 @@ from baseagent.session.checkpoints import CheckpointError, parse_target
 from baseagent.session.checkpoints import describe as describe_checkpoints
 from baseagent.session.checkpoints import summary as checkpoint_summary
 
+from baseagent.timestamps import iso_utc
+
 from .events import EventBuffer
 from .text import (arguments_preview, call_request_json, node_arguments_preview, patch_approval_text, pending_worker, status_lines, stop_explanation,
                    worker_explanation, worker_nodes)
@@ -812,7 +814,8 @@ class ChatSession:
                 workers.append({
                     "id": record.id, "status": record.status, "label": duplex_worker_label(record),
                     "elapsed": round(record.elapsed(), 1), "started_at": record.started_at,
-                    "finished_at": record.finished_at, "allow_writes": record.allow_writes,
+                    "finished_at": record.finished_at, "started_at_utc": iso_utc(record.started_at),
+                    "finished_at_utc": iso_utc(record.finished_at), "allow_writes": record.allow_writes,
                     "task": preview(record.task, 80), "session_id": record.session_id,
                     "model_calls": usage.get("model_calls", 0), "max_model_calls": usage.get("max_model_calls"),
                     "steps": usage.get("steps", 0), "max_steps": usage.get("max_steps"),
@@ -822,6 +825,7 @@ class ChatSession:
             "session_id": self.session_id, "workspace": str(self.workspace.root),
             "mode": "main-agent" if self.main_agent else "single-agent", "busy": self._busy,
             "turn_status": str(state.status) if state is not None else None,
+            "turn_started_at_utc": iso_utc(state.turn_started_at) if state is not None else None,
             "tokens": state.total_tokens if state is not None else 0,
             "max_total_tokens": state.max_total_tokens if state is not None else None,
             "budget": budget, "workers": workers,

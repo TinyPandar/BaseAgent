@@ -133,6 +133,8 @@ def export_session(store, session_id, target):
                     value["state"] = json.loads(value.pop("state_json"))
                     json.dump(value, output, ensure_ascii=False, allow_nan=False)
                 output.write("]")
+                # Numbers in the archive are Unix seconds (UTC); updated_at is ISO 8601 with +00:00.
+                output.write(',"time_zone":"UTC"')
                 output.write("}\n")
                 output.flush()
                 os.fsync(output.fileno())
