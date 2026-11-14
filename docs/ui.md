@@ -39,6 +39,7 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 | `send(text)` / `turn(text, ask)` | 输入一行 | 输入框回车 | `POST /messages {"text"}` |
 | `approve` / `deny(call_id, digest, worker=…)` | `Allow …? [y/N]` | 审批弹窗：批准 (y) / 拒绝 (n) | `POST /approvals {"call_id","digest","decision","worker"?}` |
 | `checkpoint_command` / `checkpoints()` / `undo(target, force=)` | `/checkpoints`、`/undo [--force]`、`/rewind N [--force]` | 同一输入框 | `POST /messages {"text": "/undo"}` |
+| `continue_command(rest)` | `/continue [N]`：撞上限后提高本轮上限并继续（README「在对话里继续」） | 同一输入框，在轮次线程里跑 | `POST /messages {"text": "/continue"}` |
 | `cancel(id \| "all")` | `/cancel <id\|all>` | F2 取消选中 / F3 全部 / `/cancel` | `POST /workers/{id}/cancel`（`id=all` 取消全部） |
 | `tell(id, text)` | `/tell <id> <text>` | `/tell` | `POST /workers/{id}/tell {"text"}` |
 | `status()` / `status_lines()` | `/status` | F5、状态栏、Worker 面板 | `GET /status`、`status` 事件 |

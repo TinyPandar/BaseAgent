@@ -20,7 +20,7 @@ baseagent --session S --rewind 3 [--force]          # 第 3 轮及之后
 
 ## 设计
 
-**钩子只有一个。** 所有写文件都经过 `Workspace._write_file`（`write_file`、`edit_file` 都走它）。在它调用 `tools/edit_policy.py::write_file` 真正落盘之前，`checkpoints.capture()`：
+**钩子只有一处。** 所有写文件都经过 `Workspace._write_file`（`write_file`、`edit_file` 和 `apply_patch` 的 `add` / `modify` 都走它），`apply_patch` 的 `delete` 走对称的 `Workspace._delete_file`（写后哈希记 `missing`）；两者调用同一个 `checkpoints.capture()`。在 `tools/edit_policy.py::write_file` / `delete_file` 真正落盘之前，`checkpoints.capture()`：
 
 1. 定出归属：`(会话, 轮次号, worker_id)`。
 2. 读当前文件。不存在记 `missing`；存在就读字节（上限 200 KB，和读写工具一致），算 sha256。

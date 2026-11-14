@@ -109,12 +109,26 @@ python -B scripts/demo_mcp.py
 
 离线，费用 0，不联网。脚本在临时工作区里写一份 `.mcp.json`，指向仓库里的假 stdio 服务器 `tests/fixtures/fake_mcp_server.py`，再用真实的对话入口 `baseagent --mode edit --no-main-agent` 加脚本化输入和假模型。最后一行是 JSON 摘要（`note_written: true`、`server_stopped: true`）。`tests/test_demo_mcp.py` 自动走一遍。讲的时候按这个顺序：
 
+0. 进对话前先问 `Trust this .mcp.json and start these servers? [y/N]`，上面列出服务器的命令、参数和 env 键名（这是项目 `.mcp.json` 的首次信任，见下一段）；脚本答 `y`，信任记在临时的 `BASEAGENT_CONFIG_HOME` 里。
 1. `[stderr] MCP: server 'demo' ready, 7 tool(s): mcp__demo__echo, mcp__demo__add_note, …` —— 启动时握手、`tools/list`，工具以 `mcp__<服务器>__<工具>` 注册进同一个 Registry。摘要里的 `mcp_tools` 是模型实际收到的工具名。
 2. agent 先调 `mcp__demo__echo`。配置里标了 `readOnly: true`，直接执行，不问。
 3. agent 再调 `mcp__demo__add_note`。没标只读，对话停下来：`Approval required: mcp__demo__add_note`，下面是参数和 call id，然后 `Allow mcp__demo__add_note? [y/N]`。回 `y` 之前笔记文件不存在；回 `y` 之后才发 `tools/call`，agent 回「笔记已记下」。
 4. `/exit` 后服务器进程已经退出（`server_stopped: true`）。
 
 走的是和 `write_file` 一样的那条路径：同一套策略、审批、账本和钩子。MCP 工具的副作用 `/undo` 撤不回。细节见 [mcp.md](mcp.md)。
+
+## 加演：第一次进项目 → 信任 `.mcp.json` → `AGENTS.md` 在 `/status` 里 → `/continue`
+
+```bash
+python -B scripts/demo_project_setup.py
+```
+
+离线，费用 0，不联网。临时工作区里有一份 `AGENTS.md`（三行项目约定）和一份 `.mcp.json`（指向假服务器，带一个 `env` 键 `DEMO_TOKEN`）。用真实的对话入口 `baseagent --no-main-agent --max-steps 3` 加脚本化输入和假模型，进两次对话。最后一行是 JSON 摘要。`tests/test_demo_project_setup.py` 自动走一遍。讲的时候按这个顺序：
+
+1. **首次信任。** 对话还没开始，stderr 先列出 `MCP: this project's .mcp.json (…) wants to start 1 server(s):`、`- demo: ["python", "<repo>/tests/fixtures/fake_mcp_server.py", …]`、`env keys: DEMO_TOKEN (values not shown)`，然后问 `Trust this .mcp.json and start these servers? [y/N]`。答 `y` 之前没有任何服务器进程；答了以后才出现 `MCP: starting server 'demo'`。信任记在用户配置目录，不在仓库里；改 `.mcp.json` 一个字节就会重新问。
+2. **项目规则可见。** 第一句「你好」，假模型回「我读到了项目约定：四个空格缩进、中文提交信息」——它确实在提示里收到了 `AGENTS.md`（摘要 `model_saw_rules: true`）。`/status` 里有一行 `Project rules: AGENTS.md loaded (75 bytes)`，还有 `Turn started: … UTC`（时间一律写明 UTC）。
+3. **在对话里继续。** 让它把名字里带 1–4 的文件各找一遍：第 3 步撞上 `--max-steps 3`，stderr 写 `Step limit reached: max-steps 3/3 used …` 和「To keep going here, type /continue」。输入 `/continue`：`Continuing this turn with raised limits: steps 3/6 …`，同一轮接着做完第 4 次查找，回「四次查找都做完了」。摘要里 `tool_calls: 4`：前 3 次没有重做。
+4. **第二次进同一个项目。** 不再问，直接 `MCP: starting server 'demo'`（摘要 `trust_prompts_second_run: []`）。
 
 ## 2:00 指标
 

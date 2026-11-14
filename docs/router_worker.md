@@ -6,14 +6,14 @@
 
 | 角色 | 做什么 | 不做什么 |
 | --- | --- | --- |
-| 主 Agent | 闲聊和澄清直接回答；需要仓库时调用 `delegate_task(task, allow_writes=false)`，立刻告诉用户派了谁；用 `message_worker(task_id, text)` 给运行中的 Worker 补要求；转述推送回来的结果 | 没有 `read_file` / `grep` / `glob` / `edit_file` / `write_file` / `run_command`；不等待、不编造 Worker 结果；Worker 成功后不重做同一件事 |
+| 主 Agent | 闲聊和澄清直接回答；需要仓库时调用 `delegate_task(task, allow_writes=false)`，立刻告诉用户派了谁；用 `message_worker(task_id, text)` 给运行中的 Worker 补要求；转述推送回来的结果 | 没有 `read_file` / `grep` / `glob` / `edit_file` / `write_file` / `apply_patch` / `run_command`；不等待、不编造 Worker 结果；Worker 成功后不重做同一件事 |
 | Worker | 用入口已授权的工具完成任务，最后写一段汇报 | 不直接对用户说话；不能再派生 Worker（深度 1）；不会多出入口没有的工具 |
 
 Worker 没有类型，区别只在本次是否允许写入：
 
 - `allow_writes=false`（默认）：只拿入口工具里的只读子集（`retry_safe` 的工具）。即使开了 `--allow-command`，只读 Worker 也拿不到 `run_command`。
 - `allow_writes=true`：只在用户明确要求改文件或跑命令时使用。Worker 拿到入口工具全集；写入仍要过 `--allow-write` / `--allow-command` 和 `--tool-policy`，要审批的调用照常停下等审批。
-- 文件检查点：Worker 派出时记下主 Agent 当前的轮次号（`main_turn`），它用 `write_file` / `edit_file` 写的文件记在主会话这一轮的检查点里，并标出 `worker_id`；哪怕它在后面几轮才真正写。`/undo` 按主轮次撤销；有可写 Worker 在运行或等待审批时拒绝撤销。见 [checkpoints.md](checkpoints.md)。
+- 文件检查点：Worker 派出时记下主 Agent 当前的轮次号（`main_turn`），它用 `write_file` / `edit_file` / `apply_patch`（含删除）写的文件记在主会话这一轮的检查点里，并标出 `worker_id`；哪怕它在后面几轮才真正写。`/undo` 按主轮次撤销；有可写 Worker 在运行或等待审批时拒绝撤销。见 [checkpoints.md](checkpoints.md)。
 
 主 Agent 的提示词约束模型这样做，这不是硬保证；硬保证是工具面：主 Agent 只有 `delegate_task` 和 `message_worker`，只读 Worker 没有写入工具。
 

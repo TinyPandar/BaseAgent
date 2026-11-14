@@ -37,6 +37,8 @@ baseagent --session S --resume --output-format jsonl
 | `usage.cny` | 只有模型名在已知价目里（目前只有 `qwen-plus`：输入 0.8、输出 2 元/百万 token，与 `--budget-cny` 相同）且 `unknown_usage_calls == 0` 时才出现，四舍五入到 6 位小数 |
 | `exit_code` | 与进程退出码相同 |
 | `patches` | 可选，只在这一轮有成功的 `apply_patch` 时出现：每次调用一项 `{"call_id", "files", "diff", "diff_truncated"}`（`files` 每项 `path`、`op`、`before_sha256`、`after_sha256`、`added`、`removed`；`diff` 按 20000 字符截断）。没用 `apply_patch` 时没有这个键，输出与以前逐字一致。见 [patch.md](patch.md) |
+| `project_rules` | 可选，只在工作区根目录有 `AGENTS.md` 时出现：`{"enabled", "loaded", "path", "size_bytes", "shown_bytes", "truncated", "sha256", "claude_md_ignored"}`，只有元数据、没有正文（README「项目规则文件」）。没有这个文件时没有这个键 |
+| `mcp` | 可选，只在工作区 `.mcp.json` 因未信任没有启动时出现：`{"skipped": "untrusted" \| "store_in_workspace", "config": ".mcp.json", "servers": [名字]}`（[mcp.md](mcp.md)「首次信任」） |
 | `pending_approval` | `status == "awaiting_approval"` 时为 `{"call_id", "digest", "name"}`（具名子任务节点的审批再加 `task_id`）；否则为 `null`。用 `--approve-tool CALL_ID --approval-digest DIGEST`（节点加 `--task-id`）审批后 `--resume` |
 
 ## `jsonl`：事件流 + 结果
@@ -51,6 +53,7 @@ baseagent --session S --resume --output-format jsonl
 {"type": "result", "timestamp": …, "data": { …与 json 格式的对象完全相同… }}
 ```
 
+- `timestamp` 是 Unix 纪元秒（UTC，与本地时区无关），全仓库的时间约定见 README「时间戳约定」。
 - 第一行 `output_started`，带 `schema_version`、`format`、`session_id`。
 - 中间每行是这一轮写进 `events` 表的一条元数据事件，顺序与 `baseagent --session S --events` 相同（运行中每 0.1 秒拉一次，结束前补齐）。类型和字段见 README「Structured events」；它们只有元数据：没有提示词、工具参数、工具结果正文或异常文本。
 - 两处整理：`model_delta`（`--stream`）里的 `delta` 文本换成 `chars`（字符数），流式文本本身仍实时打到 stderr；具名子任务节点的事件把 `task_id` / `parent_task_id` 放进 `data`。

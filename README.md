@@ -30,7 +30,9 @@
 | JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
 | 权限预设 | 有 | `--mode read-only\|edit\|full` 映射到 `--allow-write` / `--allow-command`；矛盾的显式标志直接报错；`--tool-policy` 只能再收紧 |
 | Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
-| MCP 客户端 | 有，stdio，默认关闭 | 手写的工具子集客户端（`initialize` / `tools/list` / `tools/call`）加内部工具网关：MCP 工具与本地工具共用策略、审批、账本和钩子；有副作用的工具默认逐次审批；Streamable HTTP、resources、prompts 未做；不是对外 MCP 服务；离线测试，见 [docs/mcp.md](docs/mcp.md) |
+| MCP 客户端 | 有，stdio，默认关闭 | 手写的工具子集客户端（`initialize` / `tools/list` / `tools/call`）加内部工具网关：MCP 工具与本地工具共用策略、审批、账本和钩子；有副作用的工具默认逐次审批；项目 `.mcp.json` 首次使用先列出服务器并询问是否信任，信任按文件内容记在用户配置目录，非交互不启动未信任的；Streamable HTTP、resources、prompts 未做；不是对外 MCP 服务；离线测试，见 [docs/mcp.md](docs/mcp.md) |
+| 项目规则文件 | 有，`AGENTS.md`，默认开启 | 每次会话把根目录 `AGENTS.md` 作为参考数据交给一次性任务、对话、主 Agent 和 Worker；超长截断并提示（每个文件 20 KB、合计 40 KB）；`/status` 和 json 看得出是否加载；`--no-project-rules` 关闭；不读 `CLAUDE.md`；离线测试 |
+| 在对话里继续 | 有，`/continue [N]` | 撞上步数 / 模型调用 / 工具调用上限后，在 CLI / TUI / Web 对话里提高本轮上限接着做，已用计数不清零、已完成的工具调用不重做；一次性任务仍用 `--resume`；离线测试 |
 
 ## 失败与取舍
 
@@ -301,7 +303,7 @@ uv run --extra web baseagent --ui web --root . --session demo   # 打开 http://
 
 一个 Web 进程只服务一个会话。架构、事件表和取舍见 [docs/ui.md](docs/ui.md)；没装对应 extra 时会提示安装命令并退出。
 
-三个前端都有检查点命令：`/checkpoints` 列出每一轮改了哪些文件，`/undo` 撤回最近一轮 agent 用 `write_file` / `edit_file` 写过的文件，`/rewind N` 撤回第 N 轮及之后的所有轮次；文件在 agent 写入之后被人改过时整批不动，要加 `--force`。不进对话也行（不调模型、不要密钥）：
+三个前端都有检查点命令：`/checkpoints` 列出每一轮改了哪些文件，`/undo` 撤回最近一轮 agent 用 `write_file` / `edit_file` / `apply_patch` 写过（含 `apply_patch` 的 `delete` 删掉）的文件，`/rewind N` 撤回第 N 轮及之后的所有轮次；文件在 agent 写入之后被人改过时整批不动，要加 `--force`。不进对话也行（不调模型、不要密钥）：
 
 ```bash
 uv run baseagent --session demo --checkpoints            # JSON
@@ -311,6 +313,29 @@ uv run baseagent --session demo --rewind last [--force]  # 或 --rewind 3
 设计、表结构和限制（命令的副作用撤不回）见 [docs/checkpoints.md](docs/checkpoints.md)。
 
 MCP 工具（`--mcp-config path` 或工作区根目录的 `.mcp.json`，格式是常见的 `mcpServers`：`command` / `args` / `env`）在三个前端和一次性命令里都可用。`--mode read-only` 下只暴露配置里标了 `readOnly: true` 的工具；其它 MCP 工具在 `edit` / `full` 下每次调用都要审批，`--tool-policy` 只能再收紧。`/undo` 撤不回 MCP 工具的副作用。配置、命名、进程生命周期和限制见 [docs/mcp.md](docs/mcp.md)。
+
+工作区根目录的 `.mcp.json` 第一次用之前要先信任：交互模式（CLI，以及 TUI / Web 在界面起来之前的那个终端）列出每个服务器的名字、命令、参数和 `env` 的键名（不显示值），问「Trust this .mcp.json and start these servers? [y/N]」；没答 `y` 之前一个服务器进程都不起。信任按文件记在用户配置目录（不在仓库里），文件改一个字节就要重新确认；一次性任务、`--output-format json|jsonl`、stdin 不是终端时不问也不启动，stderr 写明怎么信任（`baseagent --root . --mcp-trust`），撤销用 `--mcp-untrust`。`--mcp-config PATH` 不受影响。见 [docs/mcp.md](docs/mcp.md)「首次信任」。
+
+#### 在对话里继续（`/continue`）
+
+交互对话一轮默认 16 步（一次性任务 8 步；显式 `--max-steps` / `--max-model-calls` / `--max-tool-calls` 优先）。撞上限时提示会点名是哪个上限、写明已用/上限，并告诉你两条路：
+
+- **留在对话里：** 输入 `/continue`，这一轮再多一份每轮额度（默认再给 16 步和 16 次模型调用，工具调用再加 32 次；`--max-steps` / `--max-tool-calls` 改了的话按它们算），`/continue N` 则再给 N 步和 N 次模型调用。已用计数不清零，账本里已经完成的工具调用不会重做，只是从停下的地方接着走。CLI、TUI、Web 都一样；主 Agent 模式下主 Agent 和它派出的 Worker 共用的本轮预算同步放大。直接发一条普通消息只会按原上限续跑，不会提高上限（放大过的上限也不会被压回去）。
+- **退出后：** `baseagent --session ID --resume --max-steps 32 --max-model-calls 32`（一次性任务的用法不变）。
+
+模型请求的自动重试：没传 `--model-retries` 时，一次性任务、对话和 Worker 都对传输超时、连接失败和 HTTP 408 / 409 / 429 / 5xx 默认重试 2 次（同一步最多 3 次请求），等待 0.25 秒、0.5 秒……逐次翻倍，最多 8 秒，遵守 `Retry-After` 和本轮截止时间；鉴权失败等非瞬时错误不重试，`--model-retries 0` 关闭，范围 0–4。**每次重试都是一次付费请求，也计入 `--max-model-calls`。** 重试只重发模型请求，不会重放已经执行过的工具；工具重试（`--tool-retries`）默认 0，而且不安全的工具调用永远不自动重试。
+
+#### 时间戳约定
+
+所有给人或程序看的时间都是 UTC，并且写明：JSON 字符串是带 `+00:00` 的 ISO 8601（`--list-sessions` / 导出的 `updated_at`、`--checkpoints` 的 `created_at`、`--inspect-session` 的 `turn_started_at_utc`、`--task-tree` 的 `*_utc`、对话状态事件里 Worker 的 `started_at_utc` / `finished_at_utc`），文本里写 `UTC`（`/status` 的 `Turn started: 2026-11-13 08:30:00 UTC`、`/checkpoints` 每一轮的时间；TUI / Web 显示的是同一段文本）；数字型字段（jsonl 每行的 `timestamp`、`turn_started_at`、Worker 的 `started_at`）是 Unix 纪元秒，定义上就是 UTC，jsonl 信封为了 `schema_version` 1 不加新键。导出文件带 `"time_zone": "UTC"`。存储格式没变，旧会话库里的时间照样能读、按 UTC 显示。
+
+#### 项目规则文件（`AGENTS.md`）
+
+- **读哪些：** 工作区根目录的 `AGENTS.md` 每次模型调用都作为「Repository guidance reference data」交给模型：一次性任务、单 Agent 对话、主 Agent 和每个 Worker 都有（主 Agent 也给：它决定怎么描述派出的任务，规则里的约定对它同样有用）。读文件或 `get_instructions(path)` 时，按目录链读到的下级 `AGENTS.md` 照旧一起返回。**不读 `CLAUDE.md`**：两个都在时只读 `AGENTS.md`；只有 `CLAUDE.md` 时 `/status` 会提示「CLAUDE.md is present but not read」。需要的话把内容放进 `AGENTS.md`（规则文件不能是符号链接）。
+- **上限与截断：** 给模型看的正文每个文件最多 20000 字节、目录链上合计最多 40000 字节。超出时不再让整轮失败：条目带 `truncated: true`、`size_bytes`、`shown_bytes`，并附一句提示让模型用 `read_file` 读剩下的部分；一次性任务在 stderr 打一行「Project rules: AGENTS.md loaded, truncated …」，对话里 `/status` 能看到同样的话。指令摘要始终按整个文件的 SHA-256 算，所以截断部分之后被改也照样触发写入的 `expected_instructions` 冲突和漂移检测。
+- **可见性：** `/status` 有一行 `Project rules: …`（已加载 / 多大 / 是否截断 / 已关闭 / 没有）。`--output-format json` 在有根目录 `AGENTS.md` 时多一个可选字段 `project_rules`：`{"enabled", "loaded", "path", "size_bytes", "shown_bytes", "truncated", "sha256", "claude_md_ignored"}`，jsonl 的 `result` 行相同；只有元数据，没有正文；`schema_version` 仍是 1。没有这个文件时输出与以前逐字一致。
+- **开关：** `--no-project-rules`（或 `--config` 的 `run.project_rules: false`）。关闭后模型在任何地方都看不到规则正文（注入的参考消息、`get_instructions`、`read_file` 的 `instructions` 都只剩路径和哈希），但摘要照算照比：写入仍要带读取时拿到的 `expected_instructions`，规则文件被改仍会触发漂移检测，不会比打开时更宽松。关闭会记进运行时配置，未完成的轮次中途切换要 `--accept-config-changes`。
+- **边界：** 规则文件只是参考数据，放宽不了 `--mode`、`--tool-policy` 和工作区边界。
 
 ### 4. Project Assistant（RAG）离线演示
 
@@ -906,9 +931,9 @@ Commands continuously drain stdout/stderr while retaining at most 20 KB of each 
 
 The CLI includes `RepositoryMiddleware`. It loads root `AGENTS.md` as reference data and checks previously observed file hashes and scoped instruction digests before agent, model, and tool execution. `before_tool` is a local preflight hook executed before marking the ledger entry running; the model/tool wrapper chains retain their existing ordering. Library callers must include this middleware to enable guidance projection and drift checks.
 
-`get_instructions(path)` reads root-to-directory `AGENTS.md` files within the selected workspace. Each file is limited to 20 KB, with 40 KB combined. Guidance is projected as assistant reference data, without changing the saved transcript; user instructions and capability gates still apply. Nested guidance is returned by file reads. Instruction links and write aliases through symlinks/junctions are rejected.
+`get_instructions(path)` reads root-to-directory `AGENTS.md` files within the selected workspace. The text shown to the model is limited to 20 KB per file and 40 KB combined; a longer file is cut (marked `truncated`, with `size_bytes` / `shown_bytes` and a note) instead of failing the turn, while the digest still covers the whole file. See 「项目规则文件」 below. Guidance is projected as assistant reference data, without changing the saved transcript; user instructions and capability gates still apply. Nested guidance is returned by file reads. Instruction links and write aliases through symlinks/junctions are rejected.
 
-`read_file` returns the raw whole-file SHA256, applicable instruction digest, and a line range (first 200 lines by default). Files are bounded to 200 KB; UTF-8 and original line endings are preserved. `write_file` requires `expected_sha256` and `expected_instructions`; use `missing` for creation. Existing files require their current hash. `edit_file` applies up to 20 exact, unique text replacements in memory and publishes only when every replacement matches and both digests remain current. Unrelated bytes remain unchanged.
+`read_file` returns the raw whole-file SHA256, applicable instruction digest, and a line range (first 200 lines by default). Files are bounded to 200 KB; UTF-8 and original line endings are preserved. `write_file` requires `expected_sha256` and `expected_instructions`; use `missing` for creation. Existing files require their current hash. `edit_file` applies up to 20 exact, unique text replacements in memory and publishes only when every replacement matches and both digests remain current. Unrelated bytes remain unchanged. `apply_patch` adds, modifies (with the same `edits`) or deletes up to 50 files in one all-or-nothing call, each entry with its own `expected_sha256` / `expected_instructions` ([docs/patch.md](docs/patch.md)); deleting a file is only possible through its `delete` operation (`delete_file` is a backend entry, not a model tool).
 
 Writes use cooperative per-file locks, sibling temporary files, flush/fsync, and atomic publication. Creation uses a non-overwriting hard link and therefore requires filesystem hard-link support. These guarantees cover one file at a time. Arbitrary external editors can still race the final hash check and replacement; this is optimistic conflict detection, not a filesystem compare-and-swap or an OS sandbox.
 
@@ -923,10 +948,10 @@ The core supplies `ToolContext` to contextual tools per invocation; model argume
 An optional `--tool-policy policy.json` adds core authorization to every tool call:
 
 ```json
-{"default": "allow", "tools": {"write_file": "ask", "edit_file": "ask", "run_command": "ask", "verify_command": "ask"}}
+{"default": "allow", "tools": {"write_file": "ask", "edit_file": "ask", "apply_patch": "ask", "run_command": "ask", "verify_command": "ask"}}
 ```
 
-Actions are `allow`, `deny`, or `ask`, matched by exact tool name; no wildcard matching is implied. Without a policy, existing capability gates apply. For restricted registries use `default: deny` and explicitly allow required tools. The policy must have only `default` and `tools` fields and is bounded to 20 KB by the CLI.
+Actions are `allow`, `deny`, or `ask`, matched by exact tool name; no wildcard matching is implied, so a policy that asks before every write must list all three write tools (`write_file`, `edit_file`, `apply_patch`); leaving `apply_patch` out lets batch writes and deletes through under `default: allow`. Without a policy, existing capability gates apply. For restricted registries use `default: deny` and explicitly allow required tools. The policy must have only `default` and `tools` fields and is bounded to 20 KB by the CLI.
 
 A tool entry may also have ordered parameter rules:
 
@@ -1119,7 +1144,7 @@ workspace = Workspace(backend=backend, allow_write=True, allow_command=True)
 tools = coding_tools(workspace)
 ```
 
-接口位于 `src/baseagent/backends/protocol.py`：`resolve_path`、`read_bytes`、`file_hash`、`get_instructions`、`search_files`、`write_file`、`execute` 和 `contract`。操作参数使用相对项目路径；`root`/`resolve_path` 返回稳定的项目命名空间标识，用于权限匹配和会话归属，工具层不能对这些 Path 执行宿主文件 I/O。未来远端实现需自行映射到环境内路径，并在该环境检查链接和目录边界。
+接口位于 `src/baseagent/backends/protocol.py`：`resolve_path`、`read_bytes`、`file_hash`、`get_instructions`、`search_files`、`write_file`、`delete_file`（后端入口，只给 `apply_patch` 的 `delete` 用，不是模型工具）、`execute` 和 `contract`。操作参数使用相对项目路径；`root`/`resolve_path` 返回稳定的项目命名空间标识，用于权限匹配和会话归属，工具层不能对这些 Path 执行宿主文件 I/O。未来远端实现需自行映射到环境内路径，并在该环境检查链接和目录边界。
 
 backend 实现是可信扩展，负责字节读取限额、受保护路径/搜索过滤、指令范围及限额、原子文件版本/指令摘要检查、命令期限/取消/输出限额与后代清理。`write_file` 必须在目标环境内完成 CAS、锁和原子发布；不能先在宿主检查再向远端无条件写入。`execute` 接收 argv，不自行转成 shell 字符串。其 `contract()` 应返回不含凭据的实现版本、环境身份与配置，工具恢复契约会绑定此信息，环境变化时先拒绝恢复。新增 backend 的生命周期和远端环境连接管理将在接入实际执行环境时实现；本轮仅提供统一接口和本机实现。
 
@@ -1180,7 +1205,7 @@ uv run baseagent "Fix the failing tests" --root . --allow-write --allow-command 
 
 ## Edit policy
 
-`src/baseagent/tools/edit_policy.py` 的 `EditPolicy` 由 Python 宿主传给 `Workspace(edit_policy=...)`。它对 `write_file` / `edit_file` 应用路径 allowlist/denylist（拒绝优先，默认保护凭据与 `.git`），可设置 `max_changed_lines` 触发精确工具调用审批。可选 `post_edit_check` 使用 argv 执行检查，失败时恢复该文件原始内容；事务检查需要 LocalBackend。编辑策略仍需配合写入/命令权限。
+`src/baseagent/tools/edit_policy.py` 的 `EditPolicy` 由 Python 宿主传给 `Workspace(edit_policy=...)`。它对 `write_file` / `edit_file` / `apply_patch`（批里每个文件，含 `delete`）应用路径 allowlist/denylist（拒绝优先，默认保护凭据与 `.git`），可设置 `max_changed_lines` 触发精确工具调用审批（`apply_patch` 按整批的改动行数算）。可选 `post_edit_check` 使用 argv 执行检查，失败时恢复该文件原始内容；事务检查需要 LocalBackend。编辑策略仍需配合写入/命令权限。
 
 ## Workspace search（grep / glob）
 

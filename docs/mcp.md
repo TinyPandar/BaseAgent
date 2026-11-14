@@ -84,7 +84,55 @@ sequenceDiagram
 
 BaseAgent 不会替你装服务器，也不会默认去跑要联网的 `npx` 包；写了什么命令就跑什么命令。
 
-**注意信任边界**：`.mcp.json` 放在工作区里，进入一个带 `.mcp.json` 的目录运行 `baseagent`，就会执行里面写的命令。启动时每个服务器都会在 stderr 打一行 `MCP: starting server '<名字>' from <文件>: <命令>`。不信任的仓库先看一眼这个文件。
+**注意信任边界**：`.mcp.json` 放在工作区里，里面写的命令会在这台机器上运行。所以项目自带的 `.mcp.json` 第一次用之前要先确认，见下面「首次信任」。启动时每个服务器都会在 stderr 打一行 `MCP: starting server '<名字>' from <文件>: <命令>`。
+
+## 首次信任
+
+只管工作区根目录的 `.mcp.json`（项目带来的配置）。`--mcp-config PATH` 是你自己点名的配置，不问、不记，行为与以前一致；没有 `.mcp.json` 的项目也与以前逐字一致。
+
+**交互模式第一次用：** CLI 对话、`--ui tui`、`--ui web`（在界面起来之前，用启动它的那个终端问）在 stdin 是终端时，先在 stderr 列出要启动的服务器，再问一次：
+
+```text
+MCP: this project's .mcp.json (/repo/.mcp.json) wants to start 1 server(s):
+  - notes: ["python", "tools/notes_server.py"]
+      env keys: NOTES_DIR (values not shown)
+Trust this .mcp.json and start these servers? [y/N]
+```
+
+- 列的是名字、命令、参数和 `env` 的**键名**；`env` 的值不显示、不存。
+- 答 `y` 之前一个服务器进程都不起。答 `y`：记下信任，照常启动；以后同一个文件不再问。
+- 答别的（或 EOF / Ctrl+C）：本次会话照常运行，只是没有 MCP 工具；stderr 提示以后怎么再信任（下次进对话答 `y`，或 `baseagent --root <目录> --mcp-trust`）。拒绝不会被记住，下次还会问。
+
+**信任记在哪：** 用户配置目录下的 `mcp-trust.json`，不在任何工作区里：
+
+| 平台 | 位置 |
+| --- | --- |
+| 设了 `BASEAGENT_CONFIG_HOME` | `$BASEAGENT_CONFIG_HOME/mcp-trust.json` |
+| Linux / macOS | `$XDG_CONFIG_HOME/baseagent/mcp-trust.json`，没设时 `~/.config/baseagent/mcp-trust.json` |
+| Windows | `%APPDATA%\baseagent\mcp-trust.json` |
+
+```json
+{"version": 1, "projects": {"/repo/.mcp.json": {"sha256": "<整个文件字节的 SHA-256>", "servers": ["notes"], "trusted_at": "2026-11-13T08:30:00+00:00"}}}
+```
+
+- 键是 `.mcp.json` 的真实路径（解析符号链接后），值是整个文件字节的哈希。文件任何一个字节变了（包括 `env` 的值、空格），旧信任就失效，下次重新问，并说明「changed since you trusted it」。
+- 仓库自带的「已信任」记录不算数：BaseAgent 只读用户配置目录；如果 `BASEAGENT_CONFIG_HOME` 指到了工作区里面，这个信任库对该工作区直接作废（stderr 说明原因，不启动、不问）。
+- 列给你看、算哈希、最后启动的是同一份字节：先读一次文件，用这份字节解析和哈希，信任后启动的就是这次解析出来的服务器。
+
+**撤销与预先信任：**
+
+```bash
+baseagent --root /repo --mcp-trust     # 列出服务器并信任当前这份文件（不调模型、不建会话库、不启动服务器）
+baseagent --root /repo --mcp-untrust   # 删除这条信任记录；之后再用会重新问
+```
+
+**非交互：** 一次性任务、`--resume`、`--output-format json|jsonl`、stdin 不是终端的对话，一律**不问也不启动**未信任（或改过）的 `.mcp.json`：
+
+- stderr：`MCP: /repo/.mcp.json is not trusted yet; its servers were not started (non-interactive run). to trust it, review … and run: baseagent --root /repo --mcp-trust …`
+- json：结果对象多一个可选字段 `"mcp": {"skipped": "untrusted", "config": ".mcp.json", "servers": ["notes"]}`（信任库在工作区里时 `skipped` 是 `store_in_workspace`）；jsonl 的 `result` 行相同。只有服务器名，没有命令和 `env`。已信任或没有 `.mcp.json` 时没有这个键。
+- 任务本身照常跑，只是没有 MCP 工具，退出码按任务结果。
+
+**`--mcp-strict`：** 未信任（包括交互时拒绝）按「配置的 MCP 用不了」处理：`MCP error: … is not trusted …`，退出码 2，不调模型；json / jsonl 输出 `status: "error"`、`exit_code: 2`。
 
 ## 命名
 
@@ -116,7 +164,7 @@ MCP 工具默认当作有副作用：`retry_safe=False`，不会被重试，也�
 
 - 运行时契约包含每个在用服务器的配置哈希。未完成的会话新增、删除或更换服务器（包括某个服务器这次没启动成功），续跑需要 `--accept-config-changes`；换过服务器后，之前记下的批准作废，会重新询问。
 - Worker 拿到的 MCP 工具跟内置工具同一条规则：没有写权限的 Worker 只有标了 `readOnly` 的工具，可写 Worker 拿到全部；有副作用的调用照样在对话里逐条审批。「同时只有一个可写 Worker」不变。
-- **检查点 / `/undo` 只管 `write_file` 和 `edit_file` 写过的文件。MCP 工具在外部造成的任何改动都撤不回。**
+- **检查点 / `/undo` 只管 `write_file`、`edit_file` 和 `apply_patch`（含它的 `delete`）写过的文件。MCP 工具在外部造成的任何改动都撤不回。**
 
 ## 进程生命周期
 
@@ -166,6 +214,7 @@ MCP 工具默认当作有副作用：`retry_safe=False`，不会被重试，也�
 - 没有「对某个有副作用的 MCP 工具始终放行」的写法，见上面的表。
 - Windows 上的进程树清理（`taskkill /T`）写了但没有实测。
 - `--config` 的 harness 配置文件里没有 MCP 字段，只能用 flag 或 `.mcp.json`。
+- 首次信任只在启动前的终端里问；TUI / Web 界面里没有信任对话框，界面起来以后不能再改信任（重开即可）。
 
 ## 为什么手写而不是用官方 SDK
 
@@ -181,4 +230,4 @@ MCP 工具默认当作有副作用：`retry_safe=False`，不会被重试，也�
 python -B scripts/demo_mcp.py   # 离线，假服务器 + 假模型，费用 0
 ```
 
-测试在 `tests/test_mcp_client.py`、`tests/test_mcp_gateway.py`、`tests/test_mcp_cli.py`，假服务器是 `tests/fixtures/fake_mcp_server.py`。
+测试在 `tests/test_mcp_client.py`、`tests/test_mcp_gateway.py`、`tests/test_mcp_cli.py`、`tests/test_mcp_trust.py`（首次信任），假服务器是 `tests/fixtures/fake_mcp_server.py`。
