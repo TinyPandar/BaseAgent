@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "corpus_version": "cd1f9d73966ac02e",
+  "corpus_version": "71fec06d106cfba9",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
-  "corpus_version_note": "2026-11-14 merge rebind (plan/atomic-patch) with scripts/rebind_corpus_version.py --write after apply_patch, its docs and demo, and after the README construction section was deleted. corpus_version moved from e4f8b4654bbe4630 to cd1f9d73966ac02e. No evidence references moved; all stored evidence_sha256 values still matched. Gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
+  "corpus_version_note": "2026-11-15 merge rebind (plan/fixes-and-gaps) with scripts/rebind_corpus_version.py --write after /continue, measured-issue regression tests, time zone markers, AGENTS.md truncation/visibility/switch, .mcp.json first-use trust, Watchdog/HarnessKnight apply_patch awareness, docs and demo, and after the README construction section was deleted. corpus_version moved from cd1f9d73966ac02e to 71fec06d106cfba9. stale-07's src/baseagent/main.py:303-304 had drifted to 268-269 and was moved; the hash was unchanged. Every other stored evidence_sha256 still matched. Gold ranges and answer summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",
@@ -104,7 +104,7 @@
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
     "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89",
-    "src/baseagent/main.py:303-304": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
+    "src/baseagent/main.py:268-269": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
   },
   "questions": [
     {
@@ -414,7 +414,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:303-304",
+        "src/baseagent/main.py:268-269",
         "applications/project_assistant/tools.py:104-116"
       ]
     },
