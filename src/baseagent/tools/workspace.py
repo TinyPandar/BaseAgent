@@ -101,6 +101,12 @@ class Workspace:
         # False (--no-project-rules): AGENTS.md text is withheld from the model; digests are unchanged, so the
         # expected_instructions write CAS and drift detection work exactly as with the rules on.
         self.project_rules = project_rules
+        if self.edit_policy.post_edit_check is not None and not isinstance(backend, LocalBackend):
+            from .edit_policy import transactional
+            if not transactional(backend):
+                # Refuse at startup rather than failing on the first write.
+                raise ValueError("EditPolicy.post_edit_check needs a backend that can roll an edit back "
+                                 "(LocalBackend or DockerBackend)")
         self._read_roots = set()
 
     def allow_read_root(self, root):

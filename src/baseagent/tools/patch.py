@@ -67,7 +67,7 @@ class Planned:
     expected_instructions: str
     before: bytes | None      # snapshot: original bytes, None = did not exist
     after: str | None         # new content, None = delete
-    mode: int | None = None   # LocalBackend file mode, restored after a rollback re-creates a file
+    mode: int | None = None   # file mode (LocalBackend, DockerBackend), restored after a rollback re-creates a file
 
     @property
     def before_text(self):
@@ -150,6 +150,8 @@ def _plan_one(workspace, index, item, seen):
     mode = None
     if before is not None and local:
         mode = stat.S_IMODE(target.stat().st_mode)
+    elif before is not None and callable(getattr(workspace.backend, "file_mode", None)):
+        mode = workspace.backend.file_mode(path)      # DockerBackend: read inside the container
     return Planned(index, op, path, relative, expected, instructions, before, after, mode)
 
 
@@ -285,6 +287,17 @@ def _restore(workspace, item, *, failed=False):
         return True
     if current != item.after_sha256:
         return failed    # not ours: never overwrite content someone else wrote
+    from baseagent.backends import LocalBackend
+
+    from .edit_policy import transactional
+    if not isinstance(backend, LocalBackend) and transactional(backend):
+        # Exact bytes and mode back inside the backend's namespace, under the cooperating-writer lock.
+        from .editing import file_lock
+        with file_lock(backend, workspace._path(item.path)):
+            if backend.file_hash(item.path) != current:
+                return failed
+            backend.restore_bytes(item.path, item.before, item.mode)
+        return backend.file_hash(item.path) == item.before_sha256
     digest = backend.get_instructions(item.path)["digest"]
     if item.before is None:
         backend.delete_file(item.path, current, digest)
