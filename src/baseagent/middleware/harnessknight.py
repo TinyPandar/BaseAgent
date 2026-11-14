@@ -40,11 +40,41 @@ def _bounded_identifier(value: str | None) -> str | None:
     return value[:191] + "-" + sha256(value.encode()).hexdigest()
 
 
+# apply_patch impacts: one per file, bounded so a 50-file batch cannot produce an oversized request.
+# HarnessKnight accepts at most 128 impacts per event and treats file "delete" like a write.
+MAX_PATCH_IMPACTS = 50
+MAX_PATCH_TARGET_CHARS = 1024
+PATCH_OPERATIONS = {"add": "write", "modify": "write", "delete": "delete"}
+
+
+def _patch_target(path: str) -> str:
+    if len(path) <= MAX_PATCH_TARGET_CHARS:
+        return path
+    return path[:MAX_PATCH_TARGET_CHARS - 65] + "-" + sha256(path.encode()).hexdigest()
+
+
+def _patch_impacts(arguments: dict) -> list[dict]:
+    operations = arguments.get("operations")
+    if not isinstance(operations, list):
+        return []
+    impacts = []
+    for item in operations:
+        if len(impacts) == MAX_PATCH_IMPACTS:
+            break
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]:
+            continue
+        impacts.append({"kind": "file", "target": _patch_target(item["path"]),
+                        "operation": PATCH_OPERATIONS.get(item.get("op"), "write")})
+    return impacts
+
+
 def infer_impacts(name: str, arguments: dict) -> list[dict]:
     def target(*keys):
         return next((arguments[k] for k in keys if isinstance(arguments.get(k), str) and arguments[k]), ".")[:8192]
     if name in {"write_file", "edit_file"}:
         return [{"kind": "file", "target": target("path"), "operation": "write"}]
+    if name == "apply_patch":
+        return _patch_impacts(arguments)
     if name in {"read_file", "grep", "glob"}:
         return [{"kind": "file", "target": target("path", "pattern"), "operation": "read"}]
     if name in {"run_command", "verify_command"}:

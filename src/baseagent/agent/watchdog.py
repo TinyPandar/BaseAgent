@@ -11,7 +11,9 @@ import hashlib
 import json
 import time
 
-WRITE_TOOLS = {"write_file", "edit_file"}
+# Successful calls of these tools count as "this step wrote something" for the stall rule.
+# apply_patch writes (add / modify) and deletes files in one batch; it is a write like the others.
+WRITE_TOOLS = {"write_file", "edit_file", "apply_patch"}
 VERIFY_TOOLS = {"verify_command"}
 DEFAULTS = {
     "enabled": False,

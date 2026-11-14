@@ -105,5 +105,5 @@
 - 不包 `run_command`：命令的副作用不在批次里，也撤不回。
 - 不是文件系统事务：见上面的乐观检测说明。
 - 只处理 UTF-8 文本：`modify` / `delete` 的目标必须能按 UTF-8 解码（diff 和回滚都需要文本）。
-- Watchdog 和 HarnessKnight 的写工具名单本支没改，它们暂时不把 `apply_patch` 当文件写入识别（Watchdog 按 `WRITE_TOOLS` 记录「这一步有写入」用于停滞判断，HarnessKnight 的 `infer_impacts` 只把 `write_file` / `edit_file` 归为文件写入；`apply_patch` 在两者里都按普通工具处理）。
+- Watchdog 和 HarnessKnight 都认识 `apply_patch`：Watchdog 的 `WRITE_TOOLS` 含 `apply_patch`，成功的调用算「这一步有写入」，停滞判断与 `write_file` / `edit_file` 一致；HarnessKnight 的 `infer_impacts` 给批里每个文件一条 `file` 影响，`add` / `modify` 报 `write`，`delete` 报 `delete`（HK 协议的 `operation` 是自由字符串，它的污点规则把 `delete` 与 `write` 同等看待），最多 50 条、每条路径最多 1024 字符（超长的截断并接哈希），一批 50 个文件也不会发出超大请求。
 - 撤销只支持 LocalBackend（与检查点相同）；DockerBackend 下回滚靠后端的 `write_file` / `delete_file`，删除没有锁。

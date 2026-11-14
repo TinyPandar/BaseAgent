@@ -20,7 +20,7 @@ M1 拦截保持 opt-in。两者同时打开时，M1 仍拦第三次相同调用�
 
 | 规则 | 建议值 | 动作 |
 | --- | --- | --- |
-| stall | 连续 3 步 hint，5 步停止 | 这些步没有成功写入，也没有 `verify_command` |
+| stall | 连续 3 步 hint，5 步停止 | 这些步没有成功写入（`write_file` / `edit_file` / `apply_patch`），也没有 `verify_command` |
 | repeat_call | 相同工具 + 等价参数 4 次 | 下一次工具不再执行 |
 | budget | 步数 / token / 墙钟，需显式设置 | 剩余不超过 20% 时 hint，用尽则停止 |
 | timeout | 单次工具超时，需显式设置 | 超时的下一次工具，尤其是写入，不再执行 |
