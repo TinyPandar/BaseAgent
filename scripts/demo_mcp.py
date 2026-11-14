@@ -4,6 +4,9 @@ Drives the real chat entry (``baseagent --mode edit --no-main-agent``) with scri
 input, a scripted fake model and the in-repo fake MCP server
 (``tests/fixtures/fake_mcp_server.py``), in a temporary workspace with a ``.mcp.json``:
 
+0. first use of the project ``.mcp.json``: the chat lists its servers (command, arguments, env key
+   names) and asks ``Trust this .mcp.json and start these servers? [y/N]``; the demo answers ``y``
+   (the trust record goes to a temporary ``BASEAGENT_CONFIG_HOME``, never the real one);
 1. start-up lists the registered ``mcp__demo__…`` tools on stderr;
 2. the agent calls the read-only ``mcp__demo__echo`` — no approval;
 3. the agent calls ``mcp__demo__add_note`` — the chat asks ``Allow mcp__demo__add_note? [y/N]``,
@@ -81,20 +84,24 @@ def run(directory, answer="y"):
 
     def typed(prompt=""):
         prompts.append(prompt)
-        line = answer if prompt.startswith("Allow ") else next(lines)
+        line = answer if prompt.startswith(("Allow ", "Trust ")) else next(lines)
         print(f"{prompt}{line}", flush=True)
         return line
 
     stderr = io.StringIO()
-    with patch("builtins.input", side_effect=typed), contextlib.redirect_stderr(stderr):
+    # The demo stands in for a person at a terminal; trust is stored under the temporary directory.
+    with patch("builtins.input", side_effect=typed), contextlib.redirect_stderr(stderr), \
+         patch("baseagent.mcp.trust.stdin_is_terminal", lambda: True), \
+         patch.dict(os.environ, {"BASEAGENT_CONFIG_HOME": str(base / "config")}):
         code = main(["--root", str(root), "--db", str(base / "state" / "sessions.sqlite3"), "--session", "demo",
                      "--mode", "edit", "--no-main-agent"], model_factory=lambda args: model)
-    startup = [line for line in stderr.getvalue().splitlines() if line.startswith("MCP")]
+    startup = [line for line in stderr.getvalue().splitlines() if line.startswith(("MCP", "  - ", "      env keys"))]
     for line in startup:
-        print("[stderr] " + line.replace(str(base), "<tmp>").replace(sys.executable, "python"))
+        print("[stderr] " + line.replace(str(base), "<tmp>").replace(sys.executable, "python").replace(str(ROOT), "<repo>"))
     state = SessionStore(base / "state" / "sessions.sqlite3").load("demo")
     results = [json.loads(message["content"]) for message in state.messages if message.get("role") == "tool"]
     return {"exit_code": code, "mcp_tools": model.offered,
+            "trust_prompts": [prompt for prompt in prompts if prompt.startswith("Trust ")],
             "approval_prompts": [prompt for prompt in prompts if prompt.startswith("Allow ")],
             "echo": results[0]["data"]["text"] if results and results[0]["ok"] else None,
             "note_written": notes.exists() and notes.read_text(encoding="utf-8") == "买牛奶\n",

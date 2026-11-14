@@ -86,6 +86,11 @@ def load_config(path) -> tuple[list[ServerConfig], list[str]]:
         value = read_json_object(Path(path), max_bytes=200_000, label="MCP configuration")
     except (ValueError, OSError) as exc:
         raise McpConfigError(f"cannot read MCP configuration {path}: {exc}") from exc
+    return parse_servers(value, path)
+
+
+def parse_servers(value, path) -> tuple[list[ServerConfig], list[str]]:
+    """``mcpServers`` of an already decoded configuration object (shared with the trust check)."""
     servers = value.get("mcpServers") if isinstance(value, dict) else None
     if not isinstance(servers, dict):
         raise McpConfigError(f"MCP configuration {path} needs an mcpServers object")

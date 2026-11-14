@@ -18,6 +18,8 @@ from mcp_helpers import ECHO, NOTE, Script, process_gone, read_pid, server_entry
 from test_main_agent import WAIT, Duplex, delegate, feed
 
 from baseagent.main import main
+from baseagent.mcp.trust import TrustStore
+from baseagent.mcp.trust import snapshot as trust_snapshot
 from baseagent.session import SessionStore
 
 
@@ -34,8 +36,13 @@ class CliCase(unittest.TestCase):
     def entry(self, *flags, **options):
         return server_entry("--notes", str(self.notes), "--pid-file", str(self.pid_file), *flags, **options)
 
-    def configure(self, servers=None, name=".mcp.json"):
-        return write_config(self.root / name, servers if servers is not None else {"demo": self.entry()})
+    def configure(self, servers=None, name=".mcp.json", trusted=True):
+        path = write_config(self.root / name, servers if servers is not None else {"demo": self.entry()})
+        if name == ".mcp.json" and trusted:
+            # A project .mcp.json needs first-use trust (docs/mcp.md); these tests are about what happens after it.
+            snap = trust_snapshot(path)
+            TrustStore().trust(path, snap.digest, [server.name for server in snap.servers])
+        return path
 
     def run_cli(self, argv, model=None, inputs=None):
         out, err = io.StringIO(), io.StringIO()

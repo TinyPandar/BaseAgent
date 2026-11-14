@@ -17,6 +17,7 @@ class McpDemoTests(unittest.TestCase):
         lines = completed.stdout.strip().splitlines()
         summary = json.loads(lines[-1])
         self.assertEqual(summary["approval_prompts"], ["Allow mcp__demo__add_note? [y/N] "])
+        self.assertEqual(summary["trust_prompts"], ["Trust this .mcp.json and start these servers? [y/N] "])
         self.assertIn("mcp__demo__echo", summary["mcp_tools"])
         self.assertEqual((summary["echo"], summary["note_written"], summary["server_stopped"]), ("hello", True, True))
         transcript = "\n".join(lines)

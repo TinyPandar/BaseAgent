@@ -178,6 +178,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     operations.add_argument("--export-session", type=Path, metavar="JSON_FILE", help="Archive a consistent session snapshot")
     operations.add_argument("--backup-db", type=Path, metavar="SQLITE_FILE", help="Create a consistent, non-overwriting SQLite backup")
     operations.add_argument("--delete-session", action="store_true", help="Delete the named completed session")
+    operations.add_argument("--mcp-trust", action="store_true", help="Show the servers of the workspace .mcp.json and trust exactly this file (no model access); see docs/mcp.md")
+    operations.add_argument("--mcp-untrust", action="store_true", help="Revoke trust in the workspace .mcp.json; its servers ask again before starting")
     operations.add_argument("--checkpoints", action="store_true", help="List per-turn file checkpoints of --session as JSON (no model access)")
     operations.add_argument("--rewind", metavar="N|last", help="Restore files written by the agent in turn N and every later turn, or only the latest turn with 'last' (no model access)")
     parser.add_argument("--force", action="store_true", help="--rewind: restore even files that changed after the agent wrote them")
@@ -306,7 +308,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("step/model limits must be positive and tool limit nonnegative")
     session_operation = args.resume or args.inspect_session or args.task_tree or args.acknowledge_task_bound or args.resolve_tool is not None or args.approve_tool is not None or args.deny_tool is not None or args.cancel_session or args.clear_cancel is not None or args.events or args.follow_events is not None or args.prune_events is not None or args.shared_memory or args.resolve_usage is not None or args.export_session is not None or args.delete_session or args.checkpoints or args.rewind is not None
     database_operation = args.list_sessions or args.backup_db is not None or args.cleanup_days is not None
-    operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages
+    trust_operation = args.mcp_trust or args.mcp_untrust
+    operation = session_operation or database_operation or args.eval_harness or args.list_tool_packages or trust_operation
     interactive = not operation and args.prompt is None
     if interactive:
         # Chat turns are open-ended; one-shot defaults stay unchanged for scripts.
@@ -336,6 +339,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("evaluation uses isolated fixtures; omit prompt, session and root")
     if args.list_tool_packages and (args.prompt is not None or args.session):
         parser.error("package discovery requires no prompt or session")
+    if trust_operation and (args.prompt is not None or args.session):
+        parser.error("--mcp-trust/--mcp-untrust apply to the workspace .mcp.json (--root); omit prompt and session")
     if session_operation and (not args.session or args.prompt is not None):
         parser.error("resume/inspect/resolve require --session and no prompt")
     if database_operation and (args.session is not None or args.prompt is not None):
@@ -473,11 +478,16 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
     mcp = None
+    mcp_skipped = None
     try:
         if args.list_tool_packages:
             from baseagent.capabilities.assembly import BUILTIN_PACKAGES
             print(json.dumps({name: list(tools) for name, tools in BUILTIN_PACKAGES.items()}, ensure_ascii=False, indent=2))
             return 0
+        if trust_operation:
+            from baseagent.mcp.trust import trust_command, untrust_command
+            root = (args.root or Path.cwd()).resolve()
+            return trust_command(root) if args.mcp_trust else untrust_command(root)
         if args.eval_harness:
             from baseagent.evaluation import evaluate
             report = evaluate(cases=args.eval_case, report_path=args.eval_report)
@@ -729,6 +739,18 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             from baseagent.mcp import McpManager
             mcp = McpManager.from_arguments(args.mcp_config, workspace.root, strict=args.mcp_strict,
                                             client_version=version("baseagent"))
+            if mcp is not None and args.mcp_config is None:
+                # The project's own .mcp.json starts nothing until the user trusted these exact bytes.
+                from baseagent.mcp import trust
+                decision = trust.gate(mcp.source, workspace.root,
+                                      interactive=interactive and trust.stdin_is_terminal())
+                if decision.trusted:
+                    mcp.servers = decision.snapshot.servers  # exactly what was shown and hashed
+                else:
+                    mcp_skipped = decision.skipped()
+                    if args.mcp_strict:
+                        raise McpStartupError(f"{mcp.source} is not trusted ({decision.reason}); --mcp-strict stops here")
+                    mcp = None
             if mcp is not None:
                 mcp.start()
                 mcp.register(tools, allow_write=workspace.allow_write)
@@ -922,6 +944,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if rules is not None and rules.get("path"):
             # Optional, metadata only (never the rules text); absent without a root AGENTS.md.
             value["project_rules"] = rules
+        if mcp_skipped is not None:
+            # Optional: the project's .mcp.json was not trusted, so no server started (names only).
+            value["mcp"] = mcp_skipped
         machine.finish(value)
     if state.status != "completed":
         return 130 if state.status == "interrupted" else 1
