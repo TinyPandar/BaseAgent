@@ -142,6 +142,67 @@
 
 做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：读代码时发现与本段描述不符的地方；你自己拍板的点和理由，至少包括：参数名和默认镜像、容器生命周期（会话 / Worker / 续跑）、`.baseagent` 和 `.git` 在容器里怎么处理、文件属主方案、撤销在 docker 下怎么实现、Docker 不可用时的退出码、json 字段名、Terminal-Bench 付费跑前还缺什么。
 
+**环境说明（先看）：** 开发机是 macOS（Apple M4），**没有 Docker**，也没有可用的 Linux 机器。所有离线测试用假 Docker（`baseagent.testing.docker.FakeDocker`：解释 `docker run/exec/rm/ps…`，把 exec 的命令和容器内文件脚本在本机真实跑一遍，不隔离）；容器内文件脚本另外在 `dash`（严格 POSIX）下逐个操作跑过。真实 Docker 冒烟测试 `tests/test_docker_smoke.py` 写好了，但在这台机器上按原因跳过，**一次都没有真跑过**；表里凡依赖真实冒烟的都记「部分」。下面 `cli::` 指 `tests/test_docker_cli.py`。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 `--backend`，默认逐字一致 | 完成 | `cli::test_explicit_local_matches_the_default_byte_for_byte`；已有基线（`test_output_format` 的 master 录像、`test_modes`）不改就过；782f033 | 不传和 `--backend local` 的 stdout/stderr 完全相同；json 不带 `backend` 键 |
+| 2 镜像、开网参数 | 完成 | `cli::test_docker_options_need_the_docker_backend`、`test_only_the_workspace_is_mounted_and_the_network_is_off_by_default` | `--docker-image`（默认 `python:3.12-slim`）、`--docker-network none\|bridge`（默认 `none`）；配 local 退出码 2；资源上限 1 CPU / 512m / 128 进程写进 docs/docker_backend.md |
+| 3 一次性 / 续跑 / 对话 / Worker；换后端被拒 | 完成 | `cli::test_one_shot_runs_commands_and_writes_in_the_container`、`test_resume_uses_a_new_container_and_backend_switches_are_refused`、`test_a_local_unfinished_turn_cannot_continue_in_docker`、`test_chat_turns_and_workers_share_one_container`、`test_uncaught_exception_and_frontend_close_remove_the_container`（TUI / Web） | 一个 CLI 进程一个容器，对话所有轮次和 Worker 共用；续跑新容器；换后端 / 镜像 / 网络续跑未完成轮次时，报错写明原来的参数（退出码 1），`--accept-config-changes` 可覆盖 |
+| 4 `--mode full` 说明；权限不放宽 | 完成 | `cli::test_full_mode_explains_the_container_instead_of_the_local_warning`、`test_permission_modes_and_tool_policy_are_unchanged_under_docker` | read-only / edit / full 的可见工具和执行结果与 local 相同；`--tool-policy deny` 照样拦 |
+| 5 只看得到工作区，逃逸被拒 | 部分 | 假：`cli::test_escapes_are_refused_like_local`（`..`、绝对路径、出界链接，与 local 对照）、`test_the_container_script_checks_links_itself`、`test_only_the_workspace_is_mounted…`（断言下发参数）；真：`test_docker_smoke.py::test_isolation_network_ownership_undo_and_cleanup` | 真实冒烟未运行（无 Docker） |
+| 6 默认断网 | 部分 | 假：下发 `--network none` / `bridge` 的断言；假 Docker 用代理变量模拟断网（`tests/test_demo_docker.py`）；真：同上冒烟用例 | 真实冒烟未运行 |
+| 7 受保护路径；容器改不了会话库；`.git` | 部分 | `cli::test_protected_paths_are_refused_and_harness_state_is_hidden`、`test_database_inside_the_workspace_is_refused_with_exit_2`、挂载参数断言；真实冒烟写 `.baseagent/sessions.sqlite3`、`.git/hooks-test` | `.baseagent` 被空 tmpfs 盖住；会话库在工作区内又不在 `.baseagent/` 下时拒绝启动；`.git` 只读挂载。真实冒烟未运行 |
+| 8 文件属主 | 部分 | `cli::test_files_go_back_to_the_host_user_on_linux`（断言文件操作带 `-u uid:gid`，命令后和删容器前做 chown）；真实冒烟在 Linux 上检查 `st_uid` | 方案见下；真实冒烟未运行，Linux 上没验证过 |
+| 9 同工作区两个会话 | 完成 | `cli::test_two_sessions_on_one_workspace_do_not_collide`、`test_leftover_containers_are_reaped_but_live_ones_are_kept` | 选「不撞名、不互删」：名字含 pid + 随机后缀，按标签只清本机上 pid 已不在的残留 |
+| 10 检查点 / 撤销 | 完成（真实冒烟部分未跑） | `cli::test_chat_checkpoints_undo_and_rewind_restore_exact_bytes`（含 CRLF 逐字节）、`test_drift_force_and_pending_approval_behave_like_local`、`test_cli_checkpoints_and_rewind_last_work_for_a_docker_session_without_docker`；真：`test_docker_smoke.py::test_chat_undo_inside_the_container` | 不再返回 `unsupported_backend`（只对没有 `restore_bytes` 的第三方后端保留） |
+| 11 `apply_patch` 全有或全无 | 完成 | `cli::test_apply_patch_rolls_back_when_the_second_file_fails`（第 2 个文件注入失败，字节和权限位复原；整批校验失败零写入）、`test_patch_rollback_in_a_session_leaves_no_checkpoint` | 删除补上了锁（与写入同一把宿主协作锁，容器内再比哈希） |
+| 12 `post_edit_check` / `max_changed_lines` | 完成 | `cli::test_post_edit_check_and_diff_limit_work_in_the_container`、`test_backends_that_cannot_roll_back_refuse_post_edit_check_at_startup` | docker 下正常工作（检查在容器里跑，失败在锁内写回）；不能写回的后端在构造 `Workspace` 时报错 |
+| 13 Docker 不可用 | 完成 | `cli::test_docker_unavailable_fails_before_the_model_with_exit_3`（3 种情况 × text / json / jsonl，断言模型没被调用、会话没建） | 退出码 3；json 形状写进 docs/output.md；本机实测 `python -B scripts/demo_docker.py` 打印 `Docker error (cli_missing) …` 并退出 3 |
+| 14 运行中容器挂掉 | 完成（假 Docker） | `cli::test_a_dead_container_fails_the_turn_readably_and_resume_continues`、`test_a_command_in_a_dead_container_returns_a_clear_tool_error` | 命令返回「容器已不在运行（OOM / 被删 / 重启）… --resume」；下一次工作区检查让这一轮 `failed` 落盘；`--resume` 用新容器完成。没有对真 Docker 做 OOM / 重启实验 |
+| 15 清理 | 完成（真实冒烟部分未跑） | `cli::test_container_is_removed_on_every_exit_path`（正常、Ctrl+C=130、对话 /exit、对话里 Ctrl+C）、`test_uncaught_exception_and_frontend_close_remove_the_container`（未捕获异常、TUI、Web）、`test_sigterm_and_sighup_still_remove_the_container`、`test_leftover_containers_are_reaped_but_live_ones_are_kept`；真：`test_ctrl_c_exits_130_and_removes_the_container` + 正常结束 | 都断言假 runner 收到 `rm -f`；真实冒烟未运行 |
+| 16 可见性 | 完成 | `cli::test_json_jsonl_status_and_stderr_name_the_backend` | json `backend` 对象（只在 docker 时；没有即 local，所以不改基线）；jsonl `backend_ready` 行 + result 里的 `backend`；`/status` 和文本 stderr 的 `Backend:` 行 |
+| 17 Terminal-Bench | 完成 | `cli::TerminalBenchTests::test_fixture_runs_through_the_docker_backend_offline`；e70bf38 | `--fixture --backend docker [--real-docker]` 走真实 CLI + 假模型 + 新容器判分；`--live` 计划含 `agent_command`（`--backend docker`）；`score_records` 和失败分类未改。付费前缺什么见下 |
+| 18 测试 | 部分 | 全量见下；`test_docker_backend.py`、`test_docker_cli.py`、`test_docker_smoke.py`、`test_demo_docker.py`、`test_apply_patch*.py` 连跑 3 遍，每遍 83 passed、4 skipped | 没有 Docker 时 4 个真实用例按原因 skip；有 Docker 时的真实冒烟没跑过；本机全量另有 7 个改动前就存在的环境性失败 |
+| 19 文档 | 完成 | 117efe8、0c02cfb | docs/docker_backend.md 重写；README 用法、对照表、失败与取舍、`--mode` 表和列表、`--output-format` 段、Workspace backend / Edit policy / 搜索三段；docs/patch.md、docs/checkpoints.md、docs/output.md、docs/terminal_bench.md、docs/demo.md |
+| 20 离线演示 | 完成（真 Docker 部分未跑） | `tests/test_demo_docker.py`；docs/demo.md 新段落；30a1c26 | `python -B scripts/demo_docker.py`：改文件 → 命令 → 外网失败 → `/undo` → 容器删掉；无 Docker 时退出 3 并给出 AC 13 的报错（本机实测）；`--fake-docker` 离线走同一流程 |
+
+**全量测试（清掉 `SAND_*`、删掉 `.baseagent/live_answers_checkpoint.json` 后）：** 9 failed、1181 passed、5 skipped（4 个真实 Docker 用例 + 1 个原有的）。这 9 个在**改动前的本分支（1628854）上同一台 Mac 原样失败**：2 个是预期内的（corpus_version：`test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines`；`test_record_coding_scenario.py::test_all_real_recordings_replay_offline`）。另外 7 个：4 个是 macOS 的 `/var` → `/private/var` 链接让路径比较不等（`test_backends…test_local_backend_executes_literal_argv_and_keeps_native_cas`、`test_config…test_relative_paths_and_empty_package_selection`、`test_evaluate_retrieval_cli…`、`test_record_coding_scenario.py::test_three_runs_and_replay_with_fake_client`），1 个是 macOS 上同一进程的两个 fd 能同时拿到 flock（`test_coding…test_cooperating_file_lock_blocks_second_writer`），2 个是回放录像时 `request.messages[2].content` 不一致（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py::test_workspace_report_and_timing_normalize_across_recording_and_replay`，原因没深挖）。本分支没有新增失败；Linux 上应只剩 2 个预期失败，但本轮没法验证。
+
+**读代码时发现与「现状」不符或没写到的地方：**
+
+- `DockerBackend.contract()` 带容器 id，每个进程都不同，所以任何 docker 会话都不可能续跑。已去掉（契约版本 1→2）。
+- `DockerBackend.write_file` 不校验 `expected_instructions`，返回值没有 `instruction_digest`：经 `Workspace` 带上下文写入会在 `_observe` 处 KeyError。写入也不是原子的（`docker cp` 直接覆盖目标），容器内没有 CAS，Linux 上写出的文件是 root 属主。
+- `DockerBackend.get_instructions` 的摘要算法（`sha256(str([(path, sha)]))`）和 LocalBackend（`instruction_digest` 的 JSON）不同，同一仓库在两个后端上的指令摘要对不上；每层目录一次 exec。
+- `grep` / `glob` 对非 Local 后端直接报 `workspace search requires a local backend`，现状没提；`DockerBackend.search_files` 实际是在宿主上 `rglob`，再逐个文件 exec `cat`。
+- 溢出文件（绝对路径）的读取被 `DockerBackend._relative` 拒绝，docker 下 spill 读不回来。
+- docs/checkpoints.md 说「需要可撤销的执行环境时用 DockerBackend」：不对，工作区是 bind mount，命令的改动照样撤不回。已改。
+- `--mode full` 在 local 下的警告仍写「For isolation use DockerBackend (docs/docker_backend.md)」，没改成 `--backend docker`，因为 AC 1 要求默认输出逐字不变；合并后可以单独改。
+
+**拍板的点：**
+
+- **参数和默认镜像：** `--backend local|docker`、`--docker-image`（`python:3.12-slim`，沿用 `DockerBackend` 原默认，Terminal-Bench 多是 Python 题）、`--docker-network none|bridge`。`docker run --pull never`：不偷偷拉镜像，缺镜像就退出 3 并给出 `docker pull` 命令。资源上限不开参数。
+- **方案：** 选「文件读写也在容器里」（设计方案 A）。理由见设计小节：宿主侧 I/O 碰上容器里并发建的符号链接有竞态，可能被引到工作区外，以宿主用户身份写宿主文件。
+- **容器生命周期：** 一个 CLI 进程一个容器；对话的所有轮次和它派出的 Worker 共用（各自的命令按标记清理，不互杀）；每次 `--resume` 新容器；`finally` 删容器，SIGTERM / SIGHUP 转成正常退出，下次启动按标签清本机已死进程留下的容器。
+- **`.baseagent` / `.git`：** `.baseagent` 用空 tmpfs 盖住（会话库、检查点、锁、spill 全在宿主侧）；`--db` 在工作区里但不在 `.baseagent/` 下时拒绝启动。`.git` 只读挂载：`git status` / `git diff` 能用（镜像里要有 git，默认镜像没有，已写进限制），容器改不了 hooks / config（否则宿主下一次 git 会执行容器写进去的代码），也不能 commit。`.git` 是文件（worktree）时不挂。
+- **属主：** Linux 上文件工具以宿主 uid:gid 执行；命令仍以镜像默认用户（root）跑，方便装包；每条命令后和删容器前把非宿主属主的文件 `chown -h` 回宿主用户（跳过 `.git` / `.baseagent`）；Docker Desktop 不需要这一步。`kill -9` 留下的，由下次启动补做。
+- **撤销：** 后端多三个可选能力 `stat_files` / `restore_bytes` / `file_mode`，`rewind`、`apply_patch` 回滚、`post_edit_check` 回滚按「有没有这个方法」走后端写回，锁和两次比哈希的逻辑原样复用，LocalBackend 的代码路径一行没改。`--rewind` / `--checkpoints` 运维操作不起容器，在宿主写回（容器已删，没有并发进程）。
+- **退出码：** Docker 起不来 = 3（`cli_missing` / `daemon_unreachable` / `image_missing`）；会话库位置不合法 = 2；运行中容器挂掉 = 本轮 `failed`、退出码 1，可 `--resume`。
+- **json 字段名：** 结果对象 `backend`（`kind`、`image`、`network`、`container`、`cpus`、`memory`、`pids`；起不来时 `container: null`、`unavailable: <kind>`）；jsonl 事件 `backend_ready`；会话元数据 `execution_backend`。local 都不带，「没有该字段即 local」。
+- **性能：** 每个文件操作一次 `docker exec`；`grep`、`search_files`、漂移检查改成批量（漂移检查每次 1 个 exec，原来是 1+2N 个），`get_instructions` 一个 exec 读完整条 AGENTS.md 链。
+- **假 Docker 放在 `src/baseagent/testing/docker.py`**（随包），因为 Terminal-Bench 脚本和演示脚本的离线模式也要用它。
+
+**和 `plan/fixes-and-gaps` 可能冲突的地方（PM 合并时看）：** `DockerBackend.get_instructions` 改了（接入必需：摘要算法要和 local 一致、一个 exec、按解析后的路径找指令链，与 local 相同），`AGENTS.md` 规则文件本身的逻辑没动。另外动了 README 的这些段：对照表 Docker 行、失败与取舍 Docker 条、快速上手 CLI 示例和 `--allow-command` 那句、`--mode` 表和列表、`--output-format` 段、Workspace backend 接口、Edit policy、Workspace search；docs/checkpoints.md 和 docs/patch.md 的限制条目；代码 `src/baseagent/tools/{search,edit_policy,patch,workspace}.py`、`session/checkpoints.py`、`middleware/repository.py`、`chat/{text,session}.py`、`main.py`、`output.py`。没有重绑 corpus_version。
+
+**Terminal-Bench 付费跑之前还缺：**
+
+- `--live` 仍只打印计划、不执行：没有下载 Harbor 题目包、逐题起环境、汇总结果的执行器。
+- 题目镜像和工作目录（常见 `/app`）怎么对接没做：现在只能把宿主目录挂到 `/workspace`。要么先构建题目镜像、把题目目录拷到宿主再挂进去，要么给 DockerBackend 加「直接用题目容器、不 bind mount」的模式。
+- Harbor 在 agent 结束后在同一个容器里判分；我们结束就删容器，容器里工作区以外的改动（装的包、起的服务）判分时已经不在。
+- 部分题需要联网或更大的内存：目前默认断网，内存固定 512m。
+- 默认镜像没有 `git`；一次性任务没有 `--budget-cny`，付费预算要靠 `--max-steps` / `--max-total-tokens` 和外层脚本控制。
+- **先在有 Docker 的跑分机上真跑一遍 `tests/test_docker_smoke.py` 和 `python -B scripts/demo_docker.py`**，本轮没有跑过。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
