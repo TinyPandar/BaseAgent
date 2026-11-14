@@ -110,7 +110,33 @@
 
 ### 设计（实现者填写）
 
-（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。）
+**读代码看到的约束（两套方案都要处理）。** 工具层几乎都只经过 `WorkspaceBackend`，但有四处直接碰宿主文件系统或只认 `LocalBackend`：`tools/search.py::_files`（`grep` / `glob` 在非 Local 后端直接报错）、`session/checkpoints.py::rewind`（`unsupported_backend`）、`tools/edit_policy.py` 的 `post_edit_check`（非 Local 写时才报错）、`tools/patch.py` 的权限位快照。另外现有 `DockerBackend` 有三处接不上 CLI：`contract()` 带容器 id（每次续跑必然被契约拒绝）；`write_file` 不校验也不返回 `instruction_digest`（经 `Workspace` 写会在 `_observe` 处 KeyError）；`docker cp` 写出的文件在 Linux 上是 root 属主。容器名按工作区哈希，第二个会话撞名。
+
+**方案 A：文件读写也在容器里（选定）。** 工作区以 `rw` 挂到 `/workspace`；所有文件操作都是 `docker exec` 里的一段固定 POSIX sh 脚本（只用 `cat`、`sha256sum`、`tar`、`find`、`mktemp`、`ln`、`mv`、`rm`、`readlink -f`、`stat`），宿主只做命名空间校验和协作锁。
+
+- 数据形状：读用一次 exec 批量取，脚本先在 stderr 逐行报状态（`ok / missing / link / escape / notfile / large`），再把可读文件打成 tar 流写到 stdout，Python 用 `tarfile` 解析，字节完整、不依赖分隔符。写用 `exec -i` 从 stdin 传内容，脚本内再比一次哈希（CAS），临时文件 + `ln`（新建不覆盖）或 `mv -f`（替换，沿用原权限位）。删除同样在脚本内比哈希再 `rm`。
+- 接口：`WorkspaceBackend` 协议不变；`DockerBackend` 额外提供三个可选能力，通用代码按「有没有这个方法」分支，`LocalBackend` 路径一行不动：`restore_bytes(path, content|None, mode=None)`（撤销、补丁回滚、`post_edit_check` 回滚用的无条件写回）、`list_files(path)`（`grep` / `glob` 的文件清单，容器里 `find`）、`read_many(paths, limit)`（批量读，`grep` / `search_files` 用）。另加 `file_mode(path)` 供补丁回滚恢复权限位。
+- 模块边界：`backends/docker.py` 管容器生命周期、预检、挂载、属主、脚本；`backends/docker_fs.sh` 是那段脚本（随包分发，Python 读进来当 `sh -c` 的参数）；`testing/docker.py` 是假 Docker（解释 `docker run/exec/rm/ps/...`，把 exec 的脚本在本机临时目录里真实跑一遍，离线测试和 Terminal-Bench `--fixture` 共用）；`main.py` 只做参数、组装、清理、退出码。
+- 影响面：`backends/docker.py`（重写）、`tools/search.py`、`tools/edit_policy.py`、`tools/patch.py`、`tools/workspace.py`（构造时校验）、`session/checkpoints.py`、`main.py`、`output.py`、`chat/text.py`（`/status`）、Terminal-Bench 脚本；已有测试里 `test_docker_backend.py` 的 `FakeRunner` 和 `test_apply_patch_session.py` 的 Docker 删除用例绑定了旧的内部命令（`cat "$1"`、`docker cp`、`rm --`），改成用假 Docker，断言不减。旧会话：只有库里用过 DockerBackend 的会话受 `contract()` 变化影响（版本 1→2，续跑提示接受配置变化）；CLI 从没有过 docker 会话，local 会话的契约、元数据、输出全不变。
+- 代价：每个文件操作一次 `docker exec`（Linux 上约几十毫秒）。用批量读、一次 exec 取完整条 AGENTS.md 链来压次数。
+
+**方案 B：文件读写在宿主，只有命令进容器。** `DockerBackend` 继承 `LocalBackend`，除 `execute` 外全部复用宿主实现（原子写、文件锁、检查点、撤销、`post_edit_check`、ripgrep 都不用改），容器只跑 `run_command` / `verify_command` / `git_*`。
+
+- 数据形状和接口：协议不变，不需要可选能力；`search.py` / `checkpoints.py` / `edit_policy.py` 只要把 `isinstance(LocalBackend)` 放宽成「宿主文件系统后端」。
+- 影响面小得多，也快（没有 exec 往返），属主天然是宿主用户。
+- 不选的理由：一、目标写的是「命令执行和文件读写都在容器里跑」。二、更要紧的是安全边界：容器里的命令能在挂载目录里建符号链接，宿主侧的「先 `resolve()` 校验、再 `open()` / `mkstemp(dir=parent)` / `os.replace`」之间有竞态，后台进程把父目录换成指向宿主任意目录的链接，就能让 harness 以宿主用户身份把模型给的内容写到工作区外（例如 `~/.bashrc`），或把宿主文件读进上下文。要堵住得把宿主 I/O 全改成 `openat` + `O_NOFOLLOW` 逐级打开，等于重写 `editing.py`，还会碰 LocalBackend 的逐字一致。方案 A 里链接只在容器的挂载命名空间里解析，竞态最多碰到容器自己的文件，到不了宿主。
+
+**两套方案共用的决定。**
+
+- 参数：`--backend local|docker`（默认 `local`）、`--docker-image`（默认 `python:3.12-slim`，沿用 `DockerBackend` 原默认值，Terminal-Bench 题多是 Python）、`--docker-network none|bridge`（默认 `none`，开网必须显式写 `bridge`）。两个 docker 参数配 `local` 报错退出码 2；`--backend docker` 只用于一次性任务、`--resume` 和连续对话，配其它运维操作也是 2。资源上限不开参数：CPU 1、内存 `512m`、进程数 128。
+- 生命周期：一个 CLI 进程一个容器。一次性任务、一次 `--resume`、一整段连续对话（所有轮次加它派出的全部 Worker）各起一个，结束时删。Worker 和主 Agent 共用同一个工作区挂载，所以共用容器；它们的命令各自按进程组清理（下面）。每次 `--resume` 是新容器：工作区文件在宿主，不丢；容器里工作区以外的改动（装的包、`/tmp`）不保留。镜像用 `--pull never`，不偷偷拉镜像。
+- 容器名 `baseagent-<工作区哈希12>-<pid>-<随机6>`，带标签 `baseagent.workspace` / `baseagent.pid` / `baseagent.host`。两个会话不撞名；启动时按标签找同一工作区、同一主机上 pid 已不在的旧容器，修属主后删掉并在 stderr 说一句；pid 还活着的不碰。
+- 挂载：`.baseagent/` 用一个空 tmpfs 盖住（容器里看得到空目录，写进去的东西不落宿主），会话库、检查点、文件锁、溢出文件都在宿主侧；`--db` 落在工作区里但不在 `.baseagent/` 下时拒绝启动（退出码 2），因为那样容器能改会话库。`.git` 只读挂载：`git status` / `git diff` 照常能用；容器不能改 hooks 和 config（否则宿主上下一次 `git` 就会执行容器写进去的代码），也不能 commit。`.git` 是文件（worktree）或不存在时不挂，容器里的 git 读不到仓库，`git_status` 给出可读错误，写进已知限制。
+- 属主：Linux 宿主上，文件工具的 exec 带 `-u 宿主uid:gid`，新文件直接是宿主用户的；命令仍以镜像默认用户（通常 root）跑，以便装包；每条命令结束后和删容器前，各跑一次 `find … ! -user uid -exec chown -h uid:gid`（跳过 `.git` / `.baseagent`）。macOS / Windows 的 Docker Desktop 本来就映射成宿主用户，不做这一步。进程被 `kill -9` 时由下次启动的旧容器清理补做。
+- 命令：`docker exec -e BASEAGENT_EXEC=<id>`，宿主侧复用 `run_process` 做超时、取消和输出上限；结束后（含超时、取消）再 exec 一次，按这个环境变量杀掉这条命令留下的所有进程，和 LocalBackend「命令结束杀整个进程组」对齐，也不会误杀并行 Worker 的命令。
+- 撤销：`rewind` 对有 `restore_bytes` 的后端走后端写回（锁、两次比哈希、冲突、`--force` 全部复用原逻辑）；`--rewind` / `--checkpoints` 这两个 CLI 运维操作不起容器，照旧在宿主上按文件快照写回（容器已经删了，没有并发的容器进程），所以不需要 Docker 也能撤销 docker 会话。
+- Docker 不可用：构造后端时先预检（`docker` 命令不存在 / daemon 连不上 / 镜像不在本地），在建模型之前失败，退出码 **3**（新值，不和 0/1/2/130 重叠），json 下 `status: "error"`、`exit_code: 3`。运行中容器没了：exec 报「容器已不在运行」的 `DockerError`，下一次模型调用前的工作区检查就让这一轮以 `failed` 落盘，`--resume` 换新容器继续。
+- 可见性：json 只在 docker 时多一个 `backend` 对象（`kind`、`image`、`network`、`container`、资源上限），local 不带，不改基线；jsonl 在 `output_started` 之后多一行 `backend_ready`；文本模式 docker 时 stderr 一行 `Backend: docker …`；`/status` docker 时多一行 `Backend: …`。会话元数据记 `execution_backend`（只在 docker 时），用来在续跑前给出「这个会话是用 --backend docker 起的」这种清楚的报错。
 
 ### 完成情况（实现者填写）
 
