@@ -149,7 +149,84 @@
 
 ### 完成情况（实现者填写）
 
-做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：哪些 AC 是「回归测试证明已修」；读代码时发现与本段描述不符的地方；你自己拍板的点和理由，至少包括：「在对话里继续」的交互方式、时间戳约定、信任记录存哪和怎么撤销、非交互下 MCP 的默认行为和退出码、`AGENTS.md` 的上限 / 开关 / 是否兼容 `CLAUDE.md`。
+全部在 `plan/fixes-and-gaps` 上，提交见 `git log 58941ab..`。费用 0，没有调用任何付费 API。
+
+| AC | 状态 | 证据（测试 / 提交） | 备注 |
+| --- | --- | --- | --- |
+| 1 寒暄不调工具 | 完成（回归） | `tests/test_measured_issues.py::GreetingTests`（一次性、单 Agent 对话、状态工具仍可用并被调用）、`MainAgentGreetingTests`（`route("hi")` 走寒暄路径；`hi` 不派 Worker；Worker 提示含约束且有状态工具）；`0f7f113` | 主 Agent 没有 `get_task_state` / `recall_memory` / `read_history` 这三个工具（只有 `delegate_task` / `message_worker`），它的提示里是「寒暄直接回答，不派 Worker」；带三工具约束的是 Worker 的提示 |
+| 2 列表预览给剩余条数 | 完成 | CLI：`tests/test_cli_chat.py` 已有两条；TUI / Web：`test_measured_issues.py::ListPreviewTests`（`tool_result` 事件、TUI 转录、Web SSE）；`0f7f113` | TUI / Web 原来没复用 CLI 的渲染（只有 300 字符的 `repr`），现在 `_list_preview` 移到 `chat/text.py`，三端同一段文字；TUI 的计数行不截断 |
+| 3 上限说清楚，并能在对话里继续 | 完成 | `tests/test_chat_continue.py`（CLI、TUI 会话、Web 端点、主 Agent 共享预算、计数不清零、工具不重做、普通消息不压低已放大的上限、用法错误）；`StopExplanationTests`（所有未完成状态都给已用/上限和继续办法，全仓库无 `no error detail was recorded`）；`test_cli_chat.py` 默认值测试；`64b8678` | 新增 `/continue [N]`；一次性 `--resume` 文案不变（`test_one_shot_resume_usage_is_unchanged`） |
+| 4 超时和传输错误自动重试 | 完成（回归 + 修一处） | `test_measured_issues.py::RetryDefaultsTests`、`WorkerRetryTests`、`RetryPolicyTests`（408/409/429/5xx、连接失败、鉴权不重试、假时钟等待序列 `[0.25, 0.5]` 与 `[3, 6, 8, 8]`、`Retry-After`、截止时间、模型重试不重放已执行的工具、组合里 `tool_retries=0`）；`0f7f113` | 读代码发现 409 被适配器归成不可重试的 `BadRequestError`，重试策略名单里的 409 实际不生效；已改为 `TransientError`。README 写明每次重试按一次付费请求计、计入 `--max-model-calls` |
+| 5 时间戳带时区 | 完成 | `tests/test_timestamps.py`：`--list-sessions`（含旧库里的 SQLite 文本）、`--inspect-session`、导出、`--task-tree`、`--checkpoints`、`/status`、`/checkpoints` 文本、jsonl `timestamp`、TUI 状态事件、Web 的 `/status` / `/checkpoints`；`c1fad97` | 约定见下「拍板」 |
+| 6 文档旧表述 | 完成 | `361783b`、`df75d60` | 改动清单见下 |
+| 7 对照表 | 完成 | `361783b` | 新增「项目规则文件」「在对话里继续」两行，MCP 行补首次信任；「Docker 沙箱」行未动 |
+| 8 Watchdog 认识 `apply_patch` | 完成 | `tests/test_patch_awareness.py::WatchdogTests`（只用 `apply_patch` 的任务不停滞、同样节奏只读就停滞、失败的 `apply_patch` 不算写入）；`df75d60` | |
+| 9 HK 给 `apply_patch` 报影响 | 完成 | `test_patch_awareness.py::HarnessKnightTests`（逐文件、`delete` 报 `delete`、上限 50 条 / 1024 字符、经真实 `run_agent` 发出的事件）；`df75d60` | 只读查了公开的 HarnessKnight 仓库：`impacts.operation` 是自由字符串，污点规则把 `delete` 与 `write` 同等看待，每个事件最多 128 条影响、请求体 1 MiB；所以 `delete` 直接按 `delete` 上报。HK 仓库没改 |
+| 10 写工具名单盘点 | 完成 | 见下表 | |
+| 11 首次询问 | 完成 | `tests/test_mcp_trust.py::InteractiveTests`（列名字 / 命令 / 参数 / env 键名不显示值；拒绝不起进程、会话照常、提示以后怎么信任；TUI / Web 在前端启动前问）；`64a037f` | |
+| 12 持久化、变更失效、仓库自带无效、可撤销 | 完成 | `test_trusted_file_is_not_asked_again`、`test_any_byte_change_including_an_env_value_asks_again`、`test_repository_cannot_bring_its_own_trust_record`、`CommandTests`；`64a037f` | |
+| 13 非交互安全默认 | 完成 | `NonInteractiveTests`（一次性、stdin 非终端的对话、json / jsonl 的 `mcp` 字段、`--mcp-strict` 退出码 2、交互拒绝 + strict 也是 2）；`64a037f` | |
+| 14 `--mcp-config` 与无 `.mcp.json` 不变 | 完成 | `UnchangedTests`；已有 `tests/test_mcp_cli.py` 全部通过（只给用 `.mcp.json` 跑的测试先登记信任） | |
+| 15 测试用离线假服务器 | 完成 | `tests/test_mcp_trust.py`（`--pid-file` 证明有没有起进程）、`tests/test_demo_mcp.py` | |
+| 16 每次会话读入 `AGENTS.md` | 完成 | `tests/test_project_rules.py::LoadingTests`、`MainAgentRulesTests`（一次性、单 Agent 对话、主 Agent、Worker；`CLAUDE.md` 不读；两者都在只读 `AGENTS.md`；目录链不变）；`c49f276` | |
+| 17 截断与提示，摘要语义不变 | 完成 | `TruncationTests`（多字节字符边界、合计上限、截断部分之后被改仍 CAS 冲突、运行中漂移检测到）；`tests/test_coding.py::test_guidance_limits_and_protected_staging` 按新语义改写 | 该已有测试原来断言「超限报错」，正是本条要改的行为，改成断言截断字段、全文件哈希和提示 |
+| 18 可见性 | 完成 | `VisibilityTests`（`/status`、json 字段、jsonl 结果行无正文、无文件时无字段） | |
+| 19 开关 | 完成 | `SwitchTests`（任何地方看不到正文、摘要与 CAS 照旧、`--config` 的 `run.project_rules`） | |
+| 20 无文件逐字一致、不能放宽边界 | 完成 | `tests/test_output_format.py`（`one_shot_text_master.json` 逐字基线）通过；`test_without_the_file_json_has_no_field`、`test_without_the_file_the_switch_changes_nothing_the_model_sees`；`BoundaryTests` | |
+| 21 测试 | 完成 | 全量与 3 遍稳定性结果见下 | |
+| 22 文档与离线演示 | 完成 | `docs/mcp.md`「首次信任」；README「项目规则文件」「在对话里继续」「时间戳约定」；`scripts/demo_project_setup.py` + `tests/test_demo_project_setup.py` + `docs/demo.md` 新段；`361783b` | |
+
+**AC 10：仓库里按工具名判断写入的地方**
+
+| 位置 | 作用 | 认识 `apply_patch` | 说明 |
+| --- | --- | --- | --- |
+| `agent/router.py` `WRITE_TOOLS` | 写类工具常量 | 是（已有） | |
+| `agent/guards.py` `successful_write_since` | 判断这一轮写过没有（重复调用保护） | 是（已有） | |
+| `agent/watchdog.py` `WRITE_TOOLS` | 停滞判断里的「有写入」 | 是（本支补） | AC 8 |
+| `middleware/harnessknight.py` `infer_impacts` | HK 影响上报 | 是（本支补） | AC 9 |
+| `middleware/execution_guidance.py` | 没有写权限时提示里列「Disabled tools」 | 是（已有，注册了才列） | |
+| `tools/edit_policy.py` `EditToolPolicy` / `bind_edit_policy` | 路径规则、`max_changed_lines` 审批 | 是（已有） | |
+| `ui/launch.py` | Chainlit 启动器生成的审批策略 | 是（已有） | |
+| `capabilities/assembly.py` `BUILTIN_PACKAGES` | coding 工具包清单 | 是（已有） | |
+| `session/checkpoints.py` | 检查点只记 `_write_file` / `_delete_file` | 是（已有） | 按入口而不是按名字 |
+| `agent/workers.py` / `agent/router.py` 只读 Worker 的工具筛选 | 只读 Worker 只拿 `retry_safe` 的工具 | 是（按标志不按名字） | `apply_patch` 不是 `retry_safe`，自动算写 |
+| `output.py` `patches`、`chat/middleware.py`、`chat/session.py`、`chat/text.py`、`main.py` | `apply_patch` 专用的 diff 展示 | 是 | 只针对 `apply_patch` |
+| `applications/project_assistant/evaluation/coding.py` | 受控编码场景的固定期望调用 | 否，不补 | 绑定已录制的 cassette 和固定期望序列，录像里没有 `apply_patch`；加了会改变场景契约 |
+| `scripts/attribute_failures.py` | 对 2026-11-02 M1 录像做失败归因 | 否，不补 | 只分析早于 `apply_patch` 的固定录像，且按 `args.path` 判断，`apply_patch` 没有这个参数；补了也不改变任何报告 |
+| `evaluation.py`、`scripts/demo_*.py` | 脚本化场景里点名调用某个工具 | 不适用 | 它们是调用，不是写入判断 |
+
+**AC 6：改过的文档位置**（`rg -n "write_file|edit_file|delete_file" README.md docs/ ARCHITECTURE.md DEVELOPMENT_HANDOFF.md` 全量盘点）
+
+- README：「三个前端都有检查点命令」那段；`Coding workflow`（`get_instructions` 的上限改为截断；补 `apply_patch` 一句，并写明 `delete_file` 是后端入口不是模型工具）；`Tool policy and durable approval` 的示例策略加 `"apply_patch": "ask"` 并提醒按名字精确匹配要列全三个写工具；`Edit policy` 段；`Workspace backend 接口` 列表补 `delete_file`（标明后端入口）。
+- `docs/router_worker.md`：主 Agent 没有的工具、Worker 检查点两处。
+- `docs/mcp.md`：检查点覆盖范围。
+- `docs/checkpoints.md`：「钩子只有一个」那段（`apply_patch` 的 `delete` 走对称的 `_delete_file`）。
+- `docs/patch.md`：「Watchdog 和 HarnessKnight 暂不识别」改成现在的行为。`docs/watchdog.md`：stall 规则写明三个写工具。
+- 没改：`docs/demo.md` 里点名 `write_file` 的几处是具体演示的叙述；`docs/patch.md`「撤销只支持 LocalBackend」属于 `plan/docker-backend`。
+
+**回归测试证明已修（cdcf54a 已经修过，本支只补测试和缺的入口）：** AC 1；AC 2 的 CLI 部分（TUI / Web 是本支补的）；AC 3 的默认值与文案部分（「在对话里继续」是本支新做的）；AC 4 除 409 以外；AC 5 的 `--list-sessions` / 导出 `updated_at` / `--checkpoints`。
+
+**读代码时发现与「现状」不符或值得一提的地方**
+
+- HTTP 409：重试名单里有 409，但 OpenAI 兼容和 Anthropic 适配器都把 409 映射成不可重试的 `BadRequestError`，所以 409 从没重试过。已改。
+- 对话里续跑一律把上限传成 16：放大过的上限（例如以后的 `/continue`）在下一次续跑时会被压回 16，导致立刻又停。已改为对话续跑不降低已存上限。
+- TUI / Web 的工具结果只有 300 字符的 `repr`，没有条数（「现状」没提到）。
+- `/status` 原来不显示任何时间，所以 AC 5 里的「/status」是加了一行 `Turn started: … UTC`；TUI / Web 原来只显示时长（`12s`），不显示绝对时间。
+- 主 Agent 原本就拿不到 `get_task_state` / `recall_memory` / `read_history`。
+- `AGENTS.md` 的 20 KB 单文件上限在写入侧（`tools/editing.py`，agent 自己改 `AGENTS.md` 时）也有一份，仍然报 `LIMIT_EXCEEDED`；本支没动它：它拦的是 agent 把规则文件写得超长，不影响读取和整轮执行。`DockerBackend.get_instructions` 有自己的一份读取实现（仍是超限报错），属于 `plan/docker-backend` 的范围，没改。
+- 本机（macOS）基线：除两个预期失败外，还有 5 个失败来自 `/var` → `/private/var` 软链（路径比较），把 `TMPDIR` 设为真实路径后通过；另有 2 个回放录像不一致（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py` 里 `fake_client` / `timing_normalize` 两条），在本支任何改动之前就失败（回放时 `recent_checks` 变空），与本支无关，没有修。
+- `tests/test_chat_events.py::test_overflowed_cursor_returns_a_resync_snapshot` 偶发失败：测试在 `busy` 变 False 后立刻读事件，而轮次线程在那之后才发最后一条 `status` 事件。本支改动前同样存在（单独连跑稳定通过），没有改。
+
+**我拍板的点和理由**
+
+- **在对话里继续：** 对话命令 `/continue [N]`，三个前端同一个入口（`ChatSession.continue_command`）。默认给这一轮再多一份每轮额度：步数和模型调用各 +16（或 `--max-steps`），工具调用 +32（或 `--max-tool-calls`）；`/continue N` 给 N 步和 N 次模型调用。只放大不缩小，计数不清零，内核照常从账本续跑。撞上限的提示直接写「type /continue」。普通消息仍按原上限续跑（不偷偷放大），但也不再把放大过的上限压回去。等待审批或有结果不明的工具调用时拒绝 `/continue` 并说明原因。没做成 y/N 弹窗：Web 没有阻塞式输入，命令在三端行为一致。
+- **时间戳约定：** 全部 UTC 且写明。JSON 字符串用 ISO 8601 带 `+00:00`；文本写 `YYYY-MM-DD HH:MM:SS UTC`；数字字段是 Unix 纪元秒（定义上是 UTC），人会读的 JSON 里旁边补 `*_utc`。jsonl 的 `timestamp` 保持 Unix 秒、不加新键：`docs/output.md` 和已有测试规定信封只有三个键，`schema_version` 1 不能改形状。没选「转本地时间」：输出常被复制到别的机器或日志里，本地时间加偏移在跨机器比对时更容易出错；存储格式不变，旧值按 UTC 解释正确。
+- **信任记录存哪、怎么撤销：** `$BASEAGENT_CONFIG_HOME/mcp-trust.json`，默认 `$XDG_CONFIG_HOME/baseagent/` 或 `~/.config/baseagent/`（Windows `%APPDATA%\baseagent\`）。键是 `.mcp.json` 真实路径，值是整个文件字节的 SHA-256；不存 `env` 的值。信任库路径落在工作区里时整个作废。撤销：`baseagent --root <目录> --mcp-untrust`；预先信任：`--mcp-trust`。拒绝不记录，下次还会问。
+- **非交互下 MCP 的默认行为和退出码：** 一次性任务、`--resume`、json / jsonl、stdin 非终端的对话都不问、不启动未信任的 `.mcp.json`；任务照常跑、没有 MCP 工具，退出码按任务结果；stderr 写原因和 `--mcp-trust` 命令；json / jsonl 结果多可选字段 `mcp: {"skipped": "untrusted", "config": ".mcp.json", "servers": [...]}`。`--mcp-strict` 下未信任（包括交互拒绝）退出码 2，不调模型。TUI / Web 在界面起来之前用启动它的终端问。
+- **`AGENTS.md`：** 上限沿用原来的数字：给模型看的正文每个文件 20000 字节、目录链合计 40000 字节，超出截断（退到完整 UTF-8 字符）并标 `truncated` / `size_bytes` / `shown_bytes` 和一句提示；摘要按整个文件算，CAS 和漂移检测不变。开关 `--no-project-rules` / `run.project_rules: false`，关闭后模型看不到正文，但摘要照算照比（不比打开时更宽松）；关闭会记进运行时配置（只在关闭时记，默认配置与以前一致）。不兼容 `CLAUDE.md`：只有 `CLAUDE.md` 的仓库若开始读它，提示词和写入摘要都会变，旧会话续跑会报规则漂移；`CLAUDE.md` 也常写另一个工具专用的指令；`/status` 会提示它存在但没读。主 Agent 也拿到规则（RepositoryMiddleware 本来就在主 Agent 的中间件里，规则对它描述任务有用）。
+- **`/status` 的规则行：** 即使没有 `AGENTS.md` 也显示 `Project rules: none (no AGENTS.md in the workspace root)`，让「没加载」一眼可见；这是对话里的状态命令，一次性任务的文本输出和 json 在没有文件时与 master 逐字一致。
+
+**AC 21 测试结果（本机 macOS，`TMPDIR` 设为真实路径，无 `SAND_*`，无 `.baseagent/live_answers_checkpoint.json`）：** 全量 `1232 passed, 2 skipped, 5 failed`。5 个失败：两个预期内的（`test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines` 的 corpus_version、`test_record_coding_scenario.py::test_all_real_recordings_replay_offline`），另外三个是上面说的本机基线就有的回放不一致（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py::test_three_runs_and_replay_with_fake_client`、`test_record_coding_scenario.py::test_workspace_report_and_timing_normalize_across_recording_and_replay`），本支改动前同样失败。`tests/test_apply_patch*.py` + `tests/test_cli_chat.py` 连跑 3 遍：每遍 `71 passed`；本支新增的 7 个测试文件连跑 3 遍：每遍 `81 passed`。已有测试只改了两处：`tests/test_coding.py` 的超限断言按 AC 17 改写（见上），`tests/test_mcp_cli.py` 的 `configure()` 在写 `.mcp.json` 后先登记信任；新增 `tests/conftest.py` 把信任库指到临时目录，测试不碰真实用户配置。
 
 ## 库与 CLI
 
