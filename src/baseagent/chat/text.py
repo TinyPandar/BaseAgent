@@ -275,6 +275,7 @@ def status_lines(store, state, session_id, workspace, workers=None):
     sid = state.session_id if state is not None else session_id
     if not sid:
         out.append(f"Session: not started\nWorkspace: {workspace.root}")
+        out.extend(rules_lines(workspace))
         return out
     try:
         current = store.load(sid)
@@ -287,6 +288,7 @@ def status_lines(store, state, session_id, workspace, workers=None):
     out.append(f"Session: {current.session_id}")
     out.append(f"Status: {current.status.value}")
     out.append(f"Workspace: {current.workspace_root or workspace.root}")
+    out.extend(rules_lines(workspace))
     out.append(f"Turn: {current.turn_id or '(none)'}")
     started = text_utc(current.turn_started_at)
     if started:
@@ -310,6 +312,17 @@ def status_lines(store, state, session_id, workspace, workers=None):
     elif is_main_agent_session(current):
         out.append("Worker: none in this turn")
     return out
+
+
+def rules_lines(workspace):
+    """The project rules line of /status: loaded or not, which file, size, truncated (never the text)."""
+    if not hasattr(workspace, "get_instructions"):
+        return []
+    from baseagent.tools.instructions import describe_rules, rules_summary
+    try:
+        return [describe_rules(rules_summary(workspace, enabled=getattr(workspace, "project_rules", True)))]
+    except OSError as exc:
+        return [f"Project rules: could not be checked ({type(exc).__name__})"]
 
 
 def worker_lines(workers):

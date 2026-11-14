@@ -131,9 +131,15 @@ class CodingTests(unittest.TestCase):
         self.assertTrue((self.root / "x.txt").read_bytes().startswith(b"first"))
 
     def test_guidance_limits_and_protected_staging(self):
+        # Oversized guidance is cut for the model instead of failing the turn (README 施工段 AC 17);
+        # the digest still covers the whole file.
         (self.root / "AGENTS.md").write_text("x" * 20001, encoding="utf-8")
-        with self.assertRaises(ToolFailure):
-            self.workspace.get_instructions()
+        guidance = self.workspace.get_instructions()
+        (entry,) = guidance["instructions"]
+        self.assertEqual((entry["truncated"], entry["size_bytes"], entry["shown_bytes"]), (True, 20001, 20000))
+        self.assertEqual(len(entry["content"]), 20000)
+        self.assertEqual(entry["sha256"], sha256(b"x" * 20001).hexdigest())
+        self.assertIn("truncated", guidance["note"])
         with self.assertRaises(ToolFailure):
             self.workspace.read_file(".baseagent-edit-secret")
 

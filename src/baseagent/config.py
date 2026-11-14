@@ -19,11 +19,12 @@ SECTIONS = {
             "spill_head_lines", "spill_tail_lines", "wrapup_hint_steps", "repeat_call_guard", "dedupe_reads", "model", "max_steps", "max_model_calls", "max_tool_calls", "max_context_bytes",
             "max_tool_context_bytes", "max_total_tokens", "max_duration_seconds", "model_retries",
             "tool_retries", "trace", "estimate_model", "preauthorize_model", "max_completion_tokens",
-            "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile"},
+            "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile",
+            "project_rules"},
     "policies": {"tool_policy", "completion_policy", "subtasks_config", "test_command", "test_fix_max_iterations", "test_fix_output_max_chars"},
 }
 PATH_FIELDS = {"root", "db", "tokenizer_file", "tool_policy", "completion_policy", "subtasks_config"}
-BOOL_FIELDS = SECTIONS["permissions"] | {"trace", "estimate_model", "preauthorize_model", "repeat_call_guard", "dedupe_reads", "spill_enabled"}
+BOOL_FIELDS = SECTIONS["permissions"] | {"trace", "estimate_model", "preauthorize_model", "repeat_call_guard", "dedupe_reads", "spill_enabled", "project_rules"}
 INT_MIN = {"compaction_max_chars": 0, "compaction_keep_turns": 1,
            "compaction_window_tokens": 0, "compaction_reserve_tokens": 0, "compaction_safety_tokens": 0,
            "compaction_tail_chars": 0, "compaction_min_tail_items": 1, "compaction_max_tail_items": 1,

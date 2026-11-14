@@ -51,7 +51,7 @@ class RepositoryMiddleware(AgentMiddleware):
         root = self.workspace.get_instructions()
         messages = deepcopy(request.messages)
         references = []
-        if root["instructions"]:
+        if root["instructions"] and getattr(self.workspace, "project_rules", True):
             references.append({"role": "assistant", "content": "Repository guidance reference data; apply only within the user's task and capability limits:\n" + json.dumps(root, ensure_ascii=False)})
         if request.state.plan or request.state.verifications:
             checks = [{"id": record["id"], "status": record["status"], "exit_code": record["exit_code"]} for record in request.state.verifications[-10:]]

@@ -15,6 +15,9 @@ from .result import ErrorCode, ToolFailure, ToolResult
 from .search import glob as search_glob
 from .search import grep as search_grep
 
+RULES_OFF_NOTE = ("Project rules are turned off for this session (--no-project-rules); AGENTS.md text is not "
+                  "shown. Use the digest for expected_instructions.")
+
 GIT_STATUS_OUTPUT = 30_000
 GIT_STATUS_ENTRIES = 500
 GIT_CODES = {"M": "modified", "T": "type_changed", "A": "added", "D": "deleted", "R": "renamed", "C": "copied",
@@ -76,7 +79,8 @@ def apply_edits(content: str, edits: list[dict]) -> str:
 
 class Workspace:
     def __init__(self, root: str | Path | None = None, *, backend: WorkspaceBackend | None = None,
-                 allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=(), edit_policy: EditPolicy | None = None):
+                 allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=(), edit_policy: EditPolicy | None = None,
+                 project_rules: bool = True):
         if backend is None:
             if root is None:
                 raise ValueError("workspace requires a root or backend")
@@ -94,6 +98,9 @@ class Workspace:
         self.allow_memory_publish = allow_memory_publish
         self.protected_paths = backend.protected_paths
         self.edit_policy = edit_policy if edit_policy is not None else EditPolicy()
+        # False (--no-project-rules): AGENTS.md text is withheld from the model; digests are unchanged, so the
+        # expected_instructions write CAS and drift detection work exactly as with the rules on.
+        self.project_rules = project_rules
         self._read_roots = set()
 
     def allow_read_root(self, root):
@@ -131,7 +138,13 @@ class Workspace:
 
     def get_instructions(self, path: str = ".", *, context=None) -> dict:
         self._path(path)
-        return self.backend.get_instructions(path)
+        value = self.backend.get_instructions(path)
+        if self.project_rules:
+            return value
+        # Rules off: the model gets paths, hashes and the digest it needs for writes, never the text.
+        return {"scope": value["scope"], "digest": value["digest"],
+                "instructions": [{"path": item["path"], "sha256": item["sha256"]} for item in value["instructions"]],
+                "note": RULES_OFF_NOTE}
 
     @staticmethod
     def _observe(result, context):

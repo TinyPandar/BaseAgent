@@ -65,12 +65,10 @@ class ChatSession:
 
     def __init__(self, *, run_turn, store, workspace, session_id=None, workers=None, main_agent=False,
                  events=None, printer=None, status_events=True, continue_steps=CONTINUE_STEPS,
-                 continue_tool_calls=CONTINUE_TOOL_CALLS, project_rules=None):
+                 continue_tool_calls=CONTINUE_TOOL_CALLS):
         self.run_turn = run_turn
         # /continue: how much more the current turn gets by default (the chat's per-turn allowance).
         self.continue_steps, self.continue_tool_calls = continue_steps, continue_tool_calls
-        # Display-only summary of the project rules file (AGENTS.md) for /status; None = not reported.
-        self.project_rules = project_rules
         self.store, self.workspace, self.workers = store, workspace, workers
         self.main_agent = bool(main_agent or workers is not None)
         self.requested_session_id = session_id

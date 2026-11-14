@@ -259,6 +259,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
+    parser.add_argument("--project-rules", action=argparse.BooleanOptionalAction, default=None, help="Show the workspace AGENTS.md project rules to the model (default on; --no-project-rules hides the text, write digests still apply); see README 项目规则文件")
     parser.add_argument("--mcp-config", type=Path, help="MCP servers JSON (mcpServers: command/args/env per server, stdio only); default: .mcp.json in the workspace root; without either, MCP is off; see docs/mcp.md")
     parser.add_argument("--mcp-strict", action="store_true", help="Exit with code 2 when a configured MCP server or tool cannot be used (default: skip it with a warning on stderr)")
     parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=False, help="Show model steps and tool names on stderr")
@@ -610,7 +611,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             return 0
         root = args.root or (Path(existing.workspace_root) if existing and existing.workspace_root else Path.cwd())
         protected = [store.path, Path(str(store.path) + "-wal"), Path(str(store.path) + "-shm"), Path(str(store.path) + "-journal"), store.lock_dir]
-        workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected)
+        project_rules = args.project_rules is not False
+        workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected,
+                              project_rules=project_rules)
+        from baseagent.tools.instructions import describe_rules, rules_summary
+        rules = rules_summary(workspace, enabled=project_rules)
+        if rules is not None and rules.get("truncated") and project_rules:
+            print(describe_rules(rules), file=sys.stderr)
         if args.mode == "full" and isinstance(workspace.backend, LocalBackend):
             print(FULL_MODE_WARNING, file=sys.stderr)
         policy = ToolPolicy()
@@ -700,6 +707,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
             config["extra_body"] = model_configuration(args.model).get("extra_body")
         config["retries"] = {"model": args.model_retries, "tool": args.tool_retries, "delay": 0.25}
+        if not project_rules:
+            # Recorded only when off, so the default runtime contract (and existing sessions) stay unchanged.
+            config["project_rules"] = False
         if args.request_bound_profile:
             config["request_bound"] = request_bound_profile(args.request_bound_profile, config["model"], config["endpoint"], args.max_completion_tokens).contract()
         if estimator:
@@ -907,8 +917,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 print(f"Approve with --approve-tool {request.get('call_id')} --approval-digest "
                       f"{request.get('request_digest')} --session {state.session_id}", file=sys.stderr)
     if machine.enabled:
-        machine.finish(machine_result(state, model_name=config["model"], store=store,
-                                      include_patches=machine.format == "json"))
+        value = machine_result(state, model_name=config["model"], store=store, include_patches=machine.format == "json")
+        rules = rules_summary(workspace, enabled=project_rules)
+        if rules is not None and rules.get("path"):
+            # Optional, metadata only (never the rules text); absent without a root AGENTS.md.
+            value["project_rules"] = rules
+        machine.finish(value)
     if state.status != "completed":
         return 130 if state.status == "interrupted" else 1
     return 0
