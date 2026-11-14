@@ -851,6 +851,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                         raise McpStartupError(f"{mcp.source} is not trusted ({decision.reason}); --mcp-strict stops here")
                     mcp = None
             if mcp is not None:
+                if backend is not None:
+                    print("Note: MCP servers run on the host, not inside the Docker container.", file=sys.stderr)
                 mcp.start()
                 mcp.register(tools, allow_write=workspace.allow_write)
         base_layers = list(layers)

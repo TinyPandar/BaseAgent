@@ -322,6 +322,30 @@ class IsolationTests(DockerCliCase):
         closing = [argv for argv in self.fake.calls if FS_SCRIPT in argv and argv[argv.index(FS_SCRIPT) + 3] == "after"][-1]
         self.assertEqual(closing[-3:], ["-", "1234", "5678"])
 
+    def test_batched_drift_check_matches_file_by_file_answers(self):
+        (self.root / "AGENTS.md").write_text("root rules\n")
+        (self.root / "sub" / "deeper").mkdir(parents=True)
+        (self.root / "sub" / "AGENTS.md").write_text("sub rules\n")
+        (self.root / "sub" / "deeper" / "x.py").write_text("x\n")
+        (self.root / "big.bin").write_bytes(b"0" * 200_001)
+        (self.root / "sub" / "deeper" / "AGENTS.md").write_text("y" * 20_001)
+        os.symlink("../a.txt", self.root / "sub" / "alias.txt")
+        backend = self.backend()
+        workspace = Workspace(backend=backend)
+        paths = ["a.txt", "sub/AGENTS.md", "sub/deeper/x.py", "gone.txt", "sub/new/n.txt", "big.bin", "sub",
+                 "sub/alias.txt", "../escape.txt", ".git/config"]
+        expected = {}
+        for path in paths:
+            try:
+                expected[path] = (workspace.file_hash(path), workspace.get_instructions(path)["digest"])
+            except (OSError, ToolFailure):
+                expected[path] = ("unavailable", "unavailable")
+        calls = len(self.fake.calls)
+        self.assertEqual(workspace.observe_many(paths), expected)
+        self.assertEqual(len(self.fake.calls) - calls, 1)                 # one exec for the whole list
+        local = Workspace(self.root)
+        self.assertEqual(local.observe_many(paths), expected)             # and the same answers as local
+
     def test_two_sessions_on_one_workspace_do_not_collide(self):
         first, second = self.backend(), self.backend()
         self.assertNotEqual(first.name, second.name)
