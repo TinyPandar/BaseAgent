@@ -92,11 +92,13 @@ def patches(state, store):
 
 
 def result(state=None, *, session_id=None, error=None, status=None, code=None, model_name=None, store=None,
-           include_patches=False):
+           include_patches=False, backend=None):
     """The ``json`` object (and the ``data`` of the final ``jsonl`` line).
 
     ``include_patches`` (``json`` only): adds ``patches`` when this turn has successful ``apply_patch``
     calls. jsonl never carries diff text, so its result line leaves it out (docs/patch.md).
+    ``backend``: ``--backend docker`` facts (kind, image, network, container, limits); without it
+    there is no ``backend`` key, which means the local backend (output identical to before).
     """
     if state is not None:
         status = RunStatus(state.status).value if status is None else status
@@ -108,6 +110,8 @@ def result(state=None, *, session_id=None, error=None, status=None, code=None, m
     applied = patches(state, store) if include_patches else []
     if applied:
         value["patches"] = applied
+    if backend is not None:
+        value["backend"] = dict(backend)
     return value
 
 
@@ -134,6 +138,7 @@ class MachineOutput:
         self._lock = threading.Lock()
         self._started = False
         self._follower = None
+        self._backend = None
 
     @property
     def enabled(self):
@@ -151,6 +156,12 @@ class MachineOutput:
         self._started = True
         self._write({"type": "output_started", "timestamp": time.time(),
                      "data": {"schema_version": SCHEMA_VERSION, "format": "jsonl", "session_id": session_id}})
+        if self._backend is not None:
+            self._write({"type": "backend_ready", "timestamp": time.time(), "data": dict(self._backend)})
+
+    def backend(self, info):
+        """jsonl: a ``backend_ready`` line follows ``output_started`` (only for --backend docker)."""
+        self._backend = dict(info) if info else None
 
     def follow(self, store, session_id):
         """jsonl: stream this session's new metadata events while the turn runs."""

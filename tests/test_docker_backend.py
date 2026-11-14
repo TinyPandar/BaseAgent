@@ -7,42 +7,15 @@ from pathlib import Path
 
 from baseagent.backends import DockerBackend, WorkspaceBackend
 from baseagent.backends.docker import DockerError, explain_docker_failure
+from baseagent.testing.docker import FakeDocker
 from baseagent.tools.result import ErrorCode, ToolFailure
 
 
-class FakeRunner:
-    def __init__(self, *, fail=""):
-        self.fail = fail
-        self.calls = []
-        self.files = {}
+class FakeRunner(FakeDocker):
+    """The offline fake Docker CLI with the two outage modes these tests need."""
 
-    def run(self, argv, *, input_bytes=None, timeout=60):
-        self.calls.append(argv)
-        if self.fail == "daemon" and argv[1] == "run":
-            return 1, b"", b"Cannot connect to the Docker daemon"
-        if self.fail == "image" and argv[1] == "run":
-            return 1, b"", b"Unable to find image 'missing:latest' locally"
-        if argv[1] == "run":
-            return 0, b"container-id\n", b""
-        if argv[1] == "rm":
-            return 0, b"baseagent-test\n", b""
-        if argv[1] == "exec":
-            command = argv[5:]
-            if command[:2] == ["sh", "-c"] and command[2] == "cat \"$1\"":
-                relative = command[4]
-                if relative not in self.files:
-                    return 1, b"", b"cat: can't open: No such file"
-                return 0, self.files[relative], b""
-            if command == ["echo", "ok"]:
-                return 0, b"ok\n", b""
-            if command[:1] == ["wget"]:
-                return 1, b"", b"wget: bad address"
-            return 1, b"", b"unexpected"
-        if argv[1] == "cp":
-            relative = argv[3].split("/workspace/", 1)[1]
-            self.files[relative] = Path(argv[2]).read_bytes()
-            return 0, b"", b""
-        return 1, b"", b"unknown"
+    def __init__(self, *, fail=""):
+        super().__init__(daemon=fail != "daemon", images=() if fail == "image" else ("python:3.12-slim",))
 
 
 class DockerConfigTests(unittest.TestCase):
@@ -54,8 +27,9 @@ class DockerConfigTests(unittest.TestCase):
         self.assertEqual(backend.contract()["isolation"], "container")
         with self.assertRaises(ValueError):
             DockerBackend(root, network="host", runner=FakeRunner(), start=False)
-        self.assertEqual(explain_docker_failure(b"Cannot connect to the Docker daemon", image="python:3.12-slim"),
-                         "Docker is not running")
+        daemon = explain_docker_failure(b"Cannot connect to the Docker daemon", image="python:3.12-slim")
+        self.assertTrue(daemon.startswith("Docker daemon is not running"), daemon)
+        self.assertIn("Start Docker", daemon)                      # says how to fix it (AC 13)
         self.assertIn("missing", explain_docker_failure(b"Unable to find image 'missing:latest' locally", image="missing:latest"))
 
     def test_missing_daemon_and_image_are_explicit(self):

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from baseagent.agent.events import event
 from baseagent.agent.state import RunStatus
+from baseagent.backends.docker import DockerError
 from baseagent.tools.result import ErrorCode, ToolFailure
 
 MAX_BLOB_BYTES = 200_000          # same as the read/write limits of the file tools
@@ -376,9 +377,18 @@ def parse_target(value):
     raise ValueError("rewind target must be a positive turn number or 'last'")
 
 
+def _transactional(backend):
+    """A backend that can write exact bytes back in its own namespace (DockerBackend)."""
+    return callable(getattr(backend, "restore_bytes", None)) and callable(getattr(backend, "stat_files", None))
+
+
 def _restore_file(workspace, path, content):
     """Write back one file: temporary file + fsync + atomic replace (or delete a file the agent created)."""
+    from baseagent.backends import LocalBackend
     from baseagent.tools.editing import write_target
+    if not isinstance(workspace.backend, LocalBackend):
+        workspace.backend.restore_bytes(path, content)   # same steps, inside the backend (container)
+        return
     target = write_target(workspace, path)
     if content is None:
         target.unlink(missing_ok=True)
@@ -396,6 +406,14 @@ def _restore_file(workspace, path, content):
         os.replace(name, target)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def _current_hash(workspace, entry):
+    """Current SHA-256 of a checkpointed file, read where the backend keeps it."""
+    from baseagent.backends import LocalBackend
+    if isinstance(workspace.backend, LocalBackend):
+        return _hash_file(entry["file"])
+    return workspace.backend.stat_files([entry["path"]])[entry["path"]][0]
 
 
 def _hash_file(path):
@@ -423,8 +441,8 @@ def rewind(store, workspace, session_id, target="last", *, force=False):
     from .store import SessionBusy
     if type(force) is not bool:
         raise ValueError("force must be boolean")
-    if not isinstance(workspace.backend, LocalBackend):
-        raise CheckpointError("撤销只支持本机工作区（LocalBackend）。", reason="unsupported_backend")
+    if not isinstance(workspace.backend, LocalBackend) and not _transactional(workspace.backend):
+        raise CheckpointError("撤销需要能原样写回文件的后端（LocalBackend 或 DockerBackend）。", reason="unsupported_backend")
     lock = store.exclusive(session_id)
     try:
         lock.__enter__()
@@ -432,6 +450,8 @@ def rewind(store, workspace, session_id, target="last", *, force=False):
         raise CheckpointError("撤销被拒绝：这个会话的一轮正在运行，等它结束后再撤销。", reason="turn_running") from None
     try:
         return _rewind_locked(store, workspace, session_id, target, force)
+    except DockerError as exc:
+        raise CheckpointError(f"撤销被拒绝：{exc}。没有写回任何文件。", reason="backend_unavailable") from None
     finally:
         lock.__exit__(None, None, None)
 
@@ -475,7 +495,7 @@ def _rewind_locked(store, workspace, session_id, target, force):
             entry["file"] = write_target(workspace, path)   # workspace boundary, protected paths, no links
         except ToolFailure as exc:
             raise CheckpointError(f"撤销被拒绝：{path} 不能写回（{exc}）。没有写回任何文件。", reason="protected_path") from None
-        current = entry["current"] = _hash_file(entry["file"])
+        current = entry["current"] = _current_hash(workspace, entry)
         entry["action"] = "deleted" if entry["target"] == "missing" else "restored"
         if current == entry["target"]:
             entry["action"] = "unchanged"
@@ -503,13 +523,14 @@ def _rewind_locked(store, workspace, session_id, target, force):
             continue
         try:
             with file_lock(workspace, entry["file"]):
-                if _hash_file(entry["file"]) != entry["current"]:
+                if _current_hash(workspace, entry) != entry["current"]:
                     raise CheckpointError(f"撤销中止：{entry['path']} 在撤销过程中又被改动；已写回 {len(restored)} 个文件："
                                           + (", ".join(restored) or "无") + "。请检查后再撤销。",
                                           reason="changed_during_undo", conflicts=[entry["path"]], restored=restored)
                 _restore_file(workspace, entry["path"], contents.get(entry["path"]))
-        except ToolFailure as exc:
-            # Another harness writer holds the file, or the path became a link: stop here, say what was written.
+        except (ToolFailure, DockerError) as exc:
+            # Another harness writer holds the file, the path became a link, or the container is gone:
+            # stop here and say what was written.
             raise CheckpointError(f"撤销中止：{entry['path']} 不能写回（{exc}）；已写回 {len(restored)} 个文件："
                                   + (", ".join(restored) or "无") + "。", reason="write_blocked",
                                   conflicts=[entry["path"]], restored=restored) from None

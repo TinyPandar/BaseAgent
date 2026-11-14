@@ -223,8 +223,23 @@ def _explain(status, detail):
 
 
 
+def backend_line(workspace):
+    """``Backend: docker, image …`` for a container backend; None for the local backend (unchanged output)."""
+    summary = getattr(getattr(workspace, "backend", None), "summary", None)
+    return f"Backend: {summary()}" if callable(summary) else None
+
+
 def status_lines(store, state, session_id, workspace, workers=None):
     """The /status block, one string per printed line."""
+    out = _status_lines(store, state, session_id, workspace, workers)
+    line = backend_line(workspace)
+    if line is not None:
+        index = next((i + 1 for i, text in enumerate(out) if "Workspace: " in text), len(out))
+        out.insert(index, line)
+    return out
+
+
+def _status_lines(store, state, session_id, workspace, workers=None):
     out = []
     sid = state.session_id if state is not None else session_id
     if not sid:

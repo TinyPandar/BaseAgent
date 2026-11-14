@@ -755,7 +755,7 @@ class ChatSession:
                     "steps": usage.get("steps", 0), "max_steps": usage.get("max_steps"),
                     "tool_calls": usage.get("tool_calls", 0), "max_tool_calls": usage.get("max_tool_calls"),
                     "summary": preview((record.report or {}).get("summary") or "", 300)})
-        return {
+        value = {
             "session_id": self.session_id, "workspace": str(self.workspace.root),
             "mode": "main-agent" if self.main_agent else "single-agent", "busy": self._busy,
             "turn_status": str(state.status) if state is not None else None,
@@ -765,6 +765,10 @@ class ChatSession:
             "max_workers": self.workers.max_workers if self.workers is not None else 0,
             "pending_approvals": len(self.pending_approvals(previews=False)),
         }
+        describe = getattr(getattr(self.workspace, "backend", None), "describe", None)
+        if callable(describe):
+            value["backend"] = describe()       # --backend docker only; absent means local
+        return value
 
     def publish_status(self, *, force=False):
         """Status event; progress lines refresh it at most once per second."""

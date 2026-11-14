@@ -3,7 +3,9 @@
 Patterns use workspace-relative POSIX paths. A pattern without a slash matches
 basenames at any depth; ``**`` matches zero or more directory components.
 Deny rules take precedence. Checks are trusted host configuration, never shell
-strings or model arguments. Transactional checks currently require LocalBackend.
+strings or model arguments. Transactional checks need LocalBackend or a backend that can
+write bytes back in its own namespace (DockerBackend: ``restore_bytes``); other backends are
+refused when the Workspace is built.
 """
 
 from dataclasses import asdict, dataclass
@@ -128,6 +130,17 @@ def write_file(workspace, path, content, expected_sha256, expected_instructions,
 
     from baseagent.backends import LocalBackend
     from .editing import atomic_write
+    if not isinstance(workspace.backend, LocalBackend) and transactional(workspace.backend) \
+            and (policy.post_edit_check is not None or policy.max_changed_lines is not None):
+        # DockerBackend: the same check-then-roll-back, under the backend's write lock, inside the container.
+        def backend_check(original, mode):
+            _run_check(workspace, policy, context, lambda: workspace.backend.read_bytes(path) == content.encode("utf-8"),
+                       lambda: workspace.backend.restore_bytes(path, original, mode), "edit")
+
+        return workspace.backend.write_file(
+            path, content, expected_sha256, expected_instructions,
+            pre_edit_check=authorize if policy.max_changed_lines is not None else None,
+            post_edit_check=backend_check if policy.post_edit_check is not None else None)
     if not isinstance(workspace.backend, LocalBackend):
         if policy.post_edit_check is not None:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "post_edit_check requires a transactional local backend")
@@ -186,6 +199,13 @@ def delete_file(workspace, path, expected_sha256, expected_instructions, *, cont
     from baseagent.backends import LocalBackend
     if policy.post_edit_check is None:
         return workspace.backend.delete_file(path, expected_sha256, expected_instructions)
+    if not isinstance(workspace.backend, LocalBackend) and transactional(workspace.backend):
+        def backend_check(original, mode):
+            _run_check(workspace, policy, context, lambda: workspace.backend.file_hash(path) == "missing",
+                       lambda: workspace.backend.restore_bytes(path, original, mode), "delete")
+
+        return workspace.backend.delete_file(path, expected_sha256, expected_instructions,
+                                             post_delete_check=backend_check)
     if not isinstance(workspace.backend, LocalBackend):
         raise ToolFailure(ErrorCode.PERMISSION_DENIED, "post_edit_check requires a transactional local backend")
     from .editing import atomic_delete, restore_bytes
@@ -207,6 +227,30 @@ def delete_file(workspace, path, expected_sha256, expected_instructions, *, cont
         raise ToolFailure(ErrorCode.EXECUTION_FAILED, "post-edit check failed; delete rolled back: " + message)
 
     return atomic_delete(workspace.backend, path, expected_sha256, expected_instructions, post_delete_check=check)
+
+
+def transactional(backend):
+    """Backends that run edit checks and roll back in their own namespace (DockerBackend)."""
+    return callable(getattr(backend, "restore_bytes", None)) and callable(getattr(backend, "stat_files", None))
+
+
+def _run_check(workspace, policy, context, kept, roll_back, what):
+    """Run post_edit_check; on failure (or interruption) call ``roll_back`` and report, like LocalBackend."""
+    interrupted = None
+    try:
+        result = workspace._run_bounded_command(list(policy.post_edit_check), policy.post_edit_check_timeout, context=context)
+        if result.ok and kept():
+            return
+        output = result.data or {}
+        default = "check modified the edited file" if what == "edit" else "check recreated the deleted file"
+        message = (result.error.message if result.error else default) + "\n" + output.get("stdout", "") + output.get("stderr", "")
+    except BaseException as exc:
+        interrupted = exc if not isinstance(exc, Exception) else None
+        message = f"{type(exc).__name__}: {exc}"
+    roll_back()      # still under the write lock
+    if interrupted is not None:
+        raise interrupted
+    raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"post-edit check failed; {what} rolled back: " + message)
 
 
 class EditToolPolicy:

@@ -319,28 +319,20 @@ class BackendTests(SessionTestCase):
         self.assertFalse(backend.root.exists())
 
     def test_docker_backend_delete_checks_the_hash_then_removes(self):
-        from test_docker_backend import FakeRunner
         from baseagent.backends import DockerBackend
-        runner = FakeRunner()
-        runner.files["gone.txt"] = b"bye\n"
-        original = runner.run
-
-        def run(argv, **kwargs):
-            if argv[1] == "exec" and argv[5:7] == ["rm", "--"]:
-                runner.calls.append(argv)
-                runner.files.pop(argv[7], None)
-                return 0, b"", b""
-            return original(argv, **kwargs)
-
-        runner.run = run
-        backend = DockerBackend(self.root, runner=runner)
+        from baseagent.testing.docker import FakeDocker
+        runner = FakeDocker()
+        (self.root / "gone.txt").write_bytes(b"bye\n")
+        backend = DockerBackend(self.root, runner=runner, owner=False)
+        self.addCleanup(backend.close)
         with self.assertRaises(Exception):
             backend.delete_file("gone.txt", "0" * 64, None)
-        self.assertIn("gone.txt", runner.files)
+        self.assertTrue((self.root / "gone.txt").exists())
+        deletes = [argv for argv in runner.calls if argv[1] == "exec" and "del" in argv]
+        self.assertEqual(len(deletes), 1)                    # the hash is compared inside the container
         from hashlib import sha256
         self.assertEqual(backend.delete_file("gone.txt", sha256(b"bye\n").hexdigest(), None)["sha256"], "missing")
-        self.assertNotIn("gone.txt", runner.files)
-
+        self.assertFalse((self.root / "gone.txt").exists())
 
 if __name__ == "__main__":
     unittest.main()

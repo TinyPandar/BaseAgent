@@ -94,6 +94,12 @@ class Workspace:
         self.allow_memory_publish = allow_memory_publish
         self.protected_paths = backend.protected_paths
         self.edit_policy = edit_policy if edit_policy is not None else EditPolicy()
+        if self.edit_policy.post_edit_check is not None and not isinstance(backend, LocalBackend):
+            from .edit_policy import transactional
+            if not transactional(backend):
+                # Refuse at startup rather than failing on the first write.
+                raise ValueError("EditPolicy.post_edit_check needs a backend that can roll an edit back "
+                                 "(LocalBackend or DockerBackend)")
         self._read_roots = set()
 
     def allow_read_root(self, root):

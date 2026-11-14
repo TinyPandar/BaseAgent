@@ -19,6 +19,8 @@ from baseagent.agent.completion import CompletionPolicy
 from baseagent.agent.router import MAIN_AGENT_MODE, MAIN_AGENT_PROMPT, SINGLE_AGENT_MODE, is_main_agent_session
 from baseagent.agent.workers import SessionTagMiddleware, SharedBudgetMiddleware, TurnBudget, WorkerManager
 from baseagent.backends import LocalBackend
+from baseagent.backends.docker import DEFAULT_IMAGE as DEFAULT_DOCKER_IMAGE
+from baseagent.backends.docker import DockerError, DockerUnavailable
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
@@ -108,6 +110,10 @@ OUTPUT_FORMATS = ("text", "json", "jsonl")
 FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machine; LocalBackend is not a sandbox. "
                      "/undo restores files written by write_file/edit_file/apply_patch, not changes made by commands. "
                      "For isolation use DockerBackend (docs/docker_backend.md).")
+DOCKER_FULL_MODE_NOTE = ("Note: --mode full runs commands inside the Docker container ({network}). /undo restores files "
+                         "written by write_file/edit_file/apply_patch, not changes made by commands.")
+# Exit code when --backend docker cannot start (Docker missing, daemon down, image missing); see docs/output.md.
+BACKEND_UNAVAILABLE_EXIT = 3
 CHAT_MAX_STEPS = 16
 CHAT_WRAPUP_HINT_STEPS = 2
 CHAT_MAX_WORKERS = 2
@@ -185,9 +191,49 @@ class TraceMiddleware(AgentMiddleware):
         return result
 
 
+class BackendTagMiddleware(AgentMiddleware):
+    """Record the execution backend of the current turn (docker only), so a resume can say which one to use."""
+
+    def __init__(self, info):
+        self.info = info
+
+    def before_agent(self, state):
+        if self.info is None:
+            state.metadata.pop("execution_backend", None)
+        else:
+            state.metadata["execution_backend"] = dict(self.info)
+
+
+def _backend_mismatch(existing, info, session_id):
+    """A clear refusal when an unfinished turn would continue on another execution backend."""
+    saved = (existing.metadata or {}).get("execution_backend") or {"kind": "local"}
+    current = info or {"kind": "local"}
+    keys = ("kind", "image", "network")
+    if all(saved.get(key) == current.get(key) for key in keys):
+        return None
+
+    def flags(value):
+        if value.get("kind") != "docker":
+            return "--backend local"
+        return f"--backend docker --docker-image {value.get('image')} --docker-network {value.get('network')}"
+    return (f"session {session_id} has an unfinished turn that ran with {flags(saved)}; continue it with the same "
+            f"settings (this run uses {flags(current)}). Switching the execution backend mid-turn is refused by the "
+            "runtime contract; --accept-config-changes overrides it.")
+
+
+def _make_backend(args, root, protected):
+    from baseagent.backends import DockerBackend
+    return DockerBackend(root, image=args.docker_image or DEFAULT_DOCKER_IMAGE, network=args.docker_network or "none",
+                         protected_paths=protected)
+
+
 def main(argv=None, *, configure_parser=None, capability_factory=None,
-         model_factory=None, system_prompt=SYSTEM_PROMPT) -> int:
-    """Run the shared CLI; applications may extend parsing and composition only."""
+         model_factory=None, system_prompt=SYSTEM_PROMPT, backend_factory=None) -> int:
+    """Run the shared CLI; applications may extend parsing and composition only.
+
+    ``backend_factory(args, root, protected_paths)`` replaces the DockerBackend construction for
+    ``--backend docker`` (tests and the Terminal-Bench fixture inject a fake Docker runner).
+    """
     parser = argparse.ArgumentParser(description="Workspace coding agent", allow_abbrev=False)
     parser.add_argument("--config", type=Path, help="Versioned JSON harness configuration; explicit CLI options override it")
     parser.add_argument("prompt", nargs="?", help="Task or next conversation turn")
@@ -294,6 +340,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
     parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
     parser.add_argument("--output-format", choices=list(OUTPUT_FORMATS), default="text", help="One-shot prompt or --resume output: text (default, unchanged), json (one object on stdout) or jsonl (metadata events, then a result line); see docs/output.md")
+    parser.add_argument("--backend", choices=["local", "docker"], default=None, help="Where commands and file tools run: local (default; the host, not a sandbox) or docker (one container per run, no network by default); see docs/docker_backend.md")
+    parser.add_argument("--docker-image", help=f"--backend docker: image to run (default {DEFAULT_DOCKER_IMAGE}); it must already be pulled")
+    parser.add_argument("--docker-network", choices=["none", "bridge"], help="--backend docker: none (default, no network access) or bridge (explicitly allow network access)")
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
@@ -452,6 +501,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if operation and not args.resume:
             parser.error(f"--output-format {args.output_format} applies to one-shot prompts and --resume; "
                          "session and database operations already print JSON or fixed text")
+    if args.backend != "docker" and (args.docker_image is not None or args.docker_network is not None):
+        given = "--docker-image" if args.docker_image is not None else "--docker-network"
+        parser.error(f"{given} applies to --backend docker" + (" (not --backend local)" if args.backend == "local" else ""))
+    if args.backend == "docker" and operation and not args.resume:
+        parser.error("--backend docker applies to one-shot prompts, --resume and interactive chat; "
+                     "--checkpoints and --rewind restore docker sessions on the host without a container")
     if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
         parser.error("--host, --port and --token apply to --ui web")
     if args.ui == "web":
@@ -510,6 +565,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
     mcp = None
+    backend = None
+    backend_info = None
     try:
         if args.list_tool_packages:
             from baseagent.capabilities.assembly import BUILTIN_PACKAGES
@@ -639,7 +696,48 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             return 0
         root = args.root or (Path(existing.workspace_root) if existing and existing.workspace_root else Path.cwd())
         protected = [store.path, Path(str(store.path) + "-wal"), Path(str(store.path) + "-shm"), Path(str(store.path) + "-journal"), store.lock_dir]
-        workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected)
+        if args.backend == "docker":
+            if not args.accept_config_changes and existing is not None and existing.status != "completed":
+                planned = {"kind": "docker", "image": args.docker_image or DEFAULT_DOCKER_IMAGE,
+                           "network": args.docker_network or "none"}
+                mismatch = _backend_mismatch(existing, planned, args.session)
+                if mismatch:
+                    raise ValueError(mismatch)
+            try:
+                # Starts the container before any model call; Docker problems end the run here (cost 0).
+                backend = (backend_factory or _make_backend)(args, root, protected)
+            except DockerUnavailable as exc:
+                backend_info = {"kind": "docker", "image": args.docker_image or DEFAULT_DOCKER_IMAGE,
+                                "network": args.docker_network or "none", "container": None, "unavailable": exc.kind}
+                print(f"Docker error ({exc.kind}): {exc}", file=sys.stderr)
+                if machine.enabled:
+                    machine.finish(machine_result(session_id=args.session, status="error", code=BACKEND_UNAVAILABLE_EXIT,
+                                                  error=f"Docker error ({exc.kind}): {exc}", backend=backend_info))
+                return BACKEND_UNAVAILABLE_EXIT
+            except DockerError as exc:
+                print(f"Docker error: {exc}", file=sys.stderr)
+                if machine.enabled:
+                    machine.finish(machine_result(session_id=args.session, status="error", code=BACKEND_UNAVAILABLE_EXIT,
+                                                  error=f"Docker error: {exc}"))
+                return BACKEND_UNAVAILABLE_EXIT
+            except ValueError as exc:
+                print(f"--backend docker: {exc}", file=sys.stderr)
+                return 2
+            backend_info = backend.describe()
+            for name in getattr(backend, "reaped", []):
+                print(f"Removed leftover container {name} of an earlier run that did not exit cleanly.", file=sys.stderr)
+            print(f"Backend: {backend.summary()}", file=sys.stderr)
+            if args.mode == "full":
+                network = "no network access" if backend.network == "none" else "network enabled"
+                print(DOCKER_FULL_MODE_NOTE.format(network=network), file=sys.stderr)
+            machine.backend(backend_info)
+            workspace = Workspace(backend=backend, allow_write=args.allow_write, allow_command=args.allow_command,
+                                  allow_memory_publish=args.allow_memory_publish)
+        else:
+            if (not args.accept_config_changes and existing is not None and existing.status != "completed"
+                    and (existing.metadata or {}).get("execution_backend")):
+                raise ValueError(_backend_mismatch(existing, None, args.session))
+            workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected)
         if args.mode == "full" and isinstance(workspace.backend, LocalBackend):
             print(FULL_MODE_WARNING, file=sys.stderr)
         policy = ToolPolicy()
@@ -733,7 +831,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             config["request_bound"] = request_bound_profile(args.request_bound_profile, config["model"], config["endpoint"], args.max_completion_tokens).contract()
         if estimator:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
-        layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes)]
+        layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes),
+                  BackendTagMiddleware({key: backend_info[key] for key in ("kind", "image", "network")} if backend_info else None)]
         if args.harness_url:
             from baseagent.middleware.harnessknight import install_harnessknight
             policy, layers = install_harnessknight(policy, layers, url=args.harness_url,
@@ -876,23 +975,31 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     except KeyboardInterrupt:
         if machine.enabled:
             machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,
-                                          error="interrupted before the turn finished"))
+                                          error="interrupted before the turn finished", backend=backend_info))
         return 130
     except McpStartupError as exc:
         print(f"MCP error: {exc}", file=sys.stderr)
         if machine.enabled:
-            machine.finish(machine_result(session_id=args.session, status="error", code=2, error=f"MCP error: {exc}"))
+            machine.finish(machine_result(session_id=args.session, status="error", code=2, error=f"MCP error: {exc}",
+                                          backend=backend_info))
         return 2
     except (ValueError, SessionBusy, OSError, sqlite3.Error) as exc:
         print(f"Session error: {exc}", file=sys.stderr)
         if machine.enabled:
-            machine.finish(machine_result(session_id=args.session, status="error", code=1, error=f"Session error: {exc}"))
+            machine.finish(machine_result(session_id=args.session, status="error", code=1, error=f"Session error: {exc}",
+                                          backend=backend_info))
         return 1
     finally:
         machine.stop()
         if mcp is not None:
             # Session or run over (normal end, error, Ctrl+C): stop every server process group.
             mcp.close()
+        if backend is not None:
+            # Normal end, Ctrl+C, uncaught exception, /exit, TUI/Web closed: remove this run's container.
+            try:
+                backend.close()
+            except Exception as exc:  # noqa: BLE001 -- report; the next run reaps the leftover container.
+                print(f"Docker warning: could not remove container {backend.name}: {exc}", file=sys.stderr)
     print(f"Session: {state.session_id}", file=sys.stderr)
     print(f"Reported tokens: {state.total_tokens}; unknown usage calls: {state.unknown_usage_calls}", file=sys.stderr)
     # json/jsonl: stdout carries only JSON; the human lines below move to stderr.
@@ -918,7 +1025,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                       f"{request.get('request_digest')} --session {state.session_id}", file=sys.stderr)
     if machine.enabled:
         machine.finish(machine_result(state, model_name=config["model"], store=store,
-                                      include_patches=machine.format == "json"))
+                                      include_patches=machine.format == "json", backend=backend_info))
     if state.status != "completed":
         return 130 if state.status == "interrupted" else 1
     return 0

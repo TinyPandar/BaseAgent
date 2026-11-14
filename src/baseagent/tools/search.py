@@ -71,9 +71,83 @@ def _ignored(relative, is_dir, rules):
     return ignored
 
 
+def _listed_files(workspace, path):
+    """``_files`` for a backend that lists its own namespace (DockerBackend: ``find`` in the container).
+
+    Same rules as the host walk: skipped directories, symbolic links, protected paths and nested
+    .gitignore files (read through the backend), in workspace-relative path order.
+    """
+    if not isinstance(path, str) or "\0" in path:
+        raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "path must be a string without NUL bytes")
+    target = workspace._path(path)
+    scope = target.relative_to(workspace.root).as_posix()
+    # The whole tree is listed so .gitignore files above the search path still apply.
+    files, directories = workspace.backend.list_files(".")
+    if scope != "." and scope not in files and scope not in directories:
+        raise ToolFailure(ErrorCode.NOT_FOUND, "search path does not exist")
+    ignores = [name for name in files if Path(name).name == ".gitignore"
+               and not any(part.casefold() in _SKIP_DIRS for part in Path(name).parts)]
+    texts = workspace.backend.read_many(ignores, MAX_FILE_BYTES) if ignores else {}
+    rules_by_dir = {}
+    for name in ignores:
+        value = texts.get(name)
+        try:
+            text = value.decode("utf-8") if isinstance(value, bytes) else None
+        except UnicodeError:
+            text = None
+        if text is None:
+            continue
+        directory = Path(name).parent
+        for line in text.splitlines():
+            line = line.rstrip()
+            if not line or line.startswith("#"):
+                continue
+            negate = line.startswith("!")
+            pattern = line[1:] if negate else line
+            rules_by_dir.setdefault(directory, []).append(
+                (directory, pattern.strip("/"), negate, pattern.endswith("/"), pattern.startswith("/")))
+
+    def rules_for(relative):
+        rules = list(rules_by_dir.get(Path("."), []))
+        for index in range(1, len(relative.parts)):
+            rules += rules_by_dir.get(Path(*relative.parts[:index]), [])
+        return rules
+
+    selected = []
+    for name in files:
+        relative = Path(name)
+        if any(part.casefold() in _SKIP_DIRS for part in relative.parts):
+            continue
+        if scope != "." and name != scope and not name.startswith(scope + "/"):
+            continue
+        try:
+            workspace._path(name)
+        except ToolFailure:
+            continue
+        parents = [Path(*relative.parts[:index]) for index in range(1, len(relative.parts))]
+        if any(_ignored(parent, True, rules_for(parent)) for parent in parents):
+            continue
+        if _ignored(relative, False, rules_for(relative)):
+            continue
+        selected.append(workspace.root / relative)
+    return sorted(selected, key=lambda file: str(file.relative_to(workspace.root)))
+
+
+def _read_batch(workspace, files):
+    """{file: bytes | None} with one batched read per 200 files (backends with ``read_many``)."""
+    relatives = [str(file.relative_to(workspace.root)) for file in files]
+    values = {}
+    for start in range(0, len(relatives), 200):
+        values.update(workspace.backend.read_many(relatives[start:start + 200], MAX_FILE_BYTES))
+    return {file: (values.get(relative) if isinstance(values.get(relative), bytes) else None)
+            for file, relative in zip(files, relatives)}
+
+
 def _files(workspace, path, rg):
-    # Non-local backends must never accidentally search the host namespace.
     if not isinstance(workspace.backend, LocalBackend):
+        # Non-local backends must never accidentally search the host namespace.
+        if callable(getattr(workspace.backend, "list_files", None)):
+            return _listed_files(workspace, path)
         raise ToolFailure(ErrorCode.EXECUTION_FAILED, "workspace search requires a local backend")
     if not isinstance(path, str) or "\0" in path:
         raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "path must be a string without NUL bytes")
@@ -164,12 +238,18 @@ def grep(workspace, pattern, path=".", glob=None, ignore_case=False, max_matches
     files = _files(workspace, path, rg)
     scope = workspace._path(path)
     matches, truncated = [], False
+    local = isinstance(workspace.backend, LocalBackend)
+    if not local:
+        # The host cannot stat the backend's namespace: a search path that is a file matches only itself.
+        base = scope.parent if len(files) == 1 and files[0] == scope else scope
+        files = [file for file in files if glob is None or _matches(file.relative_to(base), glob)]
+        batch = _read_batch(workspace, files)
     for file in files:
-        if glob is not None and not _matches(file.relative_to(scope if scope.is_dir() else scope.parent), glob):
+        if local and glob is not None and not _matches(file.relative_to(scope if scope.is_dir() else scope.parent), glob):
             continue
         try:
-            value = workspace.backend.read_bytes(str(file.relative_to(workspace.root)), MAX_FILE_BYTES)
-            if b"\0" in value:
+            value = workspace.backend.read_bytes(str(file.relative_to(workspace.root)), MAX_FILE_BYTES) if local else batch[file]
+            if value is None or b"\0" in value:
                 continue
             text = value.decode("utf-8")
         except (OSError, UnicodeError, ToolFailure):
@@ -189,6 +269,9 @@ def glob(workspace, pattern, path=".", max_results=200):
     _pattern(pattern)
     files = _files(workspace, path, shutil.which("rg"))
     scope = workspace._path(path)
-    matches = [str(file.relative_to(workspace.root)) for file in files
-               if _matches(file.relative_to(scope if scope.is_dir() else scope.parent), pattern)]
+    if isinstance(workspace.backend, LocalBackend):
+        base = scope if scope.is_dir() else scope.parent
+    else:
+        base = scope.parent if len(files) == 1 and files[0] == scope else scope
+    matches = [str(file.relative_to(workspace.root)) for file in files if _matches(file.relative_to(base), pattern)]
     return {"matches": matches[:max_results], "truncated": len(matches) > max_results}
