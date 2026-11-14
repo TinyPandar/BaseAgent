@@ -628,6 +628,23 @@ class FailureTests(DockerCliCase):
                 self.assertIn(self.containers()[-1], self.fake.removed())
         self.assertEqual(self.fake.containers, {})
 
+    def test_sigterm_and_sighup_still_remove_the_container(self):
+        import signal
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=number):
+                before = signal.getsignal(number)
+
+                class Killed:
+                    def complete(self, messages, tools):
+                        signal.getsignal(number)(number, None)      # what the OS would deliver
+
+                with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+                    main(["--root", str(self.root), "--db", str(self.db), *DOCKER, "--session", f"sig{number}", "go"],
+                         model_factory=lambda args: Killed())
+                self.assertEqual(caught.exception.code, 128 + number)
+                self.assertIn(self.containers()[-1], self.fake.removed())
+                self.assertIs(signal.getsignal(number), before)          # handlers are put back
+
     def test_leftover_containers_are_reaped_but_live_ones_are_kept(self):
         self.fake.add_stale("baseagent-old-dead", self.root, pid=2 ** 22 + 12345)     # no such process
         self.fake.add_stale("baseagent-old-live", self.root, pid=os.getpid())         # a live session

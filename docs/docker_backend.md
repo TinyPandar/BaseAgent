@@ -31,7 +31,7 @@ Note: --mode full runs commands inside the Docker container (no network access).
 
 - **一个 CLI 进程一个容器。** 一次性任务、一次 `--resume`、一整段连续对话（所有轮次，加上主 Agent 派出的全部 Worker）各用一个容器。Worker 和主 Agent 共用工作区挂载，所以共用容器；每条命令结束后只清理它自己留下的进程（见下），不会误杀并行 Worker 的命令。
 - **起：** 解析参数、读完会话之后，调用模型之前。先预检（`docker version`、`docker image inspect`），再清理同一工作区的残留容器，再 `docker run -d … sleep infinity`。
-- **停：** `finally` 里 `docker rm -f`：正常结束、Ctrl+C（130）、未捕获异常、对话 `/exit` 或 EOF、TUI 退出、Web 服务停止，都会删。删之前把工作区文件属主交还宿主用户（Linux）。
+- **停：** `finally` 里 `docker rm -f`：正常结束、Ctrl+C（130）、未捕获异常、对话 `/exit` 或 EOF、TUI 退出、Web 服务停止，都会删。关掉终端窗口（SIGHUP）和 `kill`（SIGTERM）在 docker 后端运行期间也转成正常退出（退出码 128+信号），同样会删。删之前把工作区文件属主交还宿主用户（Linux）。
 - **续跑是新容器。** 会话状态在宿主的会话库里，工作区文件在宿主目录，都不丢；容器里工作区以外的东西（装的包、`/tmp`）不保留。`contract()` 不含容器 id，所以同样的镜像和网络设置能续跑；换后端、换镜像或换网络续跑一个未完成的轮次会被拒绝：
 
   ```text

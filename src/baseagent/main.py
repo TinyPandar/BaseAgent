@@ -221,6 +221,29 @@ def _backend_mismatch(existing, info, session_id):
             "runtime contract; --accept-config-changes overrides it.")
 
 
+def _exit_on_signals():
+    """SIGTERM/SIGHUP raise SystemExit(128 + signal) so cleanup runs; returns the previous handlers."""
+    import signal
+    import threading
+    previous = {}
+    if threading.current_thread() is not threading.main_thread():
+        return previous
+
+    def terminate(signum, frame):
+        raise SystemExit(128 + signum)
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            previous[number] = signal.signal(number, terminate)
+    return previous
+
+
+def _restore_signals(previous):
+    import signal
+    for number, handler in previous.items():
+        signal.signal(number, handler)
+
+
 def _make_backend(args, root, protected):
     from baseagent.backends import DockerBackend
     return DockerBackend(root, image=args.docker_image or DEFAULT_DOCKER_IMAGE, network=args.docker_network or "none",
@@ -567,6 +590,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     mcp = None
     backend = None
     backend_info = None
+    signals = {}
     try:
         if args.list_tool_packages:
             from baseagent.capabilities.assembly import BUILTIN_PACKAGES
@@ -724,6 +748,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 print(f"--backend docker: {exc}", file=sys.stderr)
                 return 2
             backend_info = backend.describe()
+            # A closed terminal (SIGHUP) or `kill` (SIGTERM) must still reach `finally` and remove the container.
+            signals = _exit_on_signals()
             for name in getattr(backend, "reaped", []):
                 print(f"Removed leftover container {name} of an earlier run that did not exit cleanly.", file=sys.stderr)
             print(f"Backend: {backend.summary()}", file=sys.stderr)
@@ -1002,6 +1028,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 backend.close()
             except Exception as exc:  # noqa: BLE001 -- report; the next run reaps the leftover container.
                 print(f"Docker warning: could not remove container {backend.name}: {exc}", file=sys.stderr)
+        _restore_signals(signals)
     print(f"Session: {state.session_id}", file=sys.stderr)
     print(f"Reported tokens: {state.total_tokens}; unknown usage calls: {state.unknown_usage_calls}", file=sys.stderr)
     # json/jsonl: stdout carries only JSON; the human lines below move to stderr.
