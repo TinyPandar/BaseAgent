@@ -7,7 +7,7 @@ baseagent --root . --mode edit --output-format json "把 README 的标题改成�
 baseagent --session S --resume --output-format jsonl
 ```
 
-退出码三种格式都一样：`0` 本轮完成，`1` 未完成或会话错误，`130` 被中断（Ctrl+C）。参数错误（`argparse`）仍是 `2`，只在 stderr 打印用法，不输出 JSON。
+退出码三种格式都一样：`0` 本轮完成，`1` 未完成或会话错误，`130` 被中断（Ctrl+C），`3` 是 `--backend docker` 起不来（没装 Docker、daemon 没起、镜像不在本地；在调用模型之前，费用 0，见下面「Docker 后端」）。参数错误（`argparse`）仍是 `2`，只在 stderr 打印用法，不输出 JSON；`--backend docker` 时会话库放在工作区里、又不在 `.baseagent/` 下也是 `2`。
 
 **stdout 只有 JSON。** `json` / `jsonl` 下，给人看的内容全部走 stderr：`Session: …`、`Reported tokens: …`、`--trace` 行、`--stream` 的增量文本、警告（例如 `--mode full`）、`Agent error:` / `Agent stopped:`、主 Agent 会话 `--resume` 时 Worker 的推送。
 
@@ -37,6 +37,7 @@ baseagent --session S --resume --output-format jsonl
 | `usage.cny` | 只有模型名在已知价目里（目前只有 `qwen-plus`：输入 0.8、输出 2 元/百万 token，与 `--budget-cny` 相同）且 `unknown_usage_calls == 0` 时才出现，四舍五入到 6 位小数 |
 | `exit_code` | 与进程退出码相同 |
 | `patches` | 可选，只在这一轮有成功的 `apply_patch` 时出现：每次调用一项 `{"call_id", "files", "diff", "diff_truncated"}`（`files` 每项 `path`、`op`、`before_sha256`、`after_sha256`、`added`、`removed`；`diff` 按 20000 字符截断）。没用 `apply_patch` 时没有这个键，输出与以前逐字一致。见 [patch.md](patch.md) |
+| `backend` | 可选，只在 `--backend docker` 时出现：`{"kind": "docker", "image", "network", "container", "cpus", "memory", "pids"}`（`network` 是 `none` 或 `bridge`；不含凭据）。**没有这个键就是 local 后端**，所以不传 `--backend`（或 `--backend local`）时输出与以前逐字一致。Docker 起不来时见下面「Docker 后端」 |
 | `pending_approval` | `status == "awaiting_approval"` 时为 `{"call_id", "digest", "name"}`（具名子任务节点的审批再加 `task_id`）；否则为 `null`。用 `--approve-tool CALL_ID --approval-digest DIGEST`（节点加 `--task-id`）审批后 `--resume` |
 
 ## `jsonl`：事件流 + 结果
@@ -58,3 +59,23 @@ baseagent --session S --resume --output-format jsonl
 - 最后一行一定是 `type: "result"`，`data` 与 `json` 格式打印的对象相同，唯一例外：不带 `patches`（jsonl 不写 diff 正文）。启动阶段就失败时只有 `output_started` 和 `result` 两行。
 
 版本规则同上：`schema_version` 变化才表示行的含义变了；新增事件类型或字段不升版本，读取方应忽略不认识的类型和字段。
+
+## Docker 后端（`--backend docker`）
+
+运行成功或失败的结果对象都多一个 `backend`（上表）。`jsonl` 在 `output_started` 之后多一行：
+
+```text
+{"type": "backend_ready", "timestamp": …, "data": {"kind": "docker", "image": "python:3.12-slim", "network": "none", "container": "baseagent-…", "cpus": 1, "memory": "512m", "pids": 128}}
+```
+
+**Docker 起不来（退出码 3）。** 没装 Docker、daemon 连不上、镜像不在本地时，CLI 在调用模型之前停下，stderr 一行 `Docker error (<kind>): <原因和解决办法>`，绝不退回 local。`kind` 是 `cli_missing`、`daemon_unreachable` 或 `image_missing`。`json` 输出：
+
+```json
+{"schema_version": 1, "status": "error", "final_answer": null,
+ "error": "Docker error (image_missing): Docker image is missing locally: python:3.12-slim. Pull it first: docker pull python:3.12-slim",
+ "session_id": "…", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "unknown_usage_calls": 0,
+ "model_calls": 0, "tool_calls": 0, "steps": 0}, "exit_code": 3, "pending_approval": null,
+ "backend": {"kind": "docker", "image": "python:3.12-slim", "network": "none", "container": null, "unavailable": "image_missing"}}
+```
+
+`jsonl` 这时只有 `output_started` 和 `result` 两行（没有 `backend_ready`），`result` 的 `data` 同上。会话不会建出来。运行中容器挂掉不是退出码 3：那一轮以 `failed` 落盘（退出码 1），`error` 写明容器已不在运行、修好后 `--resume`。详见 [docker_backend.md](docker_backend.md)。

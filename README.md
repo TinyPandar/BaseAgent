@@ -24,7 +24,7 @@
 | 主 Agent / Worker（原 Router） | 有，连续对话默认开启 | 全双工，最多 N 个 worker 并行（`--max-workers`，默认 2），写入同时只有一个；派出即返回，结果自动推送；只回摘要和引用，写入走原审批；离线测试，付费冒烟未跑；一次性 CLI 不变 |
 | TUI / Web 前端 | 有，可选安装 | 连续对话的 Textual TUI 和本机 FastAPI + SSE 页面，与 CLI 共用一层会话/事件层；一个 Web 进程一个会话；离线测试，Windows Terminal 未实测 |
 | Trigger | 有，默认只读 | 定时和文件变化唤醒 Worker；不静默写入，不启动常驻进程 |
-| Docker 沙箱 | 有，默认断网 | 一任务一容器；LocalBackend 仍可用，它本身不是沙箱 |
+| Docker 沙箱 | 有，`--backend docker`，默认断网 | 一次运行一个容器（对话的所有轮次和 Worker 共用），命令和文件读写都在容器里；只挂工作区，`.git` 只读，`.baseagent` 被 tmpfs 盖住；检查点、`/undo`、`apply_patch` 回滚照常；Docker 起不来时调用模型前退出码 3；默认仍是 LocalBackend，它不是沙箱；离线测试用假 Docker，真实冒烟测试在有 Docker 的机器上才跑，见 [docs/docker_backend.md](docs/docker_backend.md) |
 | 检查点/撤销 | 有，按文件快照 | 每个用户轮次一个检查点，`/checkpoints`、`/undo`、`/rewind N`；只覆盖 `write_file` / `edit_file` / `apply_patch`（含删除），`run_command` 的副作用撤不回；不用影子 git；离线测试 |
 | 多文件原子补丁 | 有，`apply_patch` | 一次调用新增 / 修改 / 删除最多 50 个文件，全有或全无，失败按快照回滚；`modify` 复用 `edit_file` 的 `edits`；`--mode edit\|full` 下直接执行并展示整批 diff，`--tool-policy` 写 `ask` 才先批；`/undo` 整批撤回；不是文件系统事务，不包 `run_command`；离线测试，见 [docs/patch.md](docs/patch.md) |
 | JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
@@ -38,7 +38,7 @@
 - hybrid MRR 只说明检索到了，不说明答对了。生成质量的离线打分已接上；真实 qwen 80 题未跑。
 - M1 对比是 2026-11-02 的 qwen-plus 录像：5/5，token −55.2%，五次 after 平均约 0.030 元。这次不重跑。
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
-- LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
+- LocalBackend 不是沙箱。需要隔离时用 `--backend docker`：默认断网，但它是容器不是虚拟机（共享内核），工作区是 bind mount，命令对工作区的改动 `/undo` 撤不回，MCP 服务器仍在宿主上跑。每次文件操作是一次 `docker exec`，比 local 慢；真实 Docker 冒烟测试本轮在没有 Docker 的机器上开发，只跑了假 Docker。
 
 ## 施工中：Docker 执行后端接入 CLI（本段合并进 master 前必须删除）
 
@@ -251,6 +251,8 @@ uv run baseagent --config examples/harness.readonly.json "Explain the project"
 uv run baseagent "Search my notes" --root . --mcp-config mcp.json            # 接入 stdio MCP 服务器；工具名 mcp__<server>__<tool>
 uv run baseagent "Search my notes" --root .                                  # 同上：没传 flag 时读 <root>/.mcp.json，没有就不启用
 uv run baseagent "Add a note" --root . --mode edit --mcp-strict              # 任何 MCP 服务器起不来就退出（退出码 2）；默认是跳过并警告
+uv run baseagent "Fix the failing test" --root . --mode full --backend docker   # 命令和文件读写在容器里，默认断网；先 docker pull python:3.12-slim
+uv run baseagent --root . --mode edit --backend docker --docker-image node:22-slim --docker-network bridge   # 换镜像、显式开网（对话）
 # 或直接用 venv：
 .venv/bin/python -m baseagent "Explain the project structure" --root .
 ```
@@ -263,7 +265,7 @@ uv run baseagent --eval-harness
 .\.venv\Scripts\python.exe -m baseagent "Fix the failing test and verify it" --root . --allow-write --allow-command
 ```
 
-会话默认存于 `.baseagent/sessions.sqlite3`（`--db` 可改）。`--allow-command` 不是沙箱。可选 UI：`uv run --extra ui baseagent-ui`，打开 `http://127.0.0.1:8000`。
+会话默认存于 `.baseagent/sessions.sqlite3`（`--db` 可改）。`--allow-command` 不是沙箱；要隔离就加 `--backend docker`（下面）。可选 UI：`uv run --extra ui baseagent-ui`，打开 `http://127.0.0.1:8000`。
 
 不带任务直接运行 `baseagent` 会进入连续对话：每行输入开始一轮，自动创建并复用同一个会话，无需每轮传 `--session`。`baseagent "task"` 仍是一次性命令，脚本和现有调用不变；指定 `--session demo` 时交互模式复用该会话。输入 `/exit` 或 `/quit` 退出，`/status` 查看会话 ID、状态、令牌、工作区，以及已用/上限的步数、模型次数和工具次数。`Ctrl+C` 只取消当前轮并回到输入提示（空闲提示符下再按一次退出）；工具调用会显示名称、截断的参数和结果预览。列表类结果（如 `glob`、`grep`）的预览先写明总条数、预览显示了几条、还有几条未显示，以及工具本身是否因 `max_results` / `max_matches` 截断；预览最多列 10 条，单条过长仍会截断。
 
@@ -673,7 +675,7 @@ Deleting an unfinished session requires the explicit discard flag. A held sessio
 | --- | --- | --- | --- |
 | `read-only` | 不传标志时的默认值 | 无：`write_file`、`edit_file`、`apply_patch`、`run_command`、`verify_command` 都不暴露 | 读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
 | `edit` | `--allow-write` | `write_file`、`edit_file`、`apply_patch` | 文件写入都有检查点，可 `/undo` |
-| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend |
+| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend；`--backend docker` 下改为说明命令在容器里、网络是否开启 |
 
 未开启的工具不出现在发给模型的工具列表里（`ExecutionGuidanceMiddleware`），模型硬要调用也会在工作区边界返回 `permission_denied`。`publish_memory` / `withdraw_memory` 另由 `--allow-memory-publish` 控制，不在 `--mode` 里。
 
@@ -682,11 +684,11 @@ Deleting an unfinished session requires the explicit discard flag. A held sessio
 - `--tool-policy` 只能在 mode 的基础上再收紧（`deny` / `ask`）：策略里写 `allow` 不会打开 mode 没给的能力。
 - 能力属于运行时契约：未完成的会话换 mode 续跑，仍需 `--accept-config-changes`。
 - 与 `--events`、`--checkpoints` 等运维操作一起用会报错（退出码 2）。
-- CLI 没有选 Docker 的参数；DockerBackend 通过库使用，见 [docs/docker_backend.md](docs/docker_backend.md)。
+- `--backend docker` 下 `--mode` 和 `--tool-policy` 的含义不变，docker 不放宽任何权限，只是命令和文件操作在容器里执行，见 [docs/docker_backend.md](docs/docker_backend.md)。
 
 ## Machine-readable output (`--output-format`)
 
-一次性任务和 `--resume` 可以输出 `json`（结束时 stdout 只有一个对象：`status`、`final_answer`、`error`、`session_id`、`usage`、`exit_code`、`pending_approval`、`schema_version`）或 `jsonl`（每行一个元数据事件 `{type, timestamp, data}`，最后一行 `type: "result"`）。`Session:`、trace、警告和 Worker 输出都走 stderr；退出码仍是 0 / 1 / 130。对话模式和其他运维操作带这个参数会报错退出。默认 `text` 不变。schema 和版本规则见 [docs/output.md](docs/output.md)。
+一次性任务和 `--resume` 可以输出 `json`（结束时 stdout 只有一个对象：`status`、`final_answer`、`error`、`session_id`、`usage`、`exit_code`、`pending_approval`、`schema_version`）或 `jsonl`（每行一个元数据事件 `{type, timestamp, data}`，最后一行 `type: "result"`）。`Session:`、trace、警告和 Worker 输出都走 stderr；退出码仍是 0 / 1 / 130，`--backend docker` 起不来时是 3。`--backend docker` 时结果多一个 `backend` 对象（jsonl 另有一行 `backend_ready`），没有这个键就是 local。对话模式和其他运维操作带这个参数会报错退出。默认 `text` 不变。schema 和版本规则见 [docs/output.md](docs/output.md)。
 
 ```bash
 baseagent --root . --mode edit --output-format json "Rename the helper"
@@ -1101,7 +1103,7 @@ uv run baseagent "你的任务" --estimate-model --tokenizer-file .baseagent/tok
 
 ## Workspace backend 接口
 
-文件读写、搜索、AGENTS.md 指令、文件哈希和命令执行统一由 `WorkspaceBackend` 实现。`Workspace` 保留工具权限、观察记录、编辑流程和验证记录；`LocalBackend` 承接原本机文件和子进程实现。默认 CLI 仍使用本机 backend，不提供操作系统沙箱。
+文件读写、搜索、AGENTS.md 指令、文件哈希和命令执行统一由 `WorkspaceBackend` 实现。`Workspace` 保留工具权限、观察记录、编辑流程和验证记录；`LocalBackend` 承接原本机文件和子进程实现。默认 CLI 仍使用本机 backend，不提供操作系统沙箱；`--backend docker` 换成 `DockerBackend`（[docs/docker_backend.md](docs/docker_backend.md)），它另有几项可选能力（`restore_bytes`、`stat_files`、`file_mode`、`list_files`、`read_many`、`observe_many`），撤销、补丁回滚、`post_edit_check`、`grep` / `glob` 和漂移检查按「有没有这个方法」使用它们。
 
 ```python
 from baseagent.backends import LocalBackend, WorkspaceBackend
@@ -1173,8 +1175,8 @@ uv run baseagent "Fix the failing tests" --root . --allow-write --allow-command 
 
 ## Edit policy
 
-`src/baseagent/tools/edit_policy.py` 的 `EditPolicy` 由 Python 宿主传给 `Workspace(edit_policy=...)`。它对 `write_file` / `edit_file` 应用路径 allowlist/denylist（拒绝优先，默认保护凭据与 `.git`），可设置 `max_changed_lines` 触发精确工具调用审批。可选 `post_edit_check` 使用 argv 执行检查，失败时恢复该文件原始内容；事务检查需要 LocalBackend。编辑策略仍需配合写入/命令权限。
+`src/baseagent/tools/edit_policy.py` 的 `EditPolicy` 由 Python 宿主传给 `Workspace(edit_policy=...)`。它对 `write_file` / `edit_file` 应用路径 allowlist/denylist（拒绝优先，默认保护凭据与 `.git`），可设置 `max_changed_lines` 触发精确工具调用审批。可选 `post_edit_check` 使用 argv 执行检查，失败时恢复该文件原始内容；事务检查需要 LocalBackend 或 DockerBackend（检查命令在容器里跑），其它不能写回的后端在构造 `Workspace` 时报错。编辑策略仍需配合写入/命令权限。
 
 ## Workspace search（grep / glob）
 
-coding 能力包注册 `grep(pattern, path=".", glob=None, ignore_case=False, max_matches=100)` 和 `glob(pattern, path=".", max_results=200)`，实现在 `src/baseagent/tools/search.py`。前者返回路径、行号和文本，后者返回排序后的文件路径；均报告截断（`grep` 的 `truncated` 也可能表示单行超过 300 字符被截短）。匹配规则：不含 `/` 的模式只匹配文件名、但覆盖 `path` 下所有层级，所以 `*` 会列出全部未忽略文件（再受 `max_results` 限制），`*.py` 匹配任意目录下的 `.py`；含 `/` 的模式按相对路径逐段匹配，一个 `*` 只匹配一层（`src/*` 只看 `src` 下的直接文件），跨目录要写 `**`，例如 `src/**/*.py`。搜索限于本机工作区，过滤保护路径、链接及忽略目录；内容搜索跳过二进制、非 UTF-8 和大文件。优先使用 ripgrep，缺失或表达式不兼容时使用 Python 回退。
+coding 能力包注册 `grep(pattern, path=".", glob=None, ignore_case=False, max_matches=100)` 和 `glob(pattern, path=".", max_results=200)`，实现在 `src/baseagent/tools/search.py`。前者返回路径、行号和文本，后者返回排序后的文件路径；均报告截断（`grep` 的 `truncated` 也可能表示单行超过 300 字符被截短）。匹配规则：不含 `/` 的模式只匹配文件名、但覆盖 `path` 下所有层级，所以 `*` 会列出全部未忽略文件（再受 `max_results` 限制），`*.py` 匹配任意目录下的 `.py`；含 `/` 的模式按相对路径逐段匹配，一个 `*` 只匹配一层（`src/*` 只看 `src` 下的直接文件），跨目录要写 `**`，例如 `src/**/*.py`。搜索限于工作区（`--backend docker` 时文件清单和内容都在容器里取，规则相同），过滤保护路径、链接及忽略目录；内容搜索跳过二进制、非 UTF-8 和大文件。优先使用 ripgrep，缺失或表达式不兼容时使用 Python 回退。
