@@ -335,6 +335,7 @@ MCP 工具（`--mcp-config path` 或工作区根目录的 `.mcp.json`，格式�
 - **可见性：** `/status` 有一行 `Project rules: …`（已加载 / 多大 / 是否截断 / 已关闭 / 没有）。`--output-format json` 在有根目录 `AGENTS.md` 时多一个可选字段 `project_rules`：`{"enabled", "loaded", "path", "size_bytes", "shown_bytes", "truncated", "sha256", "claude_md_ignored"}`，jsonl 的 `result` 行相同；只有元数据，没有正文；`schema_version` 仍是 1。没有这个文件时输出与以前逐字一致。
 - **开关：** `--no-project-rules`（或 `--config` 的 `run.project_rules: false`）。关闭后模型在任何地方都看不到规则正文（注入的参考消息、`get_instructions`、`read_file` 的 `instructions` 都只剩路径和哈希），但摘要照算照比：写入仍要带读取时拿到的 `expected_instructions`，规则文件被改仍会触发漂移检测，不会比打开时更宽松。关闭会记进运行时配置，未完成的轮次中途切换要 `--accept-config-changes`。
 - **边界：** 规则文件只是参考数据，放宽不了 `--mode`、`--tool-policy` 和工作区边界。
+- **`--backend docker`：** 以上全部相同（截断、整文件哈希、开关、`/status`、json），只是读取在容器里做；`/status` 和 json 的规则元数据也经容器读，容器里把 `AGENTS.md` 换成指向宿主文件的链接时只报「could not be read (symlink)」，不报出宿主文件的大小或哈希。见 [docs/docker_backend.md](docs/docker_backend.md)。
 
 ### 4. Project Assistant（RAG）离线演示
 

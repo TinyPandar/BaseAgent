@@ -65,6 +65,8 @@ baseagent --session S --resume --output-format jsonl
 
 ## Docker 后端（`--backend docker`）
 
+可选字段可以同时出现：一次 docker 运行里有根目录 `AGENTS.md`、没信任的 `.mcp.json` 和成功的 `apply_patch` 时，`json` 同时带 `project_rules`、`mcp`、`backend`、`patches`；`jsonl` 的 `result` 行带前三个，不带 `patches`，整条流里没有规则正文和 diff 正文。
+
 运行成功或失败的结果对象都多一个 `backend`（上表）。`jsonl` 在 `output_started` 之后多一行：
 
 ```text

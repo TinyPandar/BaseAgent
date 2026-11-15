@@ -50,12 +50,21 @@ Note: --mode full runs commands inside the Docker container (no network access).
 ```
 
 - **只挂工作区。** 宿主上别的路径在容器里不存在。没有 `--privileged`、没有额外 `-v`。
+- **能力最小化。** `docker run --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges`。只加回三个能力：`CHOWN` 用于把文件属主交还宿主用户（见「文件属主」）；`DAC_OVERRIDE`、`FOWNER` 是因为命令以镜像默认用户 root 运行，而 Linux 上 bind mount 里的工作区文件属于宿主用户（例如 uid 1000、权限 644），没有这两个能力 root 就改不了、`chmod` / `touch` 不了 agent 要处理的文件。`SETUID`、`SETGID`、`KILL`、`NET_RAW`、`MKNOD`、`SYS_CHROOT` 等其余默认能力全部去掉；`no-new-privileges` 让 setuid 程序也提不了权。这些设置写进后端契约，加固前起的未完成轮次续跑时要 `--accept-config-changes`。
 - **文件读写在容器里做。** `read_file`、`write_file`、`edit_file`、`apply_patch`、`grep`、`glob`、`search_files`、`get_instructions`、撤销写回，都是 `docker exec` 里的一段固定 POSIX sh（`backends/docker_fs.py`）。宿主先做和 LocalBackend 相同的命名空间检查（`..`、绝对路径、解析后出界的链接、受保护路径都拒绝，不发任何 exec）；容器里再用 `readlink -f` 查一遍，写入路径上不允许任何符号链接。链接只在容器的挂载命名空间里解析，即使有并发的竞态，也碰不到宿主路径。
 - **写入的原子性和 CAS 与 local 相同：** 宿主上拿同一把协作写锁（`.baseagent/file-locks`），容器里比哈希、写临时文件、重命名前再比一次哈希；新建用 `ln`（不覆盖已存在的文件），替换用 `mv -f` 并沿用原权限位。删除也在锁内、容器里比哈希再 `rm`。
 - **受保护路径与 local 一致：** `.git`、`.env*`、`.venv`、`.baseagent`、会话库，`write_file` / `apply_patch` 都拒绝。
 - **`.baseagent/` 在容器里是空的 tmpfs。** 会话库、检查点、文件锁、溢出文件都在宿主侧，容器里的命令看不到也改不了；写进去的东西随容器消失。会话库（`--db`）落在工作区里但不在 `.baseagent/` 下时拒绝启动（退出码 2），否则容器能改它。
 - **`.git` 只读。** 镜像里有 `git` 时 `git status` / `git diff`（`git_status`、`git_diff` 工具）照常能用；容器不能改 hooks 和 config（否则宿主上下一次 `git` 会执行容器写进去的代码），也不能 commit。
 - **溢出文件**（大工具结果）由 harness 写在宿主会话目录，`read_file` 读它们走宿主，和 local 相同。
+
+## 项目规则文件（`AGENTS.md`）
+
+与 local 完全相同（README「项目规则文件」）：给模型的正文每个文件 20000 字节、目录链合计 40000 字节，超出截断在完整的 UTF-8 字符上，带 `truncated` / `size_bytes` / `shown_bytes` 和提示；摘要按整个文件的 SHA-256 算；`--no-project-rules` / `run.project_rules: false` 同样只藏正文、不放宽摘要比对。
+
+- **截断规则只有一份。** `tools/instructions.py::rules_entry` 从「整文件哈希、字节数、开头几个字节」算出条目，`assemble` 拼目录链和摘要；LocalBackend 从宿主文件取这三样，DockerBackend 从容器里取，两边的结果逐字节相同（`tests/test_docker_integrate.py` 对照）。
+- **容器里怎么算。** 容器脚本的 `heads` 操作先把每个 `AGENTS.md` 拷一份到容器的 `/tmp`，从这份快照算 `sha256sum` 和大小，再输出开头 20004 字节，所以哈希和正文出自同一份字节；不管规则文件多大，传回宿主的只有开头。漂移检查用 `sums`：只传「大小 + 哈希」，文件和规则都不传正文，一次 exec。
+- **元数据也经容器读。** `/status` 的规则行和 json 的 `project_rules` 在 docker 下不在宿主上打开工作区里的 `AGENTS.md`：存在与类型在容器里判断（不跟随出界链接），大小、哈希来自容器里的读取。容器里的命令把 `AGENTS.md` 换成指向宿主文件的链接时，只报 `could not be read (symlink)`。json 的 `project_rules` 在删容器之前算好。容器已经挂掉时，规则行报 `could not be read (DockerError)`，`/status` 不会因此出错。
 
 ## 文件属主
 
@@ -97,7 +106,9 @@ Note: --mode full runs commands inside the Docker container (no network access).
 
 ## 已知限制
 
-- 不是虚拟机：容器与宿主共享内核，隔离强度就是 Docker 的默认配置（没有 user namespace remap、没有 seccomp 定制）。
+- 不是虚拟机：容器与宿主共享内核。能力已收紧（见上），但没有 user namespace remap、没有自定义 seccomp 配置，用的是 Docker 默认的 seccomp。
+- 去掉了 `SETUID` / `SETGID`：`apt-get` 下载时降权到 `_apt` 会失败（报 `setgroups … Operation not permitted`），需要时加 `-o APT::Sandbox::User=root`；`su` / `sudo` 不可用。默认又是断网，装系统包本来就要显式 `--docker-network bridge`。
+- `.mcp.json` 仍在宿主上读（MCP 服务器也在宿主上跑）；容器里的命令能改写这个文件，但改过的内容在下一次启动前要重新经过首次信任确认（docs/mcp.md），不会悄悄启动。
 - 工作区文件就是宿主文件（bind mount）：命令能改、能删工作区里的任何东西，`/undo` 撤不回命令的副作用。
 - MCP 服务器仍在宿主上跑，不进容器（启动时 stderr 有一行说明）。
 - 默认镜像 `python:3.12-slim` 里没有 `git`：`git_status` / `git_diff` 会返回「executable file not found」的失败。需要 git 时换一个带 git 的镜像（例如在它基础上 `apt-get install git` 构建一个）。

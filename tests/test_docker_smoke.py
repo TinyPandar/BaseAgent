@@ -88,7 +88,9 @@ class DockerSmokeTests(unittest.TestCase):
             ["python", "-c", "import urllib.request; urllib.request.urlopen('http://example.com', timeout=5)"],  # AC 6
             ["sh", "-c", "mkdir -p made/deep && echo root > made/deep/file.txt && ln -s /etc/passwd link"],    # AC 8
             ["sh", "-c", "echo hacked > .baseagent/sessions.sqlite3; touch .git/hooks-test 2>&1; echo done"],
+            ["sh", "-c", "echo more >> host.txt && chmod 600 host.txt && grep CapEff /proc/self/status"],  # AC 27
         ]
+        (self.root / "host.txt").write_text("from the host\n")
         (self.root / ".git").mkdir()
         model = Script([lambda messages: {"tool_calls": [
             write_call(self.root, "w1", "a.txt", "A1\n"),
@@ -97,7 +99,11 @@ class DockerSmokeTests(unittest.TestCase):
             tool_call("r2", "read_file", {"path": "../secret.txt"})]}, {"content": "done"}])
         code, out, err = self.cli(["--mode", "full", "--session", "smoke", "go"], model)
         self.assertEqual(code, 0, err)
-        write, outside, network, created, harness, link, escape = self.command_results("smoke")
+        write, outside, network, created, harness, hardened, link, escape = self.command_results("smoke")
+        # Root in the container may still edit host-owned workspace files, with only CHOWN, DAC_OVERRIDE, FOWNER.
+        self.assertTrue(hardened["ok"], hardened)
+        self.assertEqual(hardened["data"]["stdout"].split()[-1], "000000000000000b")
+        self.assertEqual((self.root / "host.txt").read_text(), "from the host\nmore\n")
         self.assertTrue(write["ok"])
         self.assertNotIn("host-secret", outside["data"]["stdout"])
         self.assertNotIn(self.parent.name, outside["data"]["stdout"])
