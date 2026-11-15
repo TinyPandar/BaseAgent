@@ -309,9 +309,9 @@ def main(argv=None):
     live.add_argument("--budget-cny", default="2")
     commands.add_parser("m2-smoke", help="Print M2 smoke commands and stop")
     commands.add_parser("cassette-replay", help="Replay recorded coding cassettes; no new provider calls")
-    bench = commands.add_parser("terminal-bench", help="Score the local fixture, or print the paid subset command and stop")
-    bench.add_argument("--fixture", action="store_true")
-    bench.add_argument("--live", action="store_true")
+    bench = commands.add_parser("terminal-bench", help="Synthetic report smoke (default), Harbor fixture grading, or print the paid subset plan")
+    bench.add_argument("--fixture", action="store_true", help="Grade the local fixture with Harbor (needs Docker)")
+    bench.add_argument("--plan", action="store_true", help="Print the paid subset job and stop")
     bench.add_argument("--budget-cny", default="15")
     args = parser.parse_args(argv)
     if args.command == "live-answers":
@@ -327,12 +327,9 @@ def main(argv=None):
         return replay_main(["--replay"])
     if args.command == "terminal-bench":
         from scripts.evaluate_terminal_bench import main as bench_main
-        argv = []
-        if args.fixture:
-            argv.append("--fixture")
-        if args.live:
-            argv.extend(["--live", "--budget-cny", args.budget_cny])
-        return bench_main(argv or ["--fixture"])
+        if args.plan:
+            return bench_main(["--plan", "--budget-cny", args.budget_cny])
+        return bench_main(["--fixture"] if args.fixture else ["--synthetic"])
     result = run_offline(
         questions=load_questions(args.questions), report_dir=args.report_dir,
         thresholds={"min_coding_success": args.min_coding_success,
