@@ -54,6 +54,8 @@ class HarborContractTests(unittest.TestCase):
         default = policy_for("BudgetExceededError")
         self.assertEqual((default.should_grade, default.has_valid_reward, default.should_retry), (True, False, False))
         self.assertIn("BaseAgentInfrastructureError", config.retry.exclude_exceptions)
+        runtime = policy_for("RuntimeError", config.override_error_policy["RuntimeError"])
+        self.assertEqual((runtime.should_grade, runtime.has_valid_reward), (False, False))
 
     def test_exception_names_resolve_to_the_configured_policies(self):
         overrides = JobConfig.model_validate(plan_job("15")["job_config"]).override_error_policy
@@ -126,6 +128,50 @@ class HarborContractTests(unittest.TestCase):
                                     "budget": "budget_stopped", "infra": "infrastructure", "image": "infrastructure"})
         self.assertEqual(report["model_tasks"], 4)
         self.assertEqual(report["success_rate"], 0.25)
+
+
+@unittest.skipUnless(HARBOR, "harbor==0.26.0 is not installed in this environment")
+class HarborFailureRunTests(unittest.TestCase):
+    """Real ``harbor run`` trials whose environment fails on purpose. No container, no model."""
+
+    def run_job(self, directory, name, environment):
+        import shutil
+        import subprocess
+        import sys
+        harbor = Path(sys.executable).parent / "harbor"
+        if not harbor.exists():
+            harbor = Path(shutil.which("harbor") or "harbor")
+        config = plan_job("15")["job_config"]
+        job = {"job_name": name, "jobs_dir": str(Path(directory) / "jobs"), "n_concurrent_trials": 1,
+               "timeout_multiplier": 1.0, "retry": {"max_retries": 0},
+               "override_error_policy": config["override_error_policy"],
+               "environment": {"import_path": f"harbor_support.broken_environments:{environment}"},
+               "agents": [{"import_path": config["agents"][0]["import_path"], "kwargs": {"scripted": "correct"}}],
+               "tasks": [{"path": str(FIXTURE)}]}
+        path = Path(directory) / f"{name}.json"
+        path.write_text(json.dumps(job))
+        root = Path(__file__).resolve().parents[1]
+        env = {**__import__("os").environ,
+               "PYTHONPATH": f"{root / 'src'}:{root / 'tests'}:{root}"}
+        completed = subprocess.run([str(harbor), "run", "-c", str(path), "-y", "-q"], cwd=directory, env=env,
+                                   capture_output=True, text=True, timeout=300)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        return Path(directory) / "jobs" / name
+
+    def test_missing_image_and_failing_backend_are_infrastructure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = self.run_job(directory, "missing-image", "MissingImageEnvironment")
+            failing = self.run_job(directory, "failing-exec", "FailingExecEnvironment")
+            report = import_results(missing, failing)
+            raw = [json.loads(path.read_text()) for path in sorted(failing.glob("*/result.json"))]
+        self.assertEqual([row["outcome"] for row in report["tasks"]], ["infrastructure", "infrastructure"])
+        self.assertEqual(report["model_tasks"], 0)
+        self.assertIsNone(report["success_rate"])
+        self.assertEqual(sorted(name for row in report["tasks"] for name in row["exception_types"]),
+                         ["BaseAgentInfrastructureError", "RuntimeError"])
+        info = raw[0]["exception_info"]
+        self.assertEqual(info["policy"], {"should_retry": False, "should_grade": False, "has_valid_reward": False})
+        self.assertIsNone(raw[0]["verifier_result"])
 
 
 if __name__ == "__main__":

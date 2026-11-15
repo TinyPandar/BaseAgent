@@ -27,6 +27,10 @@ INFRASTRUCTURE_ERROR = BaseAgentInfrastructureError.__name__
 BUDGET_ERROR = BudgetExceededError.__name__
 # Infrastructure: never graded, never a valid reward, never retried (a retry could spend money).
 INFRASTRUCTURE_POLICY = {"should_retry": False, "should_grade": False, "has_valid_reward": False}
+# Harbor's docker environment reports start, build and exec failures as plain RuntimeError, and
+# Harbor's default for an unlisted name is "retry, grade, reward valid". The agent wraps every failure
+# of its own, so in these jobs a RuntimeError always comes from Harbor or the environment.
+INFRASTRUCTURE_NAMES = (INFRASTRUCTURE_ERROR, "RuntimeError")
 # Budget stop: graded, reward invalid, not retried. Same as Harbor 0.26.0's default for this name,
 # stated explicitly so an upgrade cannot change it silently.
 BUDGET_POLICY = {"should_retry": False, "should_grade": True, "has_valid_reward": False}
@@ -194,7 +198,8 @@ def plan_job(budget_cny="15", *, model="deepseek-chat", max_command_timeout_sec=
         "n_concurrent_trials": 1,
         "timeout_multiplier": 1.0,
         "retry": {"max_retries": 0},
-        "override_error_policy": {INFRASTRUCTURE_ERROR: dict(INFRASTRUCTURE_POLICY), BUDGET_ERROR: dict(BUDGET_POLICY)},
+        "override_error_policy": {**{name: dict(INFRASTRUCTURE_POLICY) for name in INFRASTRUCTURE_NAMES},
+                                  BUDGET_ERROR: dict(BUDGET_POLICY)},
         "environment": {"type": "docker"},
         "agents": [{"import_path": AGENT_IMPORT_PATH, "model_name": model,
                     "kwargs": {"budget_cny": str(share), "max_command_timeout_sec": max_command_timeout_sec,
