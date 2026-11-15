@@ -42,6 +42,60 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：Terminal-Bench 2.0 接入 Harbor（本段合并进 master 前必须删除）
+
+分支 `plan/harbor-tbench`，从 `origin/master` `d61e891` 开出（设计文档里把 `d61e891` 当成预算分支的锚点已过时，它就是当前 master）。没有依赖任何未合并分支的内部接口，没碰 `plan/docker-integrate` / `plan/budget-accounting`，没有调用任何付费 API，费用 0。用法和细节见 [docs/terminal_bench.md](docs/terminal_bench.md)。
+
+### 设计选择（只写有取舍的地方）
+
+1. **后端放哪一层。** 备选 A：一个直接 import Harbor 的后端；备选 B：通用的 `ExecBackend`，只认一个同步的 `channel(command, cwd, timeout, cancellation)`，Harbor 适配只在 `baseagent/tbench/channel.py` + `harbor_agent.py`。选 B：核心不依赖 Harbor，没装 Harbor 的项目环境里照样能用假环境测完整协议；只有 `harbor_agent.py` import Harbor。
+2. **同步循环怎么对上异步的 Harbor。** 备选：把 `run_agent` 改成异步；或循环放到工作线程，`exec` 用 `run_coroutine_threadsafe` 投回 Harbor 的事件循环并每 0.05 秒检查截止时间和取消标记。选后者：内核不动；守护线程，外层取消后不会卡住 Harbor 退出。
+3. **文件怎么进出容器。** 备选：`environment.upload_file` / `download_file`（要宿主临时文件，各环境实现不一）；或全部走 `exec`：读用 `base64` 输出，写把 base64 按 60 KB 分块追加到容器 `/tmp` 的暂存文件，最后一条命令在目标同目录 `mktemp` + `ln`（新建，不覆盖）/ `mv`（替换）原子落盘。选后者：满足「只经 `environment.exec`」，任何 Harbor 环境都能用，`/app` 下不留框架文件。代价：容器要有 `base64` 等基本工具；CAS 的「检查 → 改名」之间对非合作写者有窗口（与 LocalBackend 的删除相同，单 agent 评测里只有 agent 自己的命令）。
+4. **工作目录。** 不写死 `/app`，用容器自己的 `pwd -P`；`root` 是 `PurePosixPath`，宿主上对它做本地 I/O 会直接报错。`Workspace._read_path` 在没有溢出目录可读时不再做宿主路径解析，`apply_patch` 的宿主软链检查只对宿主路径做（ExecBackend 在容器里查软链）。适配器关闭溢出文件（spill），工具输出本来就有 20 KB 上限。
+5. **agent 墙钟从哪来。** Harbor 0.26.0 不把超时传给外部 agent。备选：遍历调用栈找 Trial 对象；或读 trial 目录的 `config.json` + 题目 `task.toml`，按 Harbor 0.26.0 的公式算。选后者（加 `agent_timeout_sec` 参数可显式覆盖），拿不到就记 `deadline_source: unknown`，只靠 Harbor 外层超时。已在真实 trial 目录上验证解析出 300 秒。
+6. **环境故障怎么停。** 备选：作为普通工具失败交给模型；或 `EnvironmentUnavailable`（`BaseException`，同 `Cancelled`）直接停循环。选后者：环境没了还让模型重试只会花钱，而且会被算成答错。
+7. **基础设施怎么不被算成答错。** 三层：适配器把自己的一切失败包成 `BaseAgentInfrastructureError`；job 配置给它和 `RuntimeError`（Harbor docker 环境的启动 / exec 失败就是这个类）设 `should_grade=false`、`has_valid_reward=false`、不重试；导入时除少数模型侧异常外，任何异常类型和「没有有效 reward」都算基础设施。备选是逐个列 Harbor 的异常类，但 Harbor 对未列出的名字默认「重试、评分、奖励有效」，漏一个就会变成答错，所以选「默认是基础设施」。代价：模型输出把内核搞崩的少数情况（例如同一轮重复的工具调用 ID）也被排除出分母；报告里能看到原因。
+8. **预算。** 备选：共享账本（属于 `plan/budget-accounting`）；或 `-n 1` + 每题等分预算各自封顶。选后者：总花费不超过 `--budget-cny`，不需要跨 trial 状态。`run_in_environment(..., budget=)` 接受任何 `TurnBudget` 形状的账本，预算分支以后可以注入共享账本。预算停止抛 `BudgetExceededError`，进成功率分母（算没通过），单独计数。
+9. **「权限拦截」的定义。** 只在回合因等待审批而停（`AWAITING_APPROVAL`）时算；写到 `/app` 外被拒之类的工具失败只记 `permission_denials` 次数，不改分类（模型可以用 `run_command` 处理容器里的其它路径，容器本身就是边界）。
+10. **评分容器。** fixture 用 `verifier.environment_mode = "shared"`，与 TB 2.0 一样在 agent 的容器里评分；`harbor lint` 对此给出 `shared-verifier` 建议，是有意保留。
+11. **版本锁定。** 适配器构造和预检时要求 `harbor` 正好是 `0.26.0`，升级要改常量并重跑 `tests/test_tbench_harbor.py` 等（命令在文档里）。
+
+### 本期要做
+
+| 项 | 状态 | 实现 |
+| --- | --- | --- |
+| 1 Harbor 外部 agent 适配器 | 完成 | `src/baseagent/tbench/harbor_agent.py`、`runner.py`、`channel.py`；`setup()` 什么都不装 |
+| 2 经 `environment.exec` 的 Workspace 后端 | 完成 | `src/baseagent/backends/exec_backend.py` |
+| 3 单条命令超时可配置 | 完成 | `Workspace(max_command_timeout=…)` 默认 60；agent 参数 `max_command_timeout_sec`；剩余墙钟始终封顶 |
+| 4 fixture 改成合法 Harbor 任务并由 Harbor 评分 | 完成（Docker 下未验证） | `fixtures/terminal_bench/local-echo/`；`--fixture` 跑 oracle / scripted-correct / scripted-wrong 三个 `harbor run` 并导入 |
+| 5 导入 `result.json` 并分类 | 完成 | `terminal_bench.py` 的 `classify_trial` / `import_results`；`--import` |
+| 6 `--plan` | 完成 | `plan_job`；`--plan --write-config FILE`；`scripts/check_harbor_plan.py` |
+| 7 纠正 1/1 表述 | 完成 | `docs/reports/phase5-sandbox.md`、`docs/terminal_bench.md`、README 对照表 |
+
+### 验收
+
+| 验收 | 状态 | 证据 |
+| --- | --- | --- |
+| 1 假环境测后端 | 通过 | `tests/test_tbench_exec_backend.py`（11 条）：读写与 CAS（过期哈希、已存在时 `missing`、指令摘要变了都冲突且不写入，替换保留权限位，不留临时文件）、文件不存在、读上限与命令输出截断、`../`、`/etc/passwd`、绝对路径越界、链接逃逸、`.git` / `.env*` / `.baseagent` / `.venv`、命令在 workdir 执行、空格 / 引号 / `$HOME` / `;` / `*` 原样、超时后进程被杀且后续动作停止、取消后不再有任何 exec、环境故障是 `EnvironmentUnavailable`、`AGENTS.md` 摘要与 LocalBackend 逐字相同、`/app` 映射时宿主上不存在 `/app` 也能读写执行打补丁 |
+| 2 假环境 + 脚本化模型测适配器 | 通过 | `tests/test_tbench_runner.py`（10 条）：命令执行中被外层超时取消后模型调用数不再增加、命令被杀、token = 取消前的 100；模型调用中被取消后在途调用返回也不再发第三次、token ≤ 取消前累计、`in_flight_model_calls_at_stop` = 1；假密钥不进任何 exec 命令 / env / 元数据 / 日志；workdir 里只有模型写的文件 |
+| 3 异常类名与 job 配置 | 通过 | 预算停止抛出的类名是 `BudgetExceededError`（`test_budget_stop_raises_budget_exceeded_error`）；`override_error_policy` 里 `BaseAgentInfrastructureError`（和 `RuntimeError`）为 `should_grade=false`、`has_valid_reward=false`；`timeout_multiplier` 1.0，不含任何超时倍数 / 上限 / 覆盖 / 资源字段（`tests/test_terminal_bench.py::PlanTests`；Harbor 0.26.0 模型校验 `tests/test_tbench_harbor.py::test_plan_is_a_valid_job_config_with_untouched_timeouts_and_resources`、`test_exception_names_resolve_to_the_configured_policies`） |
+| 4 Docker 下用 Harbor 评 fixture | **未验证**（本机没有 Docker） | `--fixture` 在本机输出 `verified: false`、原因「docker is not installed or not on PATH」，退出码 2。已验证的部分：Harbor 0.26.0 能加载这个任务（`Task(...)`，agent 超时 300、shared 评分）；脚本化模型经真实 `AgentContext` 写出 `answer.txt`、用量 0、`provider_calls` 0（`test_adapter_fills_a_real_agent_context`）；判定只看 Harbor 写的 `result.json`，「全给 1」的假评分器会被识破（`test_fixture_grading_comes_from_harbor_results`） |
+| 5 `--plan` 通过 `harbor run --dry-run` | **部分**：Harbor 自己的检查全部通过，环境预检因没有 Docker 未跑 | 本机 Harbor 0.26.0 装在单独的 venv。`harbor run -c … --dry-run` 停在环境预检「Docker is not installed or not on PATH」。`scripts/check_harbor_plan.py` 用 Harbor 代码跑了 dry-run 的其余全部步骤（`JobConfig` 解析、`validate_job_config`、agent 预检、`validate_local_sources`），无错误；registry 解析出的任务正好是子集文件的 18 个，数据集提交 `69671fba` 与子集文件一致 |
+| 6 缺镜像 / 后端抛错记为基础设施 | 通过（真实 Harbor 运行，不需要 Docker） | `tests/test_tbench_harbor.py::HarborFailureRunTests` 真实跑两次 `harbor run`：环境启动时报「pull access denied … repository does not exist」（`RuntimeError`）、运行中每次 exec 都抛错（适配器抛 `BaseAgentInfrastructureError`，`result.json` 里策略为不评分 / 奖励无效 / 不重试，verifier 没跑）；导入后两条都是基础设施，`model_tasks` 0、成功率为空。合成 `result.json` 另测了 `SandboxBuildFailedError`、未知异常、`RewardFileNotFoundError`、没有 reward（`tests/test_terminal_bench.py::ImportTests`） |
+| 7 写死通过的路径消失 | 通过 | `scripts/evaluate_terminal_bench.py` 不再有 executor；`test_no_hardcoded_pass_remains`；`evaluate_suite.py terminal-bench` 默认改为 `--synthetic`（输出标明「not a Terminal-Bench score」）；文档改见上 |
+| 8 全量离线测试不新增失败 | 通过 | 见下 |
+
+**测试结果（本机 macOS，清掉 `SAND_*`，删掉 `.baseagent/live_answers_checkpoint.json`，`PYTHONPATH=src .venv/bin/python -B -m pytest tests`）。** 改动前的 master 基线：`8 failed, 1229 passed, 2 skipped`。本分支：`9 failed, 1258 passed, 8 skipped`（多出的 6 个 skipped 是 `tests/test_tbench_harbor.py`，项目环境没装 Harbor）。8 个失败与 master 基线完全相同：本机 `/var` → `/private/var` 软链 4 个（`test_backends.py::…keeps_native_cas`、`test_coding.py::…blocks_second_writer`、`test_config.py::…empty_package_selection`、`test_evaluate_retrieval_cli.py::…omits_secrets`，把 `TMPDIR` 设为真实路径后都通过），回放录像不一致 3 个（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py` 的 `fake_client` / `timing_normalize`），以及已知的 `test_all_real_recordings_replay_offline`。新增的 1 个是 corpus_version 测试 `test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines`：语料是全仓库的 `*.md` / `*.py`，本分支的代码、文档和这一段都会改变它；按以往约定由 PM 合并时重绑，本分支没重绑。Harbor 环境里：`PYTHONPATH=src:tests:. .harbor-venv/bin/python -B -m unittest tests/test_tbench_harbor.py tests/test_tbench_runner.py tests/test_tbench_exec_backend.py` 全部通过（27 条）。已有测试改动：只重写了 `tests/test_terminal_bench.py`（它原来断言的正是写死的 1/1）。
+
+### 下一步付费试跑还缺什么
+
+1. **一台有 Docker 的机器**（Linux 或 Docker Desktop，不限定哪一台）和 `harbor==0.26.0` 的单独环境。先跑 `--fixture`，把验收 4 补成「oracle 1、正确脚本 1、错误脚本 0，导入后通过 / 答错，费用 0，provider 调用 0」；再跑 `harbor run -c terminal-bench-job.json --dry-run`，把验收 5 的环境预检补上。
+2. **计费单价要和模型对上。** `--plan` 默认模型名是 `deepseek-chat`，但 CNY 计费默认用的是 `baseagent.agent.workers` 里现有的 qwen-plus 单价（输入 0.8 / 输出 2 元每百万 token）。付费前要么换成对应的模型，要么在 job 配置的 agent `kwargs` 里填 `input_cny_per_million` / `output_cny_per_million`，否则预算封顶不准。
+3. **单独授权和 `--budget-cny`。** 建议先只跑 1 题（把 `task_names` 改成 1 个、每题预算按需要），`-n 1`；确认元数据里的 `cost_cny`、`provider_calls`、`deadline_source: trial_config` 都合理，再跑 18 题。
+4. **TB 2.0 镜像的工具。** 后端需要容器里有 `sh`、`base64`、`wc`、`mktemp`、`mv`、`ln`、`cp`、`rm`；`timeout` 可选（没有时只靠宿主截止时间，Harbor 取消 exec 会终止 `docker exec` 客户端，但容器里的进程可能多活一会）。单题试跑时要看一眼是否有镜像缺这些。
+5. **并发前要有共享账本。** 现在每题各自封顶、`-n 1`。要 `-n` > 1 或跨进程续跑，等 `plan/budget-accounting` 的共享账本 / 预留扣费，经 `run_in_environment(budget=…)` 接进来。
+6. **已知限制：** 越过预算的那一次在途调用会被计费；外层超时时在途的一次模型调用会计费但不计入（元数据有标记）；provider 错误一律算基础设施、不重试；没有 ATIF 轨迹（Harbor 查看器里看不到步骤，只有 `agent/baseagent-summary.json`）；不提交排行榜。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
