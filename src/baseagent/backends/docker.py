@@ -446,41 +446,76 @@ class DockerBackend:
     def file_mode(self, path):
         return self.stat_files([path])[path][1]
 
+    def _heads(self, entries):
+        """[(status, size, sha256)] and {relative: first bytes} for ``i:`` / ``s:`` rules entries (one exec)."""
+        from baseagent.tools.instructions import HEAD_BYTES
+        stdout, stderr = self._fs("heads", str(HEAD_BYTES), *entries, timeout=120)
+        lines = [line[3:].split() for line in stderr.decode("utf-8", errors="replace").splitlines()
+                 if line.startswith("@@ ")]
+        if len(lines) != len(entries):
+            raise DockerError("rules read returned an unexpected answer: "
+                              + stderr.decode("utf-8", errors="replace").strip()[:300])
+        statuses, heads, offset = [], {}, 0
+        for entry, words in zip(entries, lines):
+            if words[0] == "ok" and len(words) == 3:
+                size = int(words[1])
+                take = min(size, HEAD_BYTES)
+                heads[entry[2:]] = stdout[offset:offset + take]
+                offset += take
+                statuses.append(("ok", size, words[2]))
+            else:
+                statuses.append((words[0], None, None))
+        return statuses, heads
+
+    def _sums(self, entries, limit=READ_LIMIT):
+        """[(status, size, sha256)] for ``r:`` / ``i:`` / ``s:`` entries without transferring content."""
+        statuses = []
+        for start in range(0, len(entries), BATCH):
+            chunk = entries[start:start + BATCH]
+            stdout, _ = self._fs("sums", str(limit), *chunk, timeout=120)
+            lines = stdout.decode("utf-8", errors="replace").splitlines()
+            if len(lines) != len(chunk):
+                raise DockerError("file hashes returned an unexpected answer")
+            for words in (line.split() for line in lines):
+                statuses.append((words[0], int(words[1]) if len(words) > 1 else None,
+                                 words[2] if len(words) > 2 else None))
+        return statuses
+
     def get_instructions(self, path="."):
+        """Root-to-directory AGENTS.md chain with the same truncation, fields and digest as LocalBackend.
+
+        Hash, size and the first bytes of each file come from one snapshot in the container
+        (``heads``); ``tools.instructions.assemble`` applies the shared cut and digest.
+        """
+        from baseagent.tools.instructions import assemble
         relative = self._guidance_relative(path)
         parts = [] if relative == "." else relative.split("/")
         prefixes = [""] + ["/".join(parts[:index]) for index in range(1, len(parts) + 1)]
         candidates = ["AGENTS.md" if not prefix else prefix + "/AGENTS.md" for prefix in prefixes]
         entries = ([] if relative == "." else [f"s:{relative}"]) + [f"i:{item}" for item in candidates]
-        statuses, contents = self._probe(entries, 20_000)
+        statuses, heads = self._heads(entries)
         if relative != ".":
             if statuses.pop(0)[0] != "dir":
                 candidates.pop()            # a file (or a new path) has no AGENTS.md inside it
                 statuses.pop()
                 parts = parts[:-1]
-        values, total = [], 0
-        for candidate, (status, _) in zip(candidates, statuses):
+        chain = []
+        for candidate, (status, size, digest) in zip(candidates, statuses):
             if status in ("missing", "dir", "notfile"):
                 continue
             if status in ("escape", "link"):
                 raise ToolFailure(ErrorCode.PERMISSION_DENIED, "repository instructions cannot use symlinks")
-            if status == "large":
-                raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "file exceeds read limit")
-            content = contents.get(candidate)
-            if content is None:
-                continue
-            total += len(content)
-            if total > 40_000:
-                raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "applicable instructions exceed 40 KB")
-            values.append({"path": candidate, "sha256": sha256(content).hexdigest(), "content": content.decode("utf-8")})
-        from baseagent.tools.instructions import instruction_digest
-        return {"scope": "/".join(parts) or ".", "instructions": values, "digest": instruction_digest(values)}
+            if status != "ok":
+                raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"{candidate} could not be read in the container")
+            chain.append((candidate, lambda limit, triple=(digest, size, heads[candidate]): triple))
+        return assemble("/".join(parts) or ".", chain)
 
     def observe_many(self, paths):
-        """{path: (sha256 | "missing", instruction digest)} for drift checks, in one exec.
+        """{path: (sha256 | "missing", instruction digest)} for drift checks, in one exec, hashes only.
 
-        Same answers as ``file_hash`` + ``get_instructions`` per path; a path whose hash or
-        guidance cannot be read maps to ``("unavailable", "unavailable")``.
+        Same answers as ``file_hash`` + ``get_instructions`` per path: files over the 200 KB read limit
+        and unreadable guidance map to ``("unavailable", "unavailable")``; AGENTS.md of any size is
+        hashed whole, like LocalBackend.
         """
         from baseagent.tools.instructions import instruction_digest
         relatives = {path: self._guidance_relative(path) for path in paths}
@@ -491,34 +526,36 @@ class DockerBackend:
                      for index in range(len(parts) + 1)]
             chains[path] = chain
             wanted += [item for item in chain if item not in wanted]
-        entries = [f"r:{relative}" for relative in relatives.values()] + [f"i:{item}" for item in wanted]
-        statuses, contents = self._probe(entries, READ_LIMIT)
-        files = dict(zip(relatives.values(), statuses[:len(relatives)]))
-        guidance = dict(zip(wanted, statuses[len(relatives):]))
+        order = list(dict.fromkeys(relatives.values()))
+        statuses = self._sums([f"r:{relative}" for relative in order] + [f"i:{item}" for item in wanted])
+        files = dict(zip(order, statuses[:len(order)]))
+        guidance = dict(zip(wanted, statuses[len(order):]))
         values = {}
         for path, relative in relatives.items():
-            status = files[relative][0]
+            status, _, digest = files[relative]
             if status == "missing":
                 current = "missing"
-            elif status == "ok" and relative in contents and len(contents[relative]) <= READ_LIMIT:
-                current = sha256(contents[relative]).hexdigest()
+            elif status == "ok":
+                current = digest
             else:
                 values[path] = ("unavailable", "unavailable")
                 continue
-            chain = chains[path][:-1]          # a file (or a missing path) has no AGENTS.md inside it
-            found, total, broken = [], 0, False
-            for item in chain:
-                kind = guidance[item][0]
+            found, broken = [], False
+            for item in chains[path][:-1]:          # a file (or a missing path) has no AGENTS.md inside it
+                kind, _, item_digest = guidance[item]
                 if kind in ("missing", "dir", "notfile"):
                     continue
-                content = contents.get(item)
-                if kind != "ok" or content is None or len(content) > 20_000:
+                if kind != "ok":
                     broken = True
                     break
-                total += len(content)
-                found.append({"path": item, "sha256": sha256(content).hexdigest()})
-            values[path] = ("unavailable", "unavailable") if broken or total > 40_000 else (current, instruction_digest(found))
+                found.append({"path": item, "sha256": item_digest})
+            values[path] = ("unavailable", "unavailable") if broken else (current, instruction_digest(found))
         return values
+
+    def rules_files(self):
+        """Status of the root AGENTS.md and CLAUDE.md, decided inside the container (``/status``, json)."""
+        statuses = self._sums(["i:AGENTS.md", "s:CLAUDE.md"])
+        return {"AGENTS.md": statuses[0][0], "CLAUDE.md": statuses[1][0]}
 
     def list_files(self, path="."):
         """(files, directories) under ``path``: sorted workspace-relative POSIX paths, links excluded."""

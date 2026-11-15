@@ -2,7 +2,7 @@
 
 Run as ``docker exec CONTAINER sh -c FS_SCRIPT baseagent-fs ROOT OP ARG...``. ROOT is the
 mount point (``/workspace``); tests run the same script on a temporary host directory.
-Only ``cat``, ``sha256sum``, ``cut``, ``wc``, ``tr``, ``tar``, ``find``, ``mktemp``, ``ln``,
+Only ``cat``, ``head``, ``sha256sum``, ``cut``, ``wc``, ``tr``, ``tar``, ``find``, ``mktemp``, ``ln``,
 ``mv``, ``rm``, ``mkdir``, ``dirname``, ``readlink -f``, ``stat``, ``chmod``, ``chown`` and
 ``grep`` are used, so coreutils (Debian/Ubuntu images) and busybox (Alpine) both work.
 
@@ -13,6 +13,11 @@ Operations (paths are workspace-relative POSIX paths already checked on the host
     ``@@ STATUS [SIZE]`` line goes to stderr, in order; STATUS is ok, missing, dir, notfile,
     escape, link or large. Readable files then go to stdout as one tar stream (links that
     stay inside the workspace are followed, like LocalBackend reads).
+``heads LIMIT ENTRY...``  rules files (``i:`` / ``s:`` entries): one ``@@ ok SIZE SHA256`` (or ``@@ STATUS``)
+    line per entry on stderr; for each readable ``i:`` entry the first LIMIT bytes on stdout, in
+    order. Size, hash and bytes come from one snapshot copied to the container's /tmp, so they agree.
+``sums LIMIT ENTRY...``   hashes only, no content: one stdout line per entry, ``ok SIZE SHA256``,
+    ``large SIZE`` (an ``r:`` file over LIMIT) or the status. ``i:`` entries have no size limit.
 ``stat PATH...``           one stdout line per path: ``ok SHA256 MODE`` or the status.
 ``put PATH EXPECTED MODE`` stdin becomes the file. EXPECTED is a digest, ``missing`` or
     ``force``; the hash is compared again right before the rename. MODE is octal or ``-``
@@ -79,6 +84,34 @@ probe)
   done
   [ "$#" -eq 0 ] && exit 0
   exec tar -chf - "$@"
+  ;;
+heads)
+  limit=$1; shift
+  for e in "$@"; do
+    kind=${e%%:*}; p=./${e#?:}
+    classify "$p"
+    if [ "$st" = ok ] && [ "$kind" = i ] && ! nolinks "$p"; then st=link; fi
+    if [ "$st" != ok ] || [ "$kind" = s ]; then echo "@@ $st" >&2; continue; fi
+    t=$(mktemp "${TMPDIR:-/tmp}/baseagent-rules.XXXXXX") || fail 7 "cannot create a temporary file"
+    if ! cat "$p" > "$t"; then rm -f "$t"; echo "@@ unreadable" >&2; continue; fi
+    echo "@@ ok $(size "$t") $(sha "$t")" >&2
+    head -c "$limit" "$t"
+    rm -f "$t"
+  done
+  ;;
+sums)
+  limit=$1; shift
+  for e in "$@"; do
+    kind=${e%%:*}; p=./${e#?:}
+    classify "$p"
+    if [ "$st" = ok ] && [ "$kind" = i ] && ! nolinks "$p"; then st=link; fi
+    if [ "$st" = ok ] && [ "$kind" != s ]; then
+      s=$(size "$p")
+      if [ "$kind" = r ] && [ "$s" -gt "$limit" ]; then echo "large $s"; else echo "ok $s $(sha "$p")"; fi
+    else
+      echo "$st"
+    fi
+  done
   ;;
 stat)
   for rel in "$@"; do

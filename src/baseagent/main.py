@@ -557,6 +557,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
     mcp = None
     mcp_skipped = None
+    final_rules = None
     backend = None
     backend_info = None
     signals = {}
@@ -741,7 +742,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 print(DOCKER_FULL_MODE_NOTE.format(network=network), file=sys.stderr)
             machine.backend(backend_info)
             workspace = Workspace(backend=backend, allow_write=args.allow_write, allow_command=args.allow_command,
-                                  allow_memory_publish=args.allow_memory_publish)
+                                  allow_memory_publish=args.allow_memory_publish, project_rules=project_rules)
         else:
             if (not args.accept_config_changes and existing is not None and existing.status != "completed"
                     and (existing.metadata or {}).get("execution_backend")):
@@ -1022,6 +1023,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                                     workers=workers, main_agent=True, status_events=False,
                                     printer=lambda stream, text: print(text, file=human if stream == "out" else sys.stderr))
             finishing.finish_workers()
+        if machine.enabled:
+            # Read before `finally` removes a Docker container: rule metadata comes through the backend.
+            final_rules = rules_summary(workspace, enabled=project_rules)
     except KeyboardInterrupt:
         if machine.enabled:
             machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,
@@ -1077,10 +1081,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     if machine.enabled:
         value = machine_result(state, model_name=config["model"], store=store, include_patches=machine.format == "json",
                                backend=backend_info)
-        rules = rules_summary(workspace, enabled=project_rules)
-        if rules is not None and rules.get("path"):
+        if final_rules is not None and final_rules.get("path"):
             # Optional, metadata only (never the rules text); absent without a root AGENTS.md.
-            value["project_rules"] = rules
+            value["project_rules"] = final_rules
         if mcp_skipped is not None:
             # Optional: the project's .mcp.json was not trusted, so no server started (names only).
             value["mcp"] = mcp_skipped
