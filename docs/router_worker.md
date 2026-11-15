@@ -59,8 +59,12 @@ Worker 没有类型，区别只在本次是否允许写入：
 - **每一轮主 Agent 一份共享预算**（`TurnBudget`）：这一轮主 Agent 自己的调用，加上这一轮派出的所有 Worker，共用 `--max-model-calls`、`--max-steps` 和（可选）`--budget-cny` 的总额。连续对话默认 16 / 16，`--budget-cny` 默认不开。
 - 计数在真正派发模型请求的边界（最内层中间件 `SharedBudgetMiddleware`）上原子加锁检查；并发下合计绝不超过上限。被节点自身上限拒绝、没有真正派发的调用会退还。
 - 派出 Worker 时为主 Agent 的回复**预留 1 次**模型调用和步数：Worker 拿不到这一次，主 Agent 的下一次调用用掉预留。单个 Worker 的上限仍是 `min(12, 剩余 − 1)`，工具调用 `min(24, 主 Agent 本轮剩余工具额度)`；剩余不够时 `delegate_task` 直接失败，主 Agent 用已知信息回答。
-- 下一条用户消息开新的一轮、新的一份预算；已经在跑的 Worker 继续用它出发那一轮的预算。续跑一个没完成的主 Agent 轮次时，用新的一份预算，计入主 Agent 这一轮已用的次数。
-- `--budget-cny` 按模型报告的用量和 qwen-plus 价格（输入 0.8、输出 2 元/百万 token，与评测 metering 相同）累计，**派发前**检查是否已花完。花费只能事后得知，所以在额度被越过时已经在途的调用（最多每个并行者一次）仍可能计费；某次调用没报告用量时，后续调用一律拒绝。模型调用次数和步数是精确上限，CNY 不是。
+- 下一条用户消息开新的一轮、新的一份预算；已经在跑的 Worker 继续用它出发那一轮的预算。
+- **续跑不清零**：续跑一个没完成的轮次（再发一条消息、`/continue`、`--resume`）时，同一进程里沿用这一轮仍在用的那份预算；重启后按会话里已保存的用量重建——主 Agent 这一轮的计数和 token，加上这一轮派出的每个 Worker 会话的计数和 token。所以已花的 CNY、Worker 已用的步数和模型调用都照算，主 Agent 和 Worker 都不会因续跑多拿额度。之后用 `--resolve-usage` 补记的用量也算进去；这一轮里还有没报告用量的调用时，带 `--budget-cny` 的续跑一律拒绝。
+- `/continue [N]` 只把这一轮共享的步数和模型调用在**已用总数**（主 Agent + Worker）之上再加 N，从不提高 CNY 上限。CNY 上限跟着这一轮走：续跑时不写 `--budget-cny` 就沿用原上限；要接着花钱，只能显式写更大的 `--budget-cny` 重新进入同一个 `--session`。
+- 主会话的 `metadata.budget_turns` 记下每一轮（最近 50 轮）的共享上限、CNY 上限和主 Agent 自己的用量。等审批的 Worker 在重启后才被批准时，按它出发那一轮的预算重建，而不是拿一份新的。旧会话没有这份记录，照样能续跑：当前轮按会话计数重建，更早轮次里主 Agent 的那部分记为 0（Worker 的部分照算）。
+- `--budget-cny` 按模型报告的用量和 qwen-plus 价格（输入 0.8、输出 2 元/百万 token，与评测 metering 相同）累计，**每次派发前**（步数检查时就先查）检查是否已花完；花完后不再发起新的模型请求。
+- **CNY 不是硬性封顶**：一次请求的费用要等它返回、报告用量后才知道，所以检查只能挡住下一次请求。最后一次被放行的请求（并行时每个 Worker 各一次）可能把总额推过上限，这部分已经发出去，照样计费，也不会退。花费按 qwen-plus 价格估算，不是 provider 账单；换了模型或价格，实际费用会不同。某次调用没报告用量时，后续调用一律拒绝。模型调用次数和步数是精确上限，CNY 不是。
 - 共享额度用完的 Worker 记为 `failed`，`detail` 是 `shared_max_model_calls` / `shared_max_steps` / `shared_budget_cny`，中文说明会写清楚是「这一轮的共享额度」而不是 Worker 自己的上限。
 
 ## 对话命令
@@ -110,7 +114,7 @@ Worker 没有类型，区别只在本次是否允许写入：
 - 新的连续对话默认开启主 Agent。`--no-main-agent` 回到自己执行工具的单 Agent 对话。
 - 会话模式写在会话元数据 `metadata["session_mode"]`（`main-agent` / `single-agent`），`is_main_agent_session` 先看它；没有这个字段的旧会话回退到比对系统提示（当前提示和全双工之前的顺序版提示都算主 Agent）。已有会话保持创建时的模式，`--main-agent` / `--no-main-agent` 对它不生效并给出提示。一次性会话不写这个字段，行为不变。
 - **一次性 `baseagent "task" --session <主 Agent 会话>` 被拒绝**，退出码 1，提示用 `baseagent --session <id>` 在对话里继续。理由：一次性路径是单 Agent，没有对话可以接收后台推送；如果按单 Agent 跑，会把主 Agent 会话混成另一种模式，下次对话的工具面和提示就对不上。拒绝最简单，也不改变一次性模式本身的行为。
-- `--main-agent`、`--max-workers`、`--budget-cny` 只用于连续对话；和一次性提示一起用会报参数错误。`--main-agent` 和 `--subtasks-config` 互斥。
+- `--main-agent`、`--max-workers` 只用于连续对话；和一次性提示一起用会报参数错误。`--budget-cny` 也可以用于一次性提示和 `--no-main-agent` 单 Agent 对话：这时只查 CNY，步数和模型调用仍按单 Agent 自己的上限；`--resume` 同样沿用这一轮已花的金额和上限。`--main-agent` 和 `--subtasks-config` 互斥。
 - `--subtasks-config` / `run_subtask(name, prompt)` 和同步的 `WorkerRuntime` 仍是库接口和显式调试入口，不是对话的产品路径。
 
 ## 成本
