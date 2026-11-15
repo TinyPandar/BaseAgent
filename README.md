@@ -148,6 +148,76 @@
 
 做完后在这里补一张表：`AC | 状态（完成/部分/未做）| 证据（测试名或提交）| 备注`。再列出：冲突解决清单；读代码时发现与本段描述不符的地方；你自己拍板的点和理由；Terminal-Bench 付费跑前还缺什么（沿用旧分支的清单并更新）。
 
+**环境说明（先看）：** 实现机是 macOS（Apple M4），**没有 Docker**。离线测试用假 Docker（`baseagent.testing.docker.FakeDocker`：把 `docker exec` 的命令和容器内文件脚本在本机真实跑一遍，不隔离）。**真实 Docker 冒烟测试 `tests/test_docker_smoke.py` 本轮也没有跑过**：没有 Docker，3 个用例按原因 skip（`Docker CLI is not installed`）。凡依赖真实冒烟的 AC 记「部分」。下面 `cli::` = `tests/test_docker_cli.py`，`int::` = `tests/test_docker_integrate.py`，`smoke::` = `tests/test_docker_smoke.py`。
+
+**提交（本分支，基于 master d61e891）：** b53ecf8 设计；cherry-pick 8 个：0fece49（=782f033）、e3e4703（=16c13e1）、2fca7ca（=e70bf38）、8533c55（=ddd6282）、f9a5d7f（=30a1c26）、287a7a6（=12905a0）、81e3bf6（=117efe8）、8c0440f（=0c02cfb）；跳过 2 个：3fb6462、b49cd2f（只改旧施工段）；新增 3 个：44df7da（AC 21–23、25）、cbf9e91（AC 26、27）、b82f9db（文档、冒烟补充）。
+
+| AC | 状态 | 证据 | 备注 |
+| --- | --- | --- | --- |
+| 1 `--backend`，默认逐字一致 | 完成 | `cli::test_explicit_local_matches_the_default_byte_for_byte`；`test_output_format` 的 master 录像、`test_modes` 不改就过 | |
+| 2 镜像、开网参数 | 完成 | `cli::test_docker_options_need_the_docker_backend`、`test_only_the_workspace_is_mounted_and_the_network_is_off_by_default` | `--docker-image`（默认 `python:3.12-slim`）、`--docker-network none\|bridge` |
+| 3 一次性 / 续跑 / 对话 / Worker；换后端被拒 | 完成 | `cli::test_one_shot_…`、`test_resume_uses_a_new_container_and_backend_switches_are_refused`、`test_a_local_unfinished_turn_cannot_continue_in_docker`、`test_chat_turns_and_workers_share_one_container`、`test_uncaught_exception_and_frontend_close_remove_the_container`（TUI / Web） | |
+| 4 `--mode full` 说明；权限不放宽 | 完成 | `cli::test_full_mode_explains_…`、`test_permission_modes_and_tool_policy_are_unchanged_under_docker` | |
+| 5 只看得到工作区 | 部分 | `cli::test_escapes_are_refused_like_local`、`test_the_container_script_checks_links_itself`、挂载参数断言；`smoke::test_isolation_network_ownership_undo_and_cleanup` | 真实冒烟未运行 |
+| 6 默认断网 | 部分 | 下发参数断言；`tests/test_demo_docker.py`（假 Docker 用代理变量模拟断网）；同上冒烟 | 真实冒烟未运行 |
+| 7 受保护路径、会话库、`.git` | 部分 | `cli::test_protected_paths_are_refused_and_harness_state_is_hidden`、`test_database_inside_the_workspace_is_refused_with_exit_2`；冒烟写 `.baseagent/…`、`.git/…` | `.baseagent` 空 tmpfs、`.git` 只读挂载；真实冒烟未运行 |
+| 8 文件属主 | 部分 | `cli::test_files_go_back_to_the_host_user_on_linux`、`int::test_containers_drop_capabilities_and_privilege_gain`（加固后交还仍执行）；冒烟查 `st_uid` | 没有 Linux 机器，真实未验证 |
+| 9 同工作区两个会话 | 完成 | `cli::test_two_sessions_on_one_workspace_do_not_collide`、`test_leftover_containers_are_reaped_but_live_ones_are_kept` | |
+| 10 检查点 / 撤销 | 完成（真实冒烟未跑） | `cli::test_chat_checkpoints_undo_and_rewind_restore_exact_bytes`、`test_drift_force_and_pending_approval_behave_like_local`、`test_cli_checkpoints_and_rewind_last_work_for_a_docker_session_without_docker`；`smoke::test_chat_undo_inside_the_container` | |
+| 11 `apply_patch` 全有或全无 | 完成 | `cli::test_apply_patch_rolls_back_when_the_second_file_fails`、`test_patch_rollback_in_a_session_leaves_no_checkpoint` | 删除有锁 |
+| 12 `post_edit_check` / `max_changed_lines` | 完成 | `cli::test_post_edit_check_and_diff_limit_work_in_the_container`、`test_backends_that_cannot_roll_back_refuse_post_edit_check_at_startup` | |
+| 13 Docker 不可用 | 完成 | `cli::test_docker_unavailable_fails_before_the_model_with_exit_3` | 退出码 3；本机实测 `python -B scripts/demo_docker.py` 退出 3 |
+| 14 运行中容器挂掉 | 完成（假 Docker） | `cli::test_a_dead_container_fails_the_turn_readably_and_resume_continues`、`test_a_command_in_a_dead_container_returns_a_clear_tool_error`、`int::test_status_survives_a_dead_container` | 新增：容器挂掉后 `/status` 的规则行报错而不崩 |
+| 15 清理 | 完成（真实冒烟未跑） | `cli::test_container_is_removed_on_every_exit_path`、`test_uncaught_exception_and_frontend_close_remove_the_container`、`test_sigterm_and_sighup_still_remove_the_container`、`test_leftover_containers_…`；`smoke::test_ctrl_c_exits_130_and_removes_the_container` | |
+| 16 可见性 | 完成 | `cli::test_json_jsonl_status_and_stderr_name_the_backend` | 没有 `backend` 键即 local |
+| 17 Terminal-Bench | 完成 | `cli::TerminalBenchTests::test_fixture_runs_through_the_docker_backend_offline`；本机 `python -B scripts/evaluate_terminal_bench.py --fixture --backend docker` 成功率 1.0、容器已删 | `score_records` 未改 |
+| 18 测试 | 部分 | 见下「全量测试」；`test_docker_backend.py`、`test_docker_cli.py`、`test_docker_integrate.py`、`test_docker_smoke.py`、`test_demo_docker.py`、`test_apply_patch*.py` 连跑 3 遍：每遍 96 passed、4 skipped | 真实冒烟没跑过 |
+| 19 文档 | 完成 | 81e3bf6、b82f9db | |
+| 20 离线演示 | 完成（真 Docker 部分未跑） | `tests/test_demo_docker.py`；docs/demo.md | |
+| 21 规则开关在 docker 下生效 | 完成 | `int::test_no_project_rules_hides_the_text_under_docker_like_local`（`--no-project-rules` 和 `run.project_rules: false`，与 local 对照；四种情况的写入摘要相同） | 44df7da |
+| 22 `AGENTS.md` 截断语义一致 | 完成 | `int::test_docker_cuts_and_hashes_exactly_like_local`（>20 KB、3 字节字符跨在边界上、两级目录链合计超 40 KB，结果与 local 逐项相等）、`test_a_change_after_the_cut_is_drift_and_a_write_conflict`、`test_rules_reads_are_one_exec_and_never_transfer_whole_files`、`test_a_chat_with_long_rules_runs_and_the_model_sees_the_cut`；`cli::test_batched_drift_check_matches_file_by_file_answers` | 不再报 `LIMIT_EXCEEDED` / `unavailable` |
+| 23 规则元数据可信 | 完成 | `int::test_a_rules_link_to_a_host_file_is_not_described`、`test_the_summary_is_read_through_the_backend_without_host_file_access`、`test_status_and_json_report_rules_while_the_container_is_still_there` | 选「经后端读取」，理由见设计 |
+| 24 冲突后的文档 | 完成 | 81e3bf6 的冲突解决、b82f9db；`rg` 只剩本施工段自己引用过时说法 | `src/baseagent/tools/search.py` 的「workspace search requires a local backend」只对没有 `list_files` 的第三方后端，仍然准确 |
+| 25 多个可选字段同时出现 | 完成 | `int::test_project_rules_mcp_backend_and_patches_together`；local 基线由 `test_output_format`、`test_mcp_trust` 守住 | |
+| 26 local 警告指向 `--backend docker` | 完成 | `int::test_local_full_mode_warning_points_to_the_docker_backend`；cbf9e91 | **有意的输出变化**：local `--mode full` 的 stderr 警告从「For isolation use DockerBackend」改为「For isolation use --backend docker」。没有录制基线写死这句（`test_modes` 用的是常量），所以无需改基线 |
+| 27 容器加固 | 部分 | `int::test_containers_drop_capabilities_and_privilege_gain`、`test_hardening_is_part_of_the_resume_contract`；`smoke::test_isolation_…` 新增检查「root 仍能改宿主用户的文件、`CapEff` 恰为 `0xb`」 | 参数断言完成；真实冒烟未运行，加回的三个能力够不够、`no-new-privileges` 有没有副作用都没在真 Docker 上验证 |
+| 28 测试与文档 | 完成 | 本表、下面三张清单 | |
+
+**全量测试（清掉 `SAND_*`、删掉 `.baseagent/live_answers_checkpoint.json`）：** 9 failed、1275 passed、5 skipped（4 个真实 Docker 用例 + 1 个原有的）。
+
+- 预期内 2 个：`tests/test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines`（本段 README 的 corpus_version）；`tests/test_record_coding_scenario.py::test_all_real_recordings_replay_offline`。
+- 另外 7 个是这台 Mac 的环境问题，**在新 master d61e891 上同一台机器原样失败**（用临时工作树跑过：同一组测试在 master 上失败 8 个，就是这 7 个加上那条预期内的录像回放测试）：`test_backends…test_local_backend_executes_literal_argv_and_keeps_native_cas`、`test_config…test_relative_paths_and_empty_package_selection`、`test_evaluate_retrieval_cli…test_real_provider_from_env_batches_persists_and_omits_secrets`、`test_coding…test_cooperating_file_lock_blocks_second_writer`（这 4 个都是测试拿未解析的 `/var/…` 临时路径和代码解析后的 `/private/var/…` 比较；文件锁那条是锁文件名按路径算，两个路径算出两把锁），`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py::test_three_runs_and_replay_with_fake_client`、`…::test_workspace_report_and_timing_normalize_across_recording_and_replay`（录像回放 `request.messages[2].content` 不一致，原因没深挖）。与本分支无关，修它们要动 master 上 RAG / coding 的测试，不在本段范围，没改。Linux 上应只剩 2 个预期失败，本轮无法验证。
+- `tests/test_mcp_client.py::ClientTests::test_server_exit_during_a_call_is_a_failure_and_later_calls_fail_fast` 在一次全量里失败过一次，单独连跑 3 遍都通过，最后一次全量也通过，属于负载下的计时偶发（与 `test_chat_events…test_overflowed_cursor_returns_a_resync_snapshot` 同类）；那个已知偶发本轮没有出现。
+
+**冲突解决清单：**
+
+- `3fb6462`、`b49cd2f`：只改旧施工段。`3fb6462` 冲突，保留本段后为空，`--skip`。`b49cd2f` 没报冲突，但 git 按模糊上下文把旧完成情况表接到了本段「完成情况」下面；它还没推送，本地丢弃（等同 skip），旧表没有带过来。
+- `src/baseagent/main.py`（782f033，3 处）：变量初始化两边都留（`mcp_skipped` + `backend` / `backend_info`）；构造 `Workspace`：docker 的 `if args.backend == "docker"` 分支整段保留，local 分支用 master 的带 `project_rules` 的构造，master 的「规则被截断」stderr 提示挪到 if/else 之后，两种后端都打印；`machine_result`：master 的 `project_rules` / `mcp` 追加逻辑保留，加 `backend=backend_info`。之后 44df7da 又给 docker 分支补了 `project_rules`，并把 json 的规则摘要挪到删容器之前（见设计）。
+- `src/baseagent/tools/workspace.py`（782f033）：`self.project_rules`（master）和 `post_edit_check` 的后端校验（docker）都保留。
+- `README.md`（117efe8）：「Edit policy」段用 master 的句子（`apply_patch` 逐文件、整批改动行数）加 docker 的事务检查说法（LocalBackend 或 DockerBackend，不能写回的后端构造时报错）。
+- `docs/output.md`（117efe8）：字段表 `project_rules`、`mcp`、`backend` 三行都留；另补一句可选字段可同时出现。
+- `docs/patch.md`（117efe8）：Watchdog / HK 条用 master 的（已识别 `apply_patch`），撤销 / 回滚条用 docker 的（docker 下支持 `/undo`，回滚有锁）。
+- 自动合并、核对过语义的：`chat/session.py`（状态里的 `backend` 字段和 master 的新字段并存）、`chat/text.py`（`/status` 的 `Backend:` 行插在 `Workspace:` 下面，master 的规则行在它后面）、`middleware/repository.py`（12905a0 的批量 `observe_many` 和 master 的「关了规则不注入正文」互不相干）、`docs/checkpoints.md`、`docs/demo.md`。
+
+**读代码时发现与「现状」不符或没写到的地方：**
+
+- 现状说规则摘要「直接在宿主上按 `workspace.root` 读」，没提时序：master 在 `finally` 之后才算 json 的 `project_rules`，docker 下那时容器已删，经后端根本读不到。已挪到删容器之前。
+- 容器挂掉时，`/status` 经后端读规则会抛 `DockerError`（`rules_lines` 只接 `OSError`），对话里 `/status` 会出错。已在规则摘要里兜住。
+- 旧 `DockerBackend.observe_many` 为算哈希把被观察文件的全文都传回宿主（每次模型调用和工具调用前各一次），现在只传哈希。
+- `/status` 在会话还没落盘时（第一轮之前）不显示规则行，local 也一样，这是 master 的行为，没改。
+
+**拍板的点：** 设计小节已写（AC 22 方案 1、AC 23 方案 1、只加回 `CHOWN` / `DAC_OVERRIDE` / `FOWNER`）。另外：local 下符号链接的 `AGENTS.md` 在 `/status` / json 里照旧按链接目标描述（master 行为不变）；docker 下同样的情况报 `could not be read (symlink)`，两边因此不同，这是有意的。加固设置进了后端契约（`capabilities`、`no_new_privileges`），旧分支上起的未完成 docker 轮次续跑要 `--accept-config-changes`（docker 后端从没进过 master，影响面只有旧分支的试用会话）。
+
+**Terminal-Bench 付费跑之前还缺（沿用旧清单，按本轮更新）：**
+
+- `--live` 仍只打印计划、不执行：没有下载 Harbor 题目包、逐题起环境、汇总的执行器。
+- 题目镜像和工作目录（常见 `/app`）没对接：现在只能把宿主目录挂到 `/workspace`。
+- Harbor 在同一个容器里判分；我们结束就删容器，工作区以外的改动（装的包、起的服务）判分时已不在。
+- 默认断网、内存固定 512m；默认镜像没有 `git`。
+- 新增：加固后去掉了 `SETUID` / `SETGID`，题目里 `apt-get install` 要加 `-o APT::Sandbox::User=root`，用到 `su` / `sudo` 的题会失败；跑分前要看题目集里有多少这种情况，决定是否给跑分单独放宽。
+- 一次性任务没有 `--budget-cny`，付费预算要靠 `--max-steps` / `--max-total-tokens` 和外层脚本。
+- **先在有 Docker 的跑分机上真跑一遍 `tests/test_docker_smoke.py` 和 `python -B scripts/demo_docker.py`**：两轮都没跑过，AC 5–8、27 的真实部分都悬着。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
