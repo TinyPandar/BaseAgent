@@ -18,6 +18,7 @@ from .search import grep as search_grep
 RULES_OFF_NOTE = ("Project rules are turned off for this session (--no-project-rules); AGENTS.md text is not "
                   "shown. Use the digest for expected_instructions.")
 
+DEFAULT_COMMAND_TIMEOUT = 60
 GIT_STATUS_OUTPUT = 30_000
 GIT_STATUS_ENTRIES = 500
 GIT_CODES = {"M": "modified", "T": "type_changed", "A": "added", "D": "deleted", "R": "renamed", "C": "copied",
@@ -80,7 +81,9 @@ def apply_edits(content: str, edits: list[dict]) -> str:
 class Workspace:
     def __init__(self, root: str | Path | None = None, *, backend: WorkspaceBackend | None = None,
                  allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=(), edit_policy: EditPolicy | None = None,
-                 project_rules: bool = True):
+                 project_rules: bool = True, max_command_timeout: int = DEFAULT_COMMAND_TIMEOUT):
+        if type(max_command_timeout) is not int or max_command_timeout < 1:
+            raise ValueError("max_command_timeout must be a positive integer number of seconds")
         if backend is None:
             if root is None:
                 raise ValueError("workspace requires a root or backend")
@@ -101,6 +104,9 @@ class Workspace:
         # False (--no-project-rules): AGENTS.md text is withheld from the model; digests are unchanged, so the
         # expected_instructions write CAS and drift detection work exactly as with the rules on.
         self.project_rules = project_rules
+        # Upper bound for one command's timeout. 60 s by default; evaluation runs may raise it.
+        # The turn deadline still caps every command (see _run_bounded_command).
+        self.max_command_timeout = max_command_timeout
         self._read_roots = set()
 
     def allow_read_root(self, root):
@@ -115,6 +121,9 @@ class Workspace:
         return any(path == root or path.is_relative_to(root) for root in self._read_roots)
 
     def _read_path(self, relative: str) -> Path:
+        if not self._read_roots:
+            # No host spill directory is readable: plain namespace validation, no native path I/O.
+            return self._path(relative)
         candidate = Path(relative)
         resolved = (candidate if candidate.is_absolute() else self.root / candidate).resolve()
         if self._under_read_root(resolved) and resolved.is_file():
@@ -286,8 +295,9 @@ class Workspace:
             raise ToolFailure(ErrorCode.PERMISSION_DENIED, "commands disabled; start with --allow-command")
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "argv must be a nonempty string array")
-        if not 1 <= timeout <= 60:
-            raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, "timeout must be between 1 and 60 seconds")
+        if type(timeout) not in (int, float) or not 1 <= timeout <= self.max_command_timeout:
+            raise ToolFailure(ErrorCode.INVALID_ARGUMENTS,
+                              f"timeout must be between 1 and {self.max_command_timeout} seconds")
         if len(json.dumps(argv, ensure_ascii=False).encode("utf-8")) > 8_000:
             raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "command arguments exceed 8 KB")
 
@@ -370,7 +380,7 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     from .patch import DESCRIPTION as PATCH_DESCRIPTION
     from .patch import schema as patch_schema
     registry.register("apply_patch", PATCH_DESCRIPTION, patch_schema(), workspace.apply_patch, contextual=True)
-    command_fields = {"argv": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}, "timeout": {"type": "integer", "minimum": 1, "maximum": 60}}
+    command_fields = {"argv": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}, "timeout": {"type": "integer", "minimum": 1, "maximum": workspace.max_command_timeout}}
     registry.register("run_command", "Run an argv command in the workspace", params(command_fields, ["argv"]), workspace.run_command, contextual=True)
     steps = {"type": "array", "maxItems": 50, "items": params({"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}, "title": {"type": "string", "minLength": 1, "maxLength": 300}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "blocked"]}}, ["id", "title", "status"])}
     registry.register("update_plan", "Replace the session plan using its current revision; planning status is intent, not verification evidence", params({"steps": steps, "expected_revision": {"type": "integer", "minimum": 0}}, ["steps", "expected_revision"]), update_plan, contextual=True)

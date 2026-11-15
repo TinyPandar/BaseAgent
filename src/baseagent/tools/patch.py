@@ -109,10 +109,12 @@ def _plan_one(workspace, index, item, seen):
         raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, f"{op} requires the current file's expected_sha256")
     # Workspace boundary and protected paths, then links/junctions, then EditPolicy path rules.
     target = workspace._path(path)
-    if Path(os.path.abspath(workspace.root / path)) != target:
-        raise ToolFailure(ErrorCode.PERMISSION_DENIED, "write paths cannot use symlinks or junctions")
     from baseagent.backends import LocalBackend
     local = isinstance(workspace.backend, LocalBackend)
+    # Host namespaces are checked here; a backend whose root is not a host path (ExecBackend)
+    # checks links inside its own environment.
+    if isinstance(workspace.root, Path) and Path(os.path.abspath(workspace.root / path)) != target:
+        raise ToolFailure(ErrorCode.PERMISSION_DENIED, "write paths cannot use symlinks or junctions")
     if target == workspace.root or (local and target.exists() and not target.is_file()):
         raise ToolFailure(ErrorCode.PERMISSION_DENIED, "write target must be a file")
     workspace.edit_policy.check_path(workspace, path)
