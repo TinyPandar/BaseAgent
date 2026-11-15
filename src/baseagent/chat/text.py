@@ -194,6 +194,16 @@ def stop_explanation(state, *, interactive):
     if status in LIMITS:
         return _limit_explanation(state, status, interactive)
     shared = state.metadata.get("shared_budget_exhausted")
+    if shared and status == RunStatus.MAX_TOKENS_EXCEEDED and shared.get("reason") == "budget_unknown":
+        sid = state.session_id or "<id>"
+        what = ("the main-agent turn this worker belongs to is not recorded"
+                if shared.get("unrecovered") == "worker_turn_unknown" else
+                "the main agent's spend in that earlier turn was not saved")
+        return (f"The budget of the turn being resumed cannot be recovered ({what}; sessions from before budget "
+                "records), so no model request is sent rather than running without a cap. To go on, set a cap "
+                f"explicitly: baseagent --session {sid} --budget-cny <cap> (then /continue in chat, or add --resume "
+                "for a one-shot session). That cap counts only the usage still known (the workers' own sessions), "
+                "not the unrecorded part.")
     if shared and status == RunStatus.MAX_TOKENS_EXCEEDED:
         who = " (main agent + workers)" if is_main_agent_session(state) else ""
         sid = state.session_id or "<id>"

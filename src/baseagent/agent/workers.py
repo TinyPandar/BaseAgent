@@ -81,7 +81,8 @@ class TurnBudget:
 
     ``max_model_calls``/``max_steps`` may be None (no pool limit) for a single
     agent that only needs the CNY check; its own state limits still apply.
-    ``turn`` is the main-session turn number the pool belongs to.
+    ``turn`` is the main-session turn number the pool belongs to. ``unrecovered`` (a reason) marks a resumed
+    turn whose earlier spend could not be rebuilt: such a pool admits no step and no model request.
     """
 
     def __init__(self, max_model_calls, max_steps, *, budget_cny=None, reserve=1,
@@ -100,6 +101,7 @@ class TurnBudget:
         self.cost_cny = Decimal(0)
         self.usage_unknown = False
         self.turn = turn
+        self.unrecovered = None
         self._lock = threading.Lock()
 
     def seed(self, *, model_calls=0, steps=0, prompt_tokens=0, completion_tokens=0, unknown=False):
@@ -123,6 +125,8 @@ class TurnBudget:
 
     def admit_step(self, *, worker):
         with self._lock:
+            if self.unrecovered:
+                return "budget_unknown"
             # Checked here too, so a turn resumed with the CNY cap already spent uses no step either.
             if self._cny_spent():
                 return "budget_cny"
@@ -135,6 +139,8 @@ class TurnBudget:
 
     def admit_model(self, *, worker):
         with self._lock:
+            if self.unrecovered:
+                return "budget_unknown"
             if self.max_model_calls is not None and self.model_calls >= self.max_model_calls - (self.held_calls if worker else 0):
                 return "max_model_calls"
             if self._cny_spent():
@@ -171,6 +177,8 @@ class TurnBudget:
                      "steps": self.steps, "max_steps": self.max_steps}
             if self.budget_cny is not None:
                 value.update(cost_cny=str(self.cost_cny.quantize(Decimal("0.000001"))), budget_cny=str(self.budget_cny))
+            if self.unrecovered:
+                value["unrecovered"] = self.unrecovered
             return value
 
 
@@ -182,6 +190,23 @@ BUDGET_TURNS_KEPT = 50
 def turn_record(state, turn):
     """The saved pool record of ``turn`` in a main session, or {} (sessions from before this record)."""
     return dict(((state.metadata.get(BUDGET_TURNS) or {}).get(str(turn))) or {})
+
+
+def spend_recoverable(main_state, turn):
+    """Whether everything ``turn`` spent can be rebuilt: the main agent's share comes from its live counters
+    (the current turn) or from the saved record of that turn. Workers always carry their own counters."""
+    from baseagent.session.checkpoints import turn_number
+    if main_state is None or type(turn) is not int:
+        return False
+    return turn_number(main_state) == turn or "main" in turn_record(main_state, turn)
+
+
+def registered_turn(main_state, session_id):
+    """The main turn the parent registry records for worker session ``session_id`` (None when unknown)."""
+    for value in ((main_state.metadata.get("workers") or {}) if main_state is not None else {}).values():
+        if isinstance(value, dict) and value.get("session_id") == session_id and type(value.get("main_turn")) is int:
+            return value["main_turn"]
+    return None
 
 
 def turn_settings(store, main_state, records, turn):
@@ -241,7 +266,7 @@ class SharedBudgetMiddleware(AgentMiddleware):
     """Charge one TurnBudget at the real dispatch boundary (innermost model wrapper)."""
 
     STATUS = {"max_steps": RunStatus.MAX_STEPS_EXCEEDED, "max_model_calls": RunStatus.MAX_MODEL_CALLS_EXCEEDED,
-              "budget_cny": RunStatus.MAX_TOKENS_EXCEEDED}
+              "budget_cny": RunStatus.MAX_TOKENS_EXCEEDED, "budget_unknown": RunStatus.MAX_TOKENS_EXCEEDED}
 
     def __init__(self, budget, *, worker):
         self.budget, self.worker = budget, worker
@@ -404,6 +429,7 @@ class WorkerManager:
         self.join_seconds = join_seconds
         self.session_id = None
         self.budget = None
+        self.pools = {}  # main turn -> its one pool in this process (see turn_pool)
         self.records = {}
         self._next = 1
         self._lock = threading.RLock()
@@ -508,14 +534,27 @@ class WorkerManager:
         # The runner puts these innermost, so every real dispatch (including retries) is charged.
         return [InboxMiddleware(record), SharedBudgetMiddleware(self.pool_for(record), worker=True)]
 
+    def turn_pool(self, turn, build, *, replace=False):
+        """The one pool of main turn ``turn`` in this process: the cached one, or ``build()`` cached under the
+        manager lock. The main agent (resuming, /continue, /status) and every restored worker of that turn
+        get their pool through here, so concurrent first rebuilds cannot open two pools for one turn.
+        ``replace`` caches a fresh pool for a new turn."""
+        with self._lock:
+            pool = None if replace else self.pools.get(turn)
+            if pool is None:
+                pool = build()
+                pool.turn = turn
+                self.pools[turn] = pool
+            return pool
+
     def pool_for(self, record):
         """The pool of the main turn that dispatched ``record``. A worker restored after a restart (for example
         resumed after an approval) gets that turn's pool rebuilt from saved usage, never a fresh one."""
         with self._lock:
             if record.budget is None:
                 if record.main_turn is None:
-                    # Records from before main_turn was saved: charge the current pool rather than a fresh one.
-                    record.budget = self.budget or self.budget_factory()
+                    # Records from before main_turn was saved: the turn and its spend are unknown.
+                    record.budget = self.budget_factory(legacy=record)
                 else:
                     # Every worker of one turn draws from one pool: the main agent's, or the one another worker
                     # of that turn already rebuilt. Two pools would each let the whole remaining cap be spent.
