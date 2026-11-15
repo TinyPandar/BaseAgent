@@ -32,14 +32,22 @@ class FakeDocker:
         self.images = set(images)
         self.hook = hook
         self.calls = []
-        self.containers = {}          # name -> {"root", "labels", "network", "running", "mounts"}
+        self.containers = {}          # name -> {"id", "root", "labels", "network", "running", "mounts"}
+        self.names = {}               # container id -> name (kept after removal, for ``removed``)
         self._lock = threading.Lock()
         self._counter = 0
 
     # ----- bookkeeping ----------------------------------------------------------------------
     def removed(self):
-        """Names passed to ``docker rm -f``."""
-        return [argv[3] for argv in self.calls if argv[1:3] == ["rm", "-f"]]
+        """Names passed to ``docker rm -f`` (a container id is reported as the name it had)."""
+        return [self.names.get(argv[3], argv[3]) for argv in self.calls if argv[1:3] == ["rm", "-f"]]
+
+    def _resolve(self, reference):
+        """Docker accepts a name or an id wherever a container is named."""
+        if reference in self.containers:
+            return reference
+        name = self.names.get(reference)
+        return name if name in self.containers and self.containers[name].get("id") == reference else reference
 
     def started(self):
         return [argv[argv.index("--name") + 1] for argv in self.calls if argv[1] == "run"]
@@ -81,24 +89,28 @@ class FakeDocker:
                 (1, b"", f"Error response from daemon: No such image: {image}\n".encode())
         if command == "ps":
             wanted = argv[argv.index("--filter") + 1].removeprefix("label=").split("=", 1)
+            chosen = [(name, c) for name, c in self.containers.items() if c["labels"].get(wanted[0]) == wanted[1]]
+            if "-q" in argv:
+                lines = [c.get("id") or name for name, c in chosen]
+                return 0, ("\n".join(lines) + ("\n" if lines else "")).encode(), b""
             lines = [f"{name}|{c['labels'].get('baseagent.pid', '')}|{c['labels'].get('baseagent.host', '')}"
-                     for name, c in self.containers.items() if c["labels"].get(wanted[0]) == wanted[1]]
+                     for name, c in chosen]
             return 0, ("\n".join(lines) + ("\n" if lines else "")).encode(), b""
         if command == "run":
             return self._run_container(argv)
         if command == "rm":
-            name = argv[-1]
+            name = self._resolve(argv[-1])
             if self.containers.pop(name, None) is None:
                 return 1, b"", f"Error response from daemon: No such container: {name}\n".encode()
             return 0, f"{name}\n".encode(), b""
         if command == "start":
-            container = self.containers.get(argv[-1])
+            container = self.containers.get(self._resolve(argv[-1]))
             if container is None:
                 return 1, b"", b"Error response from daemon: No such container\n"
             container["running"] = True
             return 0, b"", b""
         if command == "inspect":
-            container = self.containers.get(argv[-1])
+            container = self.containers.get(self._resolve(argv[-1]))
             if container is None:
                 return 1, b"", f"Error: No such object: {argv[-1]}\n".encode()
             return 0, f"{str(container['running']).lower()} {str(container.get('oom', False)).lower()}\n".encode(), b""
@@ -149,9 +161,12 @@ class FakeDocker:
         bind = next(item for item in mounts if item.startswith("type=bind") and item.endswith(f"target={MOUNT}"))
         root = Path(bind.split("source=", 1)[1].split(",", 1)[0])
         self._counter += 1
-        self.containers[name] = {"root": root, "labels": labels, "network": argv[argv.index("--network") + 1],
+        container_id = f"fakecontainer{self._counter:04d}"
+        self.names[container_id] = name
+        self.containers[name] = {"id": container_id, "root": root, "labels": labels,
+                                 "network": argv[argv.index("--network") + 1],
                                  "running": True, "mounts": mounts, "image": image}
-        return 0, f"fakecontainer{self._counter:04d}\n".encode(), b""
+        return 0, f"{container_id}\n".encode(), b""
 
     def _prepare_exec(self, argv):
         index, env, workdir = 2, {}, MOUNT
@@ -168,7 +183,7 @@ class FakeDocker:
                 workdir = value
             index += 2
         name, command = argv[index], argv[index + 1:]
-        container = self.containers.get(name)
+        container = self.containers.get(self._resolve(name))
         if container is None:
             return 1, b"", f"Error response from daemon: No such container: {name}\n".encode()
         if not container["running"]:

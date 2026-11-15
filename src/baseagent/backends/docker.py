@@ -31,6 +31,7 @@ DEFAULT_MEMORY = "512m"
 DEFAULT_PIDS = 128
 MOUNT = "/workspace"
 LABEL = "baseagent.workspace"
+RUN_LABEL = "baseagent.run"
 READ_LIMIT = 200_000
 BATCH = 200                      # paths per batched read exec
 PROTECTED_PARTS = {".git", ".venv", ".baseagent"}
@@ -183,6 +184,9 @@ class DockerBackend:
         self.runner = runner or DockerCli()
         self.workspace_key = sha256(str(self.root).encode()).hexdigest()[:12]
         self.name = name or f"baseagent-{self.workspace_key}-{os.getpid()}-{secrets.token_hex(3)}"
+        # Marks the container this object's `docker run` creates. A failed start removes only containers with
+        # this label, never another container that holds (or took) the same name.
+        self.run_token = secrets.token_hex(8)
         # (uid, gid) owning new files on a Linux host; False/None disables the hand-back.
         self.owner = host_user() if owner is None else (owner or None)
         self.check = check
@@ -223,7 +227,7 @@ class DockerBackend:
             (self.root / ".baseagent").mkdir(exist_ok=True)
             argv = ["docker", "run", "-d", "--pull", "never", "--name", self.name,
                     "--label", f"{LABEL}={self.workspace_key}", "--label", f"baseagent.pid={os.getpid()}",
-                    "--label", f"baseagent.host={socket.gethostname()}",
+                    "--label", f"baseagent.host={socket.gethostname()}", "--label", f"{RUN_LABEL}={self.run_token}",
                     "--network", self.network, "--cpus", str(self.cpus), "--memory", self.memory,
                     "--pids-limit", str(self.pids), *HARDENING, "--entrypoint", "sleep",
                     "--mount", f"type=bind,source={self.root},target={MOUNT}"]
@@ -253,15 +257,25 @@ class DockerBackend:
                 raise
 
     def _discard_unstarted(self, original):
-        """Best-effort ``docker rm -f`` of this run's name after a failed start; never replaces ``original``."""
+        """Best-effort removal of the container this start created; never replaces ``original``.
+
+        Found by this run's label, removed by id: when `docker run` failed because the name is taken, the
+        container holding the name is someone else's and is not removed, stopped or touched.
+        """
+        problem = None
         try:
-            code, stdout, stderr = self.runner.run(["docker", "rm", "-f", self.name], timeout=60)
+            code, stdout, stderr = self.runner.run(["docker", "ps", "-a", "-q", "--no-trunc", "--filter",
+                                                    f"label={RUN_LABEL}={self.run_token}"], timeout=30)
+            if code != 0:
+                problem = explain_docker_failure(stderr, image=self.image)
+            for container in ([] if problem else stdout.decode("utf-8", errors="replace").split()):
+                code, stdout, stderr = self.runner.run(["docker", "rm", "-f", container], timeout=60)
+                if code != 0 and b"no such container" not in (stdout + stderr).lower():
+                    problem = explain_docker_failure(stderr, image=self.image)
         except BaseException as cleanup:  # noqa: BLE001 -- a second Ctrl+C or Docker gone: report, keep the original.
             problem = f"{type(cleanup).__name__}: {cleanup}".rstrip(": ")
-        else:
-            if code == 0 or b"no such container" in (stdout + stderr).lower():
-                return
-            problem = explain_docker_failure(stderr, image=self.image)
+        if problem is None:
+            return
         original.add_note(f"Docker warning: could not remove container {self.name} after the failed start "
                           f"({problem}); the next run in this workspace removes it.")
 
@@ -271,10 +285,12 @@ class DockerBackend:
             if not self.container_id:
                 return
             try:
-                self._after("-")
+                self._after("-", target=self.container_id)
             except Exception:  # noqa: BLE001 -- ownership is best effort; removal must still happen.
                 pass
-            code, stdout, stderr = self.runner.run(["docker", "rm", "-f", self.name], timeout=60)
+            # By id, not name: if this run's container was removed from outside and another container took the
+            # name since, that container is not this run's to remove.
+            code, stdout, stderr = self.runner.run(["docker", "rm", "-f", self.container_id], timeout=60)
             if code != 0 and b"no such container" not in (stdout + stderr).lower():
                 raise DockerError(explain_docker_failure(stderr, image=self.image))
             self.container_id = None
@@ -313,10 +329,10 @@ class DockerBackend:
             if removed == 0:
                 self.reaped.append(parts[0])
 
-    def alive(self):
+    def alive(self, target=None):
         """(running, oom_killed) of this run's container."""
         code, stdout, _ = self.runner.run(["docker", "inspect", "-f", "{{.State.Running}} {{.State.OOMKilled}}",
-                                           self.name], timeout=20)
+                                           target or self.name], timeout=20)
         if code != 0:
             return False, False
         words = stdout.decode().split()
@@ -328,16 +344,16 @@ class DockerBackend:
                            f"with --resume.")
 
     # ----- exec plumbing ------------------------------------------------------------------
-    def _exec(self, argv, *, input_bytes=None, timeout=60, user=False):
+    def _exec(self, argv, *, input_bytes=None, timeout=60, user=False, target=None):
         if not self.container_id:
             raise DockerError("Docker container is not running")
         command = ["docker", "exec"] + (["-i"] if input_bytes is not None else [])
         if user and self.owner:
             command += ["-u", f"{self.owner[0]}:{self.owner[1]}"]
-        command += ["-w", MOUNT, self.name, *argv]
+        command += ["-w", MOUNT, target or self.name, *argv]
         code, stdout, stderr = self.runner.run(command, input_bytes=input_bytes, timeout=timeout)
         if code in (1, 125, 126, 127) and _docker_level(stderr):
-            running, oom = self.alive()
+            running, oom = self.alive(target)
             if not running:
                 raise self._gone("out of memory" if oom else "")
             raise DockerError(explain_docker_failure(stderr, image=self.image))
@@ -358,10 +374,10 @@ class DockerBackend:
             raise DockerError(stderr.decode("utf-8", errors="replace").strip() or f"file operation failed ({code})")
         return stdout, stderr
 
-    def _after(self, marker):
+    def _after(self, marker, *, target=None):
         owner = self.owner or ("-", "-")
         self._exec(["sh", "-c", FS_SCRIPT, "baseagent-fs", MOUNT, "after", marker, str(owner[0]), str(owner[1])],
-                   timeout=120)
+                   timeout=120, target=target)
 
     # ----- namespace --------------------------------------------------------------------
     def allow_read_root(self, root):
