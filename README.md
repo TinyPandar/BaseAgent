@@ -42,6 +42,26 @@
 - M2 流式、并行只读、resume 的付费冒烟未跑。命令在 [docs/eval.md](docs/eval.md)。
 - LocalBackend 不是沙箱。需要隔离时用 DockerBackend，默认断网。
 
+## 施工中：预算续跑记账（`plan/budget-accounting`，本段合并进 master 前必须删除）
+
+提交见 `git log d61e891..`。费用 0：测试全部用离线假模型，没有调用任何付费 API；没有改 Docker 后端。规则本身写在 [docs/router_worker.md](docs/router_worker.md#预算共享)。
+
+| 验收项 | 状态 | 证据（`tests/test_budget_accounting.py` / 提交） |
+| --- | --- | --- |
+| `/continue`、再发消息、重启续跑不清零，额度用完不再发请求 | 完成 | `MainAgentResumeTests`；`278988f` |
+| 一次性任务支持 `--budget-cny` | 完成 | `OneShotBudgetTests`；`278988f` |
+| 第一轮复验：同轮多个恢复的 Worker 共用花费 | 完成 | `WorkerBypassTests.test_workers_of_one_turn_share_one_pool_after_a_restart`、`test_restored_workers_of_an_older_turn_get_one_pool`；`0780388` |
+| 第一轮复验：直接恢复 Worker 不绕过主预算 | 完成 | `test_resuming_a_worker_session_directly_uses_the_main_turn_pool`；`0780388` |
+| 第一轮复验：超过 50 轮仍保留历史 Worker 的上限 | 完成 | `test_records_of_turns_with_unfinished_workers_are_never_pruned`、`test_missing_turn_record_*`；`0780388`、`0b85e23` |
+| A. 缺 `main_turn` 的旧 Worker 从父登记表找回所属轮次，耗尽后新增请求 0 | 完成 | `LegacyWorkerAndConcurrencyTests.test_worker_without_main_turn_finds_its_turn_in_the_parent_registry`；`0b85e23` |
+| 恢复不出归属或金额时不放行、不默认不限额，提示显式 `--budget-cny` | 完成 | `test_worker_whose_turn_cannot_be_found_is_blocked_until_a_cap_is_given`、`test_missing_turn_record_blocks_instead_of_dropping_the_cap`；`0b85e23` |
+| B. 主 Agent 和多个 Worker 同时首次重建同一轮只得到一份预算 | 完成 | `test_concurrent_first_rebuilds_of_one_turn_share_one_pool`（事件驱动，不靠 sleep；三种先后顺序；一处花钱，其余看到同一累计）；`0b85e23` |
+| 不同轮次不混为一轮 | 完成 | `test_pools_of_different_turns_stay_apart`、`test_a_new_one_shot_turn_starts_a_fresh_pool` |
+
+A、B 和「恢复不出就不放行」的测试在修复前的代码上都会失败：A 那条多发 1 次请求；记录缺失、不带上限的那条照样让 Worker 发请求；并发那条在三种顺序下都重建了两份预算（例如 `['probe-main', 'probe-w1']`）。全量 1084 个测试里，失败的只有在分支修复前也同样失败的那些（缺 `pytest`、macOS 路径、`BASEAGENT_CONFIG_HOME` 等环境问题），外加 `corpus_version`：按惯例合并时用 `scripts/rebind_corpus_version.py --write` 重新绑定，`--check` 显示 101 条证据哈希都对得上。
+
+仍然存在的限制：CNY 不是硬性封顶（已经发出的请求照样计费，可能超过上限）；花费按 qwen-plus 价格估算；预算只在一个进程内共享，两个进程同时续跑同一轮时互相看不到对方的花费。
+
 ## 库与 CLI
 
 A reusable, white-box agent framework built around a small single-task kernel, configurable capabilities, model adapters, and a workspace boundary. The current synchronous harness and coding CLI provide the first working application. The default CLI uses an OpenAI-compatible chat completion endpoint configured through a local `.env` file.
