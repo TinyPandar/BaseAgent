@@ -260,3 +260,132 @@ class OneShotBudgetTests(MainAgentTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerBypassTests(MainAgentTestCase):
+    """Review findings: resuming workers must not open a second pool, skip the main turn's pool, or lose the cap."""
+
+    def wait_for(self, predicate, what):
+        deadline = time.monotonic() + WAIT
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.01)
+
+    def status_of(self, worker_id):
+        state = self.worker(worker_id)
+        return state.status if state is not None else None
+
+    def park_two_workers(self, cap):
+        """Turn 1: main 0.0008 + w1 0.0008 + w2 0.0008 = 0.0024; both workers park at a glob approval."""
+        def after_parked(messages):
+            self.wait_for(lambda: all(self.status_of(w) == RunStatus.AWAITING_APPROVAL for w in ("w1", "w2")),
+                          "workers never parked")
+            return ModelResponse({"content": "两个都在等审批"}, usage(0))
+
+        model = Duplex(main=[ModelResponse({"tool_calls": [delegate("d1", "A")["tool_calls"][0],
+                                                           delegate("d2", "B")["tool_calls"][0]]}, usage(1000)),
+                             after_parked, ModelResponse({"content": "第二轮"}, usage(0))],
+                       by_task={"A": [ModelResponse({"tool_calls": [tool_call("a1", "glob", {"pattern": "*.md"})]}, usage(1000))],
+                                "B": [ModelResponse({"tool_calls": [tool_call("b1", "glob", {"pattern": "*.txt"})]}, usage(1000))]})
+        options = ["--session", "demo", "--tool-policy", self.policy(["glob"]), "--budget-cny", cap]
+        # A later turn, so the parked workers belong to an older turn than the current one.
+        code, _, _ = self.invoke(options, model, ["两个任务", "/wait", "第二个问题", "/exit"],
+                                 approvals=[EOFError(), EOFError(), EOFError(), EOFError()])
+        self.assertEqual(code, 0)
+        self.assertEqual([self.status_of(w) for w in ("w1", "w2")], [RunStatus.AWAITING_APPROVAL] * 2)
+        return options
+
+    def test_workers_of_one_turn_share_one_pool_after_a_restart(self):
+        options = self.park_two_workers("0.003")
+
+        def approve_after_w1(prompt):
+            self.wait_for(lambda: self.status_of("w1") not in (RunStatus.RUNNING, RunStatus.AWAITING_APPROVAL),
+                          "w1 never finished")
+            return "y"
+
+        # w1 spends 0.0008 more (0.0032 >= 0.003); w2 must then be refused, not given its own 0.003.
+        resumed = Duplex(by_task={"A": [ModelResponse({"content": "A done"}, usage(1000))],
+                                  "B": [ModelResponse({"content": "B done"}, usage(1000))]})
+        code, _, _ = self.invoke(options, resumed, ["/wait", "/wait", "/exit"], approvals=["y", approve_after_w1])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(resumed.worker_seen), 1)
+        self.assertEqual(self.worker("w2").metadata["shared_budget_exhausted"]["cost_cny"], "0.003200")
+
+    def test_restored_workers_of_an_older_turn_get_one_pool(self):
+        # Two workers of turn 1 approved close together after a restart, while turn 2 is current:
+        # both must draw from one pool, or each could spend the whole remaining cap.
+        from baseagent.agent.workers import WorkerManager
+        built = []
+
+        def factory(**kwargs):
+            built.append(kwargs)
+            return TurnBudget(16, 16, budget_cny="0.003", turn=kwargs.get("turn"))
+
+        from baseagent.tools.registry import ToolRegistry
+        manager = WorkerManager(ToolRegistry(), system_prompt="x", store=None, runner=None, budget_factory=factory)
+        manager.budget = TurnBudget(16, 16, budget_cny="0.003", turn=2)
+        first, second = (WorkerRecord(f"w{n}", f"s-w{n}", "t", False, main_turn=1) for n in (1, 2))
+        manager.records = {"w1": first, "w2": second}
+        self.assertIs(manager.pool_for(first), manager.pool_for(second))
+        self.assertEqual(built, [{"turn": 1}])
+
+    def test_resuming_a_worker_session_directly_uses_the_main_turn_pool(self):
+        # w1 runs out of the shared cap; the main turn stops with it.
+        def after_worker(messages):
+            self.wait_for(lambda: self.status_of("w1") not in (None, RunStatus.RUNNING), "w1 never stopped")
+            return ModelResponse({"content": "never"}, usage(0))
+
+        model = Duplex(main=[ModelResponse(delegate("d1", "A"), usage(1000)), after_worker],
+                       by_task={"A": [ModelResponse({"tool_calls": [tool_call("a1", "glob", {"pattern": "*.md"})]}, usage(2000))]})
+        self.invoke(["--session", "demo", "--budget-cny", "0.002"], model, ["一个问题", "/wait", "/exit"])
+        self.assertEqual(self.worker().metadata["shared_budget_exhausted"]["reason"], "budget_cny")
+        steps = self.worker().step
+        for extra in ([], ["--max-steps", "50", "--max-model-calls", "50"], ["--budget-cny", "0.002"]):
+            idle = Counting([])
+            OneShotBudgetTests.run_once(self, ["--session", "demo-w1", "--resume", "--accept-config-changes", *extra], idle)
+            self.assertEqual(idle.requests, 0, extra)
+        self.assertEqual(self.worker().step, steps)
+        self.assertEqual(self.worker().metadata["shared_budget_exhausted"]["cost_cny"], "0.002400")
+        # Only an explicitly larger cap lets the worker go on, from the turn's 0.0024.
+        more = Counting([ModelResponse({"content": "A done"}, usage(1000))])
+        code, out, err = OneShotBudgetTests.run_once(self, ["--session", "demo-w1", "--resume", "--accept-config-changes", "--budget-cny", "0.01"], more)
+        self.assertEqual(more.requests, 1, out + err)
+        self.assertEqual(more.requests, 1)
+        self.assertEqual(self.worker().status, RunStatus.COMPLETED)
+
+    def test_cap_survives_a_pruned_turn_record(self):
+        options = self.park_two_workers("0.003")
+        store = self.store()
+        state = store.load("demo")
+        state.metadata[BUDGET_TURNS].pop("1")  # as if pruned by many later turns
+        store.save(state)
+        resumed = Duplex(by_task={"A": [ModelResponse({"content": "A done"}, usage(2000))],
+                                  "B": [ModelResponse({"content": "B done"}, usage(1000))]})
+        # No --budget-cny on the restart: the cap must come back from the turn's workers, not vanish.
+        no_cap = [option for option in options if option not in ("--budget-cny", "0.003")]
+
+        def approve_after_w1(prompt):
+            self.wait_for(lambda: self.status_of("w1") not in (RunStatus.RUNNING, RunStatus.AWAITING_APPROVAL),
+                          "w1 never finished")
+            return "y"
+
+        self.invoke(no_cap, resumed, ["/wait", "/wait", "/exit"], approvals=["y", approve_after_w1])
+        # Without the main record only the workers' 0.0016 is known; w1 brings it to 0.0032, so w2 is refused.
+        # Before the fix the cap was gone and w2 sent a request too.
+        self.assertEqual(len(resumed.worker_seen), 1)
+        self.assertEqual(self.worker("w2").metadata["shared_budget_exhausted"]["budget_cny"], "0.003")
+
+    def test_records_of_turns_with_unfinished_workers_are_never_pruned(self):
+        state = State(messages=[{"role": "system", "content": "x"}, {"role": "user", "content": "a"}])
+        state.metadata["workers"] = {"w1": {"id": "w1", "session_id": "s-w1", "task": "t", "allow_writes": False,
+                                            "status": "awaiting_approval", "main_turn": 1},
+                                     "w2": {"id": "w2", "session_id": "s-w2", "task": "t", "allow_writes": False,
+                                            "status": "completed", "main_turn": 2}}
+        layer = SharedBudgetMiddleware(TurnBudget(16, 16, budget_cny="1"), worker=False)
+        for turn in range(1, 120):
+            layer.budget.turn = turn
+            layer._record(state)
+        kept = state.metadata[BUDGET_TURNS]
+        self.assertIn("1", kept)        # w1 can still resume
+        self.assertNotIn("2", kept)     # w2 finished: prunable
+        self.assertEqual(len(kept), 51)
