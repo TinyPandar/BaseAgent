@@ -204,7 +204,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--subtasks-config", type=Path, help="Debugging/library entry: named sequential subtasks from a JSON configuration (not used by the main agent)")
     parser.add_argument("--main-agent", action=argparse.BooleanOptionalAction, default=None, help="Interactive chat as a main agent that only talks and dispatches background workers (default on for new chat sessions; existing sessions keep their mode)")
     parser.add_argument("--max-workers", type=int, help=f"Main-agent chat: workers that may be active at once (default {CHAT_MAX_WORKERS}); extra delegations are rejected, and only one worker may write at a time")
-    parser.add_argument("--budget-cny", help="Main-agent chat: CNY per main-agent turn shared by the main agent and its workers, charged from reported usage at qwen-plus rates (input 0.8, output 2 CNY per million tokens); off by default")
+    parser.add_argument("--budget-cny", help="CNY per turn, charged from reported usage at qwen-plus rates (input 0.8, output 2 CNY per million tokens) and checked before every model request; shared by the main agent and its workers in main-agent chat. Resuming a turn keeps what it already spent and its cap; give the option again to change the cap. Off by default")
     parser.add_argument("--request-bound-profile", choices=["deepseek-context-v1"], help="Explicit conservative whole-context bound for official DeepSeek Flash/Pro; requires --preauthorize-model")
     parser.add_argument("--max-completion-tokens", type=int, default=4096, help="Output cap for strict or estimated reservations (default: 4096)")
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
@@ -325,8 +325,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("--main-agent applies to interactive chat; one-shot prompts stay single-agent")
     if args.main_agent and args.subtasks_config:
         parser.error("--subtasks-config is a named-subtask debugging entry; use it with --no-main-agent")
-    if (args.max_workers is not None or args.budget_cny is not None) and args.prompt is not None:
-        parser.error("--max-workers and --budget-cny apply to main-agent chat; one-shot prompts stay single-agent")
+    if args.max_workers is not None and args.prompt is not None:
+        parser.error("--max-workers applies to main-agent chat; one-shot prompts stay single-agent")
     if args.max_workers is not None and args.max_workers < 1:
         parser.error("--max-workers must be positive")
     if args.budget_cny is not None:
@@ -808,26 +808,52 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                     estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model,
                 )
 
-            def turn_budget(resuming=False, limits=None):
-                steps = args.max_steps
-                calls = args.max_model_calls
-                current = store.load(session["id"]) if resuming and session["id"] else None
-                if current is not None:
-                    # A resumed turn keeps limits raised earlier (for example by /continue); never lower them.
-                    steps, calls = max(steps or 0, current.max_steps), max(calls or 0, current.max_model_calls)
-                if limits is not None:
-                    steps, calls = limits[0], limits[1]
-                steps = steps or CHAT_MAX_STEPS
-                budget = TurnBudget(calls or steps, steps, budget_cny=args.budget_cny)
-                if current is not None:
-                    # A resumed turn keeps what it already used.
-                    budget.model_calls, budget.steps = current.model_calls, current.step
-                return budget
-
             workers = WorkerManager(tools, system_prompt=system_prompt, store=store, runner=run_worker,
-                                    max_workers=args.max_workers or CHAT_MAX_WORKERS, budget_factory=turn_budget)
+                                    max_workers=args.max_workers or CHAT_MAX_WORKERS)
             subtasks = workers
             prompt = MAIN_AGENT_PROMPT
+
+        live = {"pool": None}
+
+        def turn_budget(resuming=False, limits=None, turn=None):
+            """The pool of one main-session turn: model calls and steps shared with the workers it starts (main
+            agent only) and the --budget-cny cap. A new turn gets a fresh pool. Resuming a turn (another message,
+            /continue, --resume) or a worker of an earlier turn reuses that turn's live pool, or rebuilds it from
+            the usage already saved in the sessions; it never starts again from zero. ``limits`` (/continue) adds
+            that many steps and model calls on top of what the pool has used; the CNY cap is never raised by it."""
+            from contextlib import nullcontext
+
+            from baseagent.agent.workers import seed_turn_usage, turn_record
+            from baseagent.session.checkpoints import turn_number
+            current = store.load(session["id"]) if session["id"] and (resuming or turn is not None) else None
+            if current is None:
+                steps = (args.max_steps or CHAT_MAX_STEPS) if main_agent else None
+                calls = (args.max_model_calls or steps) if main_agent else None
+                return TurnBudget(calls, steps, budget_cny=args.budget_cny)
+            present = turn_number(current)
+            number = present if turn is None else turn
+            pool = live["pool"]
+            if pool is None or pool.turn != number:
+                record = turn_record(current, number)
+                steps = calls = None
+                if main_agent:
+                    # Limits raised earlier in this turn (for example by /continue) are kept; never lowered.
+                    own = (current.max_steps, current.max_model_calls) if number == present else (0, 0)
+                    steps = max(args.max_steps or 0, own[0], record.get("max_steps") or 0) or CHAT_MAX_STEPS
+                    calls = max(args.max_model_calls or 0, own[1], record.get("max_model_calls") or 0) or steps
+                # An explicit --budget-cny applies (also to raise the cap); otherwise the turn keeps the cap it had.
+                cap = args.budget_cny if args.budget_cny is not None else record.get("budget_cny")
+                with (workers._lock if workers is not None else nullcontext()):
+                    records = list(workers.records.values()) if workers is not None else []
+                pool = seed_turn_usage(TurnBudget(calls, steps, budget_cny=cap), store, current, records, number)
+                if number == present:
+                    live["pool"] = pool  # one pool per turn, whoever resumes first
+            if limits is not None and number == present:
+                pool.raise_limits(steps=limits[0] - current.step, model_calls=limits[1] - current.model_calls)
+            return pool
+
+        if workers is not None:
+            workers.budget_factory = turn_budget
 
         def turn_limits(user_input, limits):
             """Limits for this run_agent call. /continue passes raised ``limits`` for the current turn; any other
@@ -845,11 +871,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         def run_turn(user_input, limits=None):
             extra = []
             max_steps, max_model_calls, max_tool_calls = turn_limits(user_input, limits)
-            if workers is not None:
-                # One shared budget per main-agent turn; workers started in it draw from the same pool.
-                # A resumed turn gets a fresh pool seeded with the main agent's own usage so far.
-                workers.budget = turn_budget(resuming=user_input is None, limits=limits)
-                extra.append(SharedBudgetMiddleware(workers.budget, worker=False))
+            # One pool per main-agent turn; workers started in it draw from the same pool. A resumed turn
+            # continues the pool it had (live, or rebuilt from saved usage). A single agent gets a pool only
+            # for a --budget-cny cap (given now or kept by the turn being resumed).
+            pool = turn_budget(resuming=user_input is None, limits=limits)
+            if main_agent or pool.budget_cny is not None:
+                live["pool"] = pool
+                if workers is not None:
+                    workers.budget = pool
+                extra.append(SharedBudgetMiddleware(pool, worker=False))
             state = run_agent(
                 model, user_input, tools=tools,
                 middleware=[*layers, *extra],
@@ -921,12 +951,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     human = sys.stderr if machine.enabled else sys.stdout
     if state.final_answer and not machine.enabled:
         print(state.final_answer)
-    if state.error:
+    # A --budget-cny stop is explained below; the kernel's generic token-budget text would name the wrong limit.
+    shared = state.status != "completed" and state.metadata.get("shared_budget_exhausted")
+    if state.error and not shared:
         print(f"Agent error: {state.error}", file=human)
     if state.status != "completed":
         print(f"Agent stopped: {state.status} (steps: {state.step}, model attempts: {state.model_calls}, tool attempts: {state.tool_calls})", file=human)
         from baseagent.cli_chat import LIMITS, stop_explanation
-        if state.status in LIMITS or state.status == "usage_unavailable":
+        if state.status in LIMITS or state.status == "usage_unavailable" or shared:
             print(stop_explanation(state, interactive=False), file=sys.stderr)
         if state.blocked_tool_calls:
             print("Inspect with --inspect-session; verify external effects before --resolve-tool.", file=sys.stderr)

@@ -195,9 +195,14 @@ def stop_explanation(state, *, interactive):
         return _limit_explanation(state, status, interactive)
     shared = state.metadata.get("shared_budget_exhausted")
     if shared and status == RunStatus.MAX_TOKENS_EXCEEDED:
-        return (f"Shared --budget-cny exhausted (main agent + workers): CNY {shared.get('cost_cny')}/{shared.get('budget_cny')}, "
-                "or a model call reported no usage so the spend cannot be checked. Send another message to resume this "
-                "turn with a fresh turn budget, or exit and re-enter with a larger --budget-cny and the same --session.")
+        who = " (main agent + workers)" if is_main_agent_session(state) else ""
+        sid = state.session_id or "<id>"
+        return (f"--budget-cny exhausted for this turn{who}: CNY {shared.get('cost_cny')}/{shared.get('budget_cny')}, "
+                "or a model call reported no usage so the spend cannot be checked. No further model request is sent. "
+                "Resuming the turn (another message, /continue or --resume) keeps what it already spent, so it stops "
+                f"again; to go on, raise the cap explicitly: baseagent --session {sid} --budget-cny <larger> (then "
+                "/continue in chat, or add --resume for a one-shot session). Requests already sent before the cap was "
+                "reached are billed even when they overshoot it.")
     detail = state.error or _usage_detail(state)
     text = _explain(status, detail)
     if status == RunStatus.USAGE_UNAVAILABLE:
@@ -299,7 +304,7 @@ def status_lines(store, state, session_id, workspace, workers=None):
     if current.max_total_tokens is not None:
         out.append(f"Token budget: {current.max_total_tokens}")
     if workers is not None:
-        out.extend(worker_lines(workers))
+        out.extend(worker_lines(workers, current))
         return out
     nodes = worker_nodes(store, current)
     if nodes:
@@ -325,13 +330,20 @@ def rules_lines(workspace):
         return [f"Project rules: could not be checked ({type(exc).__name__})"]
 
 
-def worker_lines(workers):
+def worker_lines(workers, current=None):
     """AC9: every worker with id, state, elapsed time and model calls used."""
     out = []
     with workers._lock:
         records = list(workers.records.values())
-    if workers.budget is not None:
-        budget = workers.budget.snapshot()
+    pool = workers.budget
+    if pool is None and current is not None and current.status != RunStatus.COMPLETED:
+        # After a restart: what the unfinished turn already spent, not an empty pool.
+        try:
+            pool = workers.budget_factory(resuming=True)
+        except Exception:  # noqa: BLE001 -- display only.
+            pool = None
+    if pool is not None:
+        budget = pool.snapshot()
         out.append(f"Turn budget (latest main-agent turn + workers it started): "
                    f"model {budget['model_calls']}/{budget['max_model_calls']}, "
                    f"steps {budget['steps']}/{budget['max_steps']}"
