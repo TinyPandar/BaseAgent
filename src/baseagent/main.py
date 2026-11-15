@@ -950,30 +950,60 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             subtasks = workers
             prompt = MAIN_AGENT_PROMPT
 
-        live = {"pool": None}
-        pools = {}  # rebuilt pools of earlier turns (parked workers), one per turn
+        pools = {}  # a single agent's pools by turn; with workers, WorkerManager.turn_pool holds them
 
-        def turn_budget(resuming=False, limits=None, turn=None):
+        def cached(number, build, replace=False):
+            if workers is not None:
+                return workers.turn_pool(number, build, replace=replace)
+            if replace or number not in pools:
+                pools[number] = build()
+                pools[number].turn = number
+            return pools[number]
+
+        def unrecovered_pool(reason, known=()):
+            """A turn whose earlier spend cannot be rebuilt (sessions from before budget records). Without an
+            explicit --budget-cny it admits nothing; with one, that cap applies to the usage still known."""
+            pool = TurnBudget(None, None, budget_cny=args.budget_cny)
+            if args.budget_cny is None:
+                pool.unrecovered = reason
+            for state in known:
+                pool.seed(model_calls=state.model_calls, steps=state.step, prompt_tokens=state.prompt_tokens,
+                          completion_tokens=state.completion_tokens, unknown=state.unknown_usage_calls > 0)
+            return pool
+
+        def turn_budget(resuming=False, limits=None, turn=None, legacy=None):
             """The pool of one main-session turn: model calls and steps shared with the workers it starts (main
             agent only) and the --budget-cny cap. A new turn gets a fresh pool. Resuming a turn (another message,
-            /continue, --resume) or a worker of an earlier turn reuses that turn's live pool, or rebuilds it from
-            the usage already saved in the sessions; it never starts again from zero. ``limits`` (/continue) adds
-            that many steps and model calls on top of what the pool has used; the CNY cap is never raised by it."""
-            from contextlib import nullcontext
-
-            from baseagent.agent.workers import seed_turn_usage, turn_settings
+            /continue, --resume) or a worker of an earlier turn reuses that turn's pool, or rebuilds it from
+            the usage already saved in the sessions; it never starts again from zero. There is one pool per turn
+            in the process: lookups and rebuilds happen under one lock, whichever path comes first.
+            ``limits`` (/continue) adds that many steps and model calls on top of what the pool has used; the
+            CNY cap is never raised by it. ``legacy`` is a worker record without its turn (old sessions)."""
+            from baseagent.agent.workers import seed_turn_usage, spend_recoverable, turn_settings
             from baseagent.session.checkpoints import turn_number
-            current = store.load(session["id"]) if session["id"] and (resuming or turn is not None) else None
-            if current is None:
+            current = store.load(session["id"]) if session["id"] else None
+            if legacy is not None:
+                worker = store.load(legacy.session_id)
+                return unrecovered_pool("worker_turn_unknown", [worker] if worker is not None else [])
+            if current is None or not (resuming or turn is not None):
                 steps = (args.max_steps or CHAT_MAX_STEPS) if main_agent else None
                 calls = (args.max_model_calls or steps) if main_agent else None
-                return TurnBudget(calls, steps, budget_cny=args.budget_cny)
+                fresh = lambda: TurnBudget(calls, steps, budget_cny=args.budget_cny)
+                if current is None and session["id"] is None:
+                    return fresh()
+                # The new turn's number, known now so a rebuild never opens a second pool for it.
+                opened = current is not None and any(message.get("role") == "user" for message in current.messages)
+                return cached(turn_number(current) + 1 if opened else 1, fresh, replace=True)
             present = turn_number(current)
             number = present if turn is None else turn
-            pool = live["pool"] if live["pool"] is not None and live["pool"].turn == number else pools.get(number)
-            if pool is None:
-                with (workers._lock if workers is not None else nullcontext()):
-                    records = list(workers.records.values()) if workers is not None else []
+
+            def build():
+                records = list(workers.records.values()) if workers is not None else []
+                if not spend_recoverable(current, number):
+                    # An earlier turn without its saved record: the main agent's share is unknown.
+                    known = [state for state in (store.load(record.session_id) for record in records
+                                                 if record.main_turn == number) if state is not None]
+                    return unrecovered_pool("main_turn_record_missing", known)
                 saved_cap, saved_calls, saved_steps = turn_settings(store, current, records, number)
                 steps = calls = None
                 if main_agent:
@@ -983,11 +1013,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                     calls = max(args.max_model_calls or 0, own[1], saved_calls or 0) or steps
                 # An explicit --budget-cny applies (also to raise the cap); otherwise the turn keeps the cap it had.
                 cap = args.budget_cny if args.budget_cny is not None else saved_cap
-                pool = seed_turn_usage(TurnBudget(calls, steps, budget_cny=cap), store, current, records, number)
-                if number == present:
-                    live["pool"] = pool  # one pool per turn, whoever resumes first
-                else:
-                    pools[number] = pool
+                return seed_turn_usage(TurnBudget(calls, steps, budget_cny=cap), store, current, records, number)
+
+            pool = cached(number, build)
             if limits is not None and number == present:
                 pool.raise_limits(steps=limits[0] - current.step, model_calls=limits[1] - current.model_calls)
             return pool
@@ -998,17 +1026,27 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         def worker_turn_pool():
             """A worker session resumed on its own (``--session <main>-w<n> --resume``) is still charged to the
             pool of the main turn that dispatched it: rebuilt from the main session and every worker of that
-            turn, with that turn's cap and shared limits. Without that it would bypass a spent main-turn cap."""
-            from baseagent.agent.workers import WorkerRecord, seed_turn_usage, turn_settings
+            turn, with that turn's cap and shared limits. Without that it would bypass a spent main-turn cap.
+            Its turn comes from the worker session, or else from the main session's worker registry (sessions
+            from before the tag). When the turn or its spend cannot be recovered, the pool admits nothing
+            unless --budget-cny is given explicitly; it never falls back to no cap."""
+            from baseagent.agent.workers import (WorkerRecord, registered_turn, seed_turn_usage, spend_recoverable,
+                                                 turn_settings)
             meta = existing.metadata
             main_state = store.load(meta["main_session"]) if meta.get("main_session") else None
             turn = meta.get("main_turn")
-            records = [WorkerRecord.from_dict(value) for value in
-                       ((main_state.metadata.get("workers") or {}) if main_state is not None else {}).values()]
-            if turn is None:
-                # Sessions from before main_turn was tagged: only this worker's own usage is known.
-                records, main_state, turn = [WorkerRecord("w", existing.session_id, "", False, main_turn=0)], None, 0
-            elif not any(record.session_id == existing.session_id for record in records):
+            if type(turn) is not int:
+                turn = registered_turn(main_state, existing.session_id)
+            if turn is None or not spend_recoverable(main_state, turn):
+                known = [existing]
+                if turn is not None and main_state is not None:
+                    known = [state for state in (store.load(value.get("session_id")) for value in
+                                                 (main_state.metadata.get("workers") or {}).values()
+                                                 if isinstance(value, dict) and value.get("main_turn") == turn)
+                             if state is not None] or [existing]
+                return unrecovered_pool("worker_turn_unknown" if turn is None else "main_turn_record_missing", known)
+            records = [WorkerRecord.from_dict(value) for value in (main_state.metadata.get("workers") or {}).values()]
+            if not any(record.session_id == existing.session_id for record in records):
                 records.append(WorkerRecord(str(meta.get("worker_id") or "w"), existing.session_id, "", False, main_turn=turn))
             saved_cap, calls, steps = turn_settings(store, main_state, records, turn)
             cap = args.budget_cny if args.budget_cny is not None else saved_cap
@@ -1037,13 +1075,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             # for a --budget-cny cap (given now or kept by the turn being resumed).
             if worker_session and user_input is None:
                 pool = worker_turn_pool()
-                if pool.budget_cny is not None or pool.max_model_calls is not None or pool.max_steps is not None:
+                if (pool.budget_cny is not None or pool.unrecovered or pool.max_model_calls is not None
+                        or pool.max_steps is not None):
                     extra.append(SharedBudgetMiddleware(pool, worker=True))
                 pool = None
             else:
                 pool = turn_budget(resuming=user_input is None, limits=limits)
             if pool is not None and (main_agent or pool.budget_cny is not None):
-                live["pool"] = pool
                 if workers is not None:
                     workers.budget = pool
                 extra.append(SharedBudgetMiddleware(pool, worker=False))
