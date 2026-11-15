@@ -796,7 +796,10 @@ class ChatSession:
             pool = self.workers.budget
             if pool is None:
                 try:
-                    pool = self.workers.budget_factory()  # the limits the next turn will get
+                    # An unfinished turn (for example after a restart) shows what it already spent;
+                    # otherwise the limits the next turn will get.
+                    unfinished = state is not None and state.status != RunStatus.COMPLETED
+                    pool = self.workers.budget_factory(resuming=True) if unfinished else self.workers.budget_factory()
                 except Exception:  # noqa: BLE001 -- display only.
                     pool = None
             budget = pool.snapshot() if pool is not None else None

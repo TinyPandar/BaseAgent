@@ -14,7 +14,10 @@ are rejected with an explicit reason, not queued.
 Budget: every main-agent turn opens one ``TurnBudget``. The main agent's own
 calls in that turn and all workers it started draw model calls and steps (and,
 optionally, CNY) from it atomically. One model call stays reserved for the main
-agent's reply.
+agent's reply. Resuming a turn (another message, /continue, --resume, a worker
+resumed after an approval) never starts from zero: the live pool of that turn is
+reused, or a new one is seeded from the usage already saved in the main session
+and in the worker sessions of that turn (``seed_turn_usage``).
 """
 
 from __future__ import annotations
@@ -75,11 +78,15 @@ class TurnBudget:
     agent's next call releases them. CNY is charged from reported usage after
     each call, so it is checked before dispatch; calls already in flight when
     the budget is crossed may still be billed.
+
+    ``max_model_calls``/``max_steps`` may be None (no pool limit) for a single
+    agent that only needs the CNY check; its own state limits still apply.
+    ``turn`` is the main-session turn number the pool belongs to.
     """
 
     def __init__(self, max_model_calls, max_steps, *, budget_cny=None, reserve=1,
-                 input_rate=INPUT_CNY_PER_MILLION, output_rate=OUTPUT_CNY_PER_MILLION):
-        if any(type(value) is not int or value < 1 for value in (max_model_calls, max_steps)):
+                 input_rate=INPUT_CNY_PER_MILLION, output_rate=OUTPUT_CNY_PER_MILLION, turn=None):
+        if any(value is not None and (type(value) is not int or value < 1) for value in (max_model_calls, max_steps)):
             raise ValueError("shared budget limits must be positive integers")
         if type(reserve) is not int or reserve < 0:
             raise ValueError("reply reserve must be a nonnegative integer")
@@ -92,11 +99,34 @@ class TurnBudget:
         self.held_calls = self.held_steps = 0
         self.cost_cny = Decimal(0)
         self.usage_unknown = False
+        self.turn = turn
         self._lock = threading.Lock()
+
+    def seed(self, *, model_calls=0, steps=0, prompt_tokens=0, completion_tokens=0, unknown=False):
+        """Start from usage already spent in this turn (a resumed turn keeps what it used)."""
+        with self._lock:
+            self.model_calls += model_calls
+            self.steps += steps
+            self.usage_unknown |= bool(unknown)
+        self.charge(prompt_tokens, completion_tokens)
+
+    def raise_limits(self, *, model_calls=0, steps=0):
+        """/continue: allow ``model_calls``/``steps`` more beyond what the pool has used. Never lowers a limit."""
+        with self._lock:
+            if self.max_model_calls is not None:
+                self.max_model_calls = max(self.max_model_calls, self.model_calls + model_calls)
+            if self.max_steps is not None:
+                self.max_steps = max(self.max_steps, self.steps + steps)
+
+    def _cny_spent(self):
+        return self.budget_cny is not None and (self.usage_unknown or self.cost_cny >= self.budget_cny)
 
     def admit_step(self, *, worker):
         with self._lock:
-            if self.steps >= self.max_steps - (self.held_steps if worker else 0):
+            # Checked here too, so a turn resumed with the CNY cap already spent uses no step either.
+            if self._cny_spent():
+                return "budget_cny"
+            if self.max_steps is not None and self.steps >= self.max_steps - (self.held_steps if worker else 0):
                 return "max_steps"
             self.steps += 1
             if not worker and self.held_steps:
@@ -105,9 +135,9 @@ class TurnBudget:
 
     def admit_model(self, *, worker):
         with self._lock:
-            if self.model_calls >= self.max_model_calls - (self.held_calls if worker else 0):
+            if self.max_model_calls is not None and self.model_calls >= self.max_model_calls - (self.held_calls if worker else 0):
                 return "max_model_calls"
-            if self.budget_cny is not None and (self.usage_unknown or self.cost_cny >= self.budget_cny):
+            if self._cny_spent():
                 return "budget_cny"
             self.model_calls += 1
             if not worker and self.held_calls:
@@ -127,7 +157,9 @@ class TurnBudget:
     def room(self):
         """Model calls a new worker may use: what is left after holding the main agent's reply."""
         with self._lock:
-            return min(self.max_model_calls - self.model_calls, self.max_steps - self.steps) - self.reserve
+            left = [limit - used for limit, used in ((self.max_model_calls, self.model_calls), (self.max_steps, self.steps))
+                    if limit is not None]
+            return (min(left) if left else 1 << 30) - self.reserve
 
     def hold_reply(self):
         with self._lock:
@@ -142,6 +174,46 @@ class TurnBudget:
             return value
 
 
+BUDGET_TURNS = "budget_turns"
+# Turns kept in the main session's budget record (enough for workers parked across many later turns).
+BUDGET_TURNS_KEPT = 50
+
+
+def turn_record(state, turn):
+    """The saved pool record of ``turn`` in a main session, or {} (sessions from before this record)."""
+    return dict(((state.metadata.get(BUDGET_TURNS) or {}).get(str(turn))) or {})
+
+
+def seed_turn_usage(budget, store, main_state, records, turn):
+    """Seed ``budget`` with everything already spent in main turn ``turn``.
+
+    The main agent's part comes from its turn counters when ``turn`` is the current turn, otherwise from
+    the saved record of that turn (none for sessions from before the record: counted as zero). Each worker
+    dispatched in that turn adds its own session counters. Token counts are the source of truth, so usage
+    reconciled later (``--resolve-usage``) is included, and any unresolved call blocks further CNY spend.
+    """
+    from baseagent.session.checkpoints import turn_number
+    if main_state is not None and turn_number(main_state) == turn:
+        main = {"model_calls": main_state.model_calls, "steps": main_state.step,
+                "prompt_tokens": main_state.prompt_tokens, "completion_tokens": main_state.completion_tokens,
+                "unknown": main_state.unknown_usage_calls > 0}
+    else:
+        saved = turn_record(main_state, turn).get("main", {}) if main_state is not None else {}
+        main = {key: saved.get(key, 0) for key in ("model_calls", "steps", "prompt_tokens", "completion_tokens")}
+        main["unknown"] = bool(saved.get("unknown"))
+    budget.seed(**main)
+    for record in records:
+        if record.main_turn != turn:
+            continue
+        worker = store.load(record.session_id)
+        if worker is None:
+            continue
+        budget.seed(model_calls=worker.model_calls, steps=worker.step, prompt_tokens=worker.prompt_tokens,
+                    completion_tokens=worker.completion_tokens, unknown=worker.unknown_usage_calls > 0)
+    budget.turn = turn
+    return budget
+
+
 class SharedBudgetMiddleware(AgentMiddleware):
     """Charge one TurnBudget at the real dispatch boundary (innermost model wrapper)."""
 
@@ -154,6 +226,25 @@ class SharedBudgetMiddleware(AgentMiddleware):
     def before_agent(self, state):
         # A flag from an earlier turn must not explain a later stop.
         state.metadata.pop("shared_budget_exhausted", None)
+        if not self.worker:
+            from baseagent.session.checkpoints import turn_number
+            if self.budget.turn is None:
+                self.budget.turn = turn_number(state)
+            self._record(state)
+
+    def _record(self, state):
+        """Save this turn's pool limits, CNY cap and the main agent's own usage in the main session, so the
+        pool can be rebuilt after a restart (a resumed turn, or a parked worker of an older turn)."""
+        turns = state.metadata.setdefault(BUDGET_TURNS, {})
+        key = str(self.budget.turn)
+        turns.pop(key, None)  # re-insert: most recent last
+        turns[key] = {"max_model_calls": self.budget.max_model_calls, "max_steps": self.budget.max_steps,
+                      "budget_cny": None if self.budget.budget_cny is None else str(self.budget.budget_cny),
+                      "main": {"model_calls": state.model_calls, "steps": state.step,
+                               "prompt_tokens": state.prompt_tokens, "completion_tokens": state.completion_tokens,
+                               "unknown": state.unknown_usage_calls > 0}}
+        for old in list(turns)[:-BUDGET_TURNS_KEPT]:
+            del turns[old]
 
     def _refuse(self, state, reason):
         state.metadata["shared_budget_exhausted"] = {"reason": reason, **self.budget.snapshot()}
@@ -181,6 +272,8 @@ class SharedBudgetMiddleware(AgentMiddleware):
             if state.model_calls != before[0]:
                 self.budget.charge(state.prompt_tokens - before[1], state.completion_tokens - before[2],
                                    unknown=state.unknown_usage_calls > before[3])
+                if not self.worker and isinstance(getattr(state, "metadata", None), dict) and self.budget.turn is not None:
+                    self._record(state)
 
 
 class SessionTagMiddleware(AgentMiddleware):
@@ -280,7 +373,7 @@ class WorkerManager:
         self.worker_prompt = system_prompt.rstrip() + "\n" + WORKER_PROMPT
         self.max_workers, self.max_steps, self.max_tool_calls = max_workers, max_steps, max_tool_calls
         self.reply_reserve, self.summary_chars = reply_reserve, summary_chars
-        self.budget_factory = budget_factory or (lambda: TurnBudget(16, 16, reserve=reply_reserve))
+        self.budget_factory = budget_factory or (lambda **_: TurnBudget(16, 16, reserve=reply_reserve))
         self.join_seconds = join_seconds
         self.session_id = None
         self.budget = None
@@ -386,7 +479,20 @@ class WorkerManager:
 
     def _layers(self, record):
         # The runner puts these innermost, so every real dispatch (including retries) is charged.
-        return [InboxMiddleware(record), SharedBudgetMiddleware(record.budget or self.budget_factory(), worker=True)]
+        return [InboxMiddleware(record), SharedBudgetMiddleware(self.pool_for(record), worker=True)]
+
+    def pool_for(self, record):
+        """The pool of the main turn that dispatched ``record``. A worker restored after a restart (for example
+        resumed after an approval) gets that turn's pool rebuilt from saved usage, never a fresh one."""
+        if record.budget is None:
+            if record.main_turn is not None and self.budget is not None and self.budget.turn == record.main_turn:
+                record.budget = self.budget
+            elif record.main_turn is not None:
+                record.budget = self.budget_factory(turn=record.main_turn)
+            else:
+                # Records from before main_turn was saved: charge the current pool rather than a fresh one.
+                record.budget = self.budget or self.budget_factory()
+        return record.budget
 
     def _start(self, record, user_input):
         thread = threading.Thread(target=self._run, args=(record, user_input), name=f"worker-{record.id}", daemon=True)

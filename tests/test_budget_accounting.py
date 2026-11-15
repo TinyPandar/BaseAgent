@@ -1,0 +1,262 @@
+"""Turn budgets across resumes: /continue, another message, restarts and --resume never reset spend.
+
+Fake models only; every model request is counted, so "no new request" is checked directly.
+Costs use the qwen-plus rates of --budget-cny: 1000 input tokens = 0.0008 CNY.
+"""
+
+import json
+import time
+import unittest
+from types import SimpleNamespace
+
+from test_main_agent import WAIT, Duplex, MainAgentTestCase, delegate, tool_call
+
+from baseagent.agent.errors import BudgetExceeded
+from baseagent.agent.state import RunStatus, State
+from baseagent.agent.workers import BUDGET_TURNS, SharedBudgetMiddleware, TurnBudget, WorkerRecord, seed_turn_usage
+from baseagent.llm.response import ModelResponse, TokenUsage
+
+
+def usage(prompt_tokens):
+    return TokenUsage(prompt_tokens, 0, prompt_tokens)
+
+
+class Counting:
+    """A single-agent fake model that records every request it receives."""
+
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = 0
+
+    def complete_with_control(self, messages, tools, *, cancellation=None, timeout=None):
+        self.requests += 1
+        return next(self.responses)
+
+
+class TurnBudgetUnitTests(unittest.TestCase):
+    def test_seed_and_raise_limits_keep_used_counts(self):
+        budget = TurnBudget(8, 8, budget_cny="0.01", reserve=0)
+        budget.seed(model_calls=3, steps=4, prompt_tokens=1000)
+        budget.seed(model_calls=2, steps=2, prompt_tokens=1000)
+        snap = budget.snapshot()
+        self.assertEqual((snap["model_calls"], snap["steps"], snap["cost_cny"]), (5, 6, "0.001600"))
+        budget.raise_limits(model_calls=4, steps=4)
+        self.assertEqual((budget.max_model_calls, budget.max_steps), (9, 10))
+        budget.raise_limits(model_calls=1, steps=1)  # never lowers
+        self.assertEqual((budget.max_model_calls, budget.max_steps), (9, 10))
+
+    def test_spent_cap_refuses_before_the_step_and_the_request(self):
+        budget = TurnBudget(None, None, budget_cny="0.001", reserve=0)
+        budget.seed(prompt_tokens=2000)
+        layer = SharedBudgetMiddleware(budget, worker=False)
+        state = State(messages=[{"role": "system", "content": "x"}])
+        with self.assertRaises(BudgetExceeded) as caught:
+            layer.before_model(state)
+        self.assertEqual(caught.exception.status, RunStatus.MAX_TOKENS_EXCEEDED)
+        self.assertEqual(budget.steps, 0)
+
+        def handler(request):
+            raise AssertionError("no request may be sent once the cap is spent")
+
+        with self.assertRaises(BudgetExceeded):
+            layer.wrap_model_call(SimpleNamespace(state=state), handler)
+        self.assertEqual(budget.model_calls, 0)
+
+    def test_unresolved_usage_in_a_seeded_turn_blocks_spend(self):
+        budget = TurnBudget(None, None, budget_cny="1", reserve=0)
+        budget.seed(model_calls=1, unknown=True)
+        self.assertEqual(budget.admit_model(worker=False), "budget_cny")
+
+    def test_seed_counts_main_and_the_workers_of_that_turn_only(self):
+        class Store:
+            sessions = {
+                "s-w1": State(messages=[], model_calls=2, step=2, prompt_tokens=1000),
+                "s-w2": State(messages=[], model_calls=5, step=5, prompt_tokens=9000),
+            }
+
+            def load(self, session_id):
+                return self.sessions.get(session_id)
+
+        main = State(messages=[{"role": "system", "content": "x"}, {"role": "user", "content": "a"},
+                               {"role": "user", "content": "b"}],
+                     model_calls=1, step=1, prompt_tokens=1000)
+        records = [WorkerRecord("w1", "s-w1", "t", False, main_turn=2), WorkerRecord("w2", "s-w2", "t", False, main_turn=1)]
+        budget = seed_turn_usage(TurnBudget(16, 16, budget_cny="1"), Store(), main, records, 2)
+        snap = budget.snapshot()
+        self.assertEqual((snap["model_calls"], snap["steps"], snap["cost_cny"], budget.turn), (3, 3, "0.001600", 2))
+        # An earlier turn: the main agent's part comes from its saved record; none (old session) counts as zero.
+        older = seed_turn_usage(TurnBudget(16, 16, budget_cny="1"), Store(), main, records, 1)
+        self.assertEqual(older.snapshot()["cost_cny"], "0.007200")
+        main.metadata[BUDGET_TURNS] = {"1": {"main": {"model_calls": 1, "steps": 1, "prompt_tokens": 500,
+                                                      "completion_tokens": 0, "unknown": False}}}
+        older = seed_turn_usage(TurnBudget(16, 16, budget_cny="1"), Store(), main, records, 1)
+        self.assertEqual(older.snapshot()["cost_cny"], "0.007600")
+
+
+class MainAgentResumeTests(MainAgentTestCase):
+    """The main agent and a worker spend 0.0032 of a 0.003 cap in one turn, then stop unfinished."""
+
+    def spend_turn(self):
+        def after_worker(messages):
+            deadline = time.monotonic() + WAIT
+            while (self.worker() is None or self.worker().status != "completed"):
+                self.assertLess(time.monotonic(), deadline, "worker never finished")
+                time.sleep(0.01)
+            return ModelResponse({"tool_calls": [tool_call("m2", "message_worker", {"task_id": "w1", "text": "more"})]},
+                                 usage(2000))
+
+        return Duplex(main=[ModelResponse(delegate("d1", "A"), usage(1000)), after_worker],
+                      by_task={"A": [ModelResponse({"content": "A done"}, usage(1000))]})
+
+    def test_continue_message_and_restart_keep_spend_and_send_no_request(self):
+        model = self.spend_turn()
+        code, stdout, stderr = self.invoke(["--session", "demo", "--budget-cny", "0.003"], model,
+                                           ["一个问题", "/wait", "/continue", "再试一次", "/status", "/exit"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(model.main_seen), 2)  # the third main request was refused, also after /continue
+        self.assertEqual(len(model.worker_seen), 1)
+        main_state = self.store().load("demo")
+        self.assertEqual(main_state.status, RunStatus.MAX_TOKENS_EXCEEDED)
+        self.assertEqual(main_state.metadata["shared_budget_exhausted"]["cost_cny"], "0.003200")
+        self.assertIn("CNY 0.003200/0.003", stdout + stderr)
+        self.assertNotIn("CNY 0.000000", stdout + stderr)
+        self.assertIn("--budget-cny <larger>", stdout + stderr)
+        steps = main_state.step
+
+        # Restart: the same cap, no cap given (the turn keeps its cap), /continue and a plain message.
+        for argv in (["--budget-cny", "0.003"], []):
+            idle = Duplex()  # any request raises StopIteration
+            code, stdout, stderr = self.invoke(["--session", "demo", *argv], idle, ["/status", "/continue", "继续", "/exit"])
+            self.assertEqual(code, 0)
+            self.assertEqual((idle.main_seen, idle.worker_seen), ([], []))
+            self.assertIn("CNY 0.003200/0.003", stdout)
+        self.assertEqual(self.store().load("demo").step, steps)  # refused before a step was taken
+
+        # Only an explicitly larger cap continues, from what was already spent.
+        more = Duplex(main=[ModelResponse({"content": "done"}, usage(1000))])
+        code, stdout, _ = self.invoke(["--session", "demo", "--budget-cny", "0.01"], more, ["/continue", "/status", "/exit"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(more.main_seen), 1)
+        self.assertEqual(self.store().load("demo").status, RunStatus.COMPLETED)
+        self.assertIn("CNY 0.004000/0.01", stdout)
+
+    def test_resume_counts_worker_steps_against_the_shared_step_limit(self):
+        # The main agent and w1 share --max-steps 4; the turn stops when the pool is used up. A restart
+        # must not hand the main agent the steps w1 already took.
+        def after_worker(messages):
+            deadline = time.monotonic() + WAIT
+            while self.worker() is None or self.worker().status != "completed":
+                self.assertLess(time.monotonic(), deadline, "worker never finished")
+                time.sleep(0.01)
+            return {"tool_calls": [tool_call("m2", "message_worker", {"task_id": "w1", "text": "more"})]}
+
+        model = Duplex(main=[delegate("d1", "A"), after_worker],
+                       by_task={"A": [{"tool_calls": [tool_call("g1", "glob", {"pattern": "*.md"})]}, {"content": "A done"}]})
+        self.invoke(["--session", "demo", "--max-steps", "4"], model, ["一个问题", "/wait", "/exit"])
+        main_state = self.store().load("demo")
+        self.assertEqual(main_state.status, RunStatus.MAX_STEPS_EXCEEDED)
+        self.assertEqual(main_state.step + self.worker().step, 4)
+        idle = Duplex()
+        code, _, _ = self.invoke(["--session", "demo", "--max-steps", "4"], idle, ["继续", "/exit"])
+        self.assertEqual(code, 0)
+        self.assertEqual(idle.main_seen, [])
+        # /continue 2 gives the turn exactly two more shared steps.
+        more = Duplex(main=[{"tool_calls": [tool_call("m3", "message_worker", {"task_id": "w1", "text": "x"})]},
+                            {"content": "done"}])
+        self.invoke(["--session", "demo", "--max-steps", "4"], more, ["/continue 2", "/exit"])
+        self.assertEqual(len(more.main_seen), 2)
+        main_state = self.store().load("demo")
+        self.assertEqual(main_state.status, RunStatus.COMPLETED)
+        self.assertEqual(main_state.step + self.worker().step, 6)
+
+    def test_parked_worker_resumed_after_restart_keeps_its_turn_spend(self):
+        # w1 asks for approval after spending; the turn's cap is used up when the main agent answers.
+        model = Duplex(main=[ModelResponse(delegate("d1", "Create out.txt", allow_writes=True), usage(1000)),
+                             ModelResponse({"content": "ok"}, usage(1000))],
+                       worker=[ModelResponse({"tool_calls": [tool_call("w1c", "write_file", self.write_request())]},
+                                             usage(2000))])
+        options = ["--session", "demo", "--allow-write", "--tool-policy", self.policy(["write_file"]), "--budget-cny", "0.003"]
+        code, _, _ = self.invoke(options, model, ["create out.txt", "/wait", "/exit"], approvals=[EOFError()])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.worker().status, RunStatus.AWAITING_APPROVAL)
+        # After a restart and the approval, the write runs but w1 gets no new request: turn 1 spent 0.0032.
+        resumed = Duplex(worker=[{"content": "Created out.txt."}])
+        code, stdout, _ = self.invoke(options, resumed, ["/wait", "/exit"], approvals=["y"])
+        self.assertEqual(code, 0)
+        self.assertEqual((self.root / "out.txt").read_text(), "hello")
+        self.assertEqual(resumed.worker_seen, [])
+        self.assertEqual(self.worker().metadata["shared_budget_exhausted"]["cost_cny"], "0.003200")
+
+    def test_old_session_without_budget_record_still_resumes(self):
+        model = self.spend_turn()
+        self.invoke(["--session", "demo", "--budget-cny", "0.003"], model, ["一个问题", "/wait", "/exit"])
+        store = self.store()
+        state = store.load("demo")
+        state.metadata.pop(BUDGET_TURNS)
+        store.save(state)
+        idle = Duplex()
+        code, stdout, _ = self.invoke(["--session", "demo", "--budget-cny", "0.003"], idle, ["/continue", "/status", "/exit"])
+        self.assertEqual(code, 0)
+        self.assertEqual(idle.main_seen, [])  # spend is rebuilt from the session counters, not the record
+        self.assertIn("CNY 0.003200/0.003", stdout)
+
+
+class OneShotBudgetTests(MainAgentTestCase):
+    def run_once(self, argv, model):
+        import contextlib
+        import io
+
+        from baseagent.main import main
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["--root", str(self.root), "--db", str(self.db), *argv], model_factory=lambda args: model)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def looping(self, tokens):
+        counter = iter(range(1, 100))
+        while True:
+            index = next(counter)
+            yield ModelResponse({"tool_calls": [tool_call(f"g{index}", "glob", {"pattern": f"*{index}*"})]}, usage(tokens))
+
+    def test_one_shot_budget_cny_stops_before_the_next_request(self):
+        model = Counting(self.looping(1000))
+        code, stdout, stderr = self.run_once(["--session", "one", "--budget-cny", "0.002", "--max-steps", "20",
+                                              "--max-model-calls", "20", "look around"], model)
+        self.assertNotEqual(code, 0)
+        state = self.store().load("one")
+        self.assertEqual(state.status, RunStatus.MAX_TOKENS_EXCEEDED)
+        self.assertEqual(model.requests, 3)  # 0.0008, 0.0016, 0.0024 >= 0.002: the fourth is never sent
+        self.assertEqual(state.metadata["shared_budget_exhausted"]["cost_cny"], "0.002400")
+        self.assertIn("--budget-cny exhausted for this turn: CNY 0.002400/0.002", stdout + stderr)
+        self.assertNotIn("main agent + workers", stdout + stderr)
+        self.assertNotIn("session_mode", state.metadata)
+
+        # --resume keeps the spend and the cap: no request. A larger cap continues from 0.0024.
+        idle = Counting([])
+        self.run_once(["--session", "one", "--resume"], idle)
+        self.assertEqual(idle.requests, 0)
+        self.run_once(["--session", "one", "--resume", "--budget-cny", "0.002"], idle)
+        self.assertEqual(idle.requests, 0)
+        more = Counting([ModelResponse({"content": "done"}, usage(1000))])
+        code, _, _ = self.run_once(["--session", "one", "--resume", "--budget-cny", "0.01"], more)
+        self.assertEqual((code, more.requests), (0, 1))
+        state = self.store().load("one")
+        self.assertEqual(state.status, RunStatus.COMPLETED)
+        self.assertEqual(state.metadata[BUDGET_TURNS]["1"]["main"]["prompt_tokens"], 4000)
+
+    def test_one_shot_without_budget_is_unchanged(self):
+        model = Counting([{"content": "hi"}])
+        code, _, _ = self.run_once(["--session", "plain", "hello"], model)
+        self.assertEqual(code, 0)
+        self.assertNotIn(BUDGET_TURNS, self.store().load("plain").metadata)
+
+    def test_a_new_one_shot_turn_starts_a_fresh_pool(self):
+        self.run_once(["--session", "one", "--budget-cny", "0.001", "first"], Counting([ModelResponse({"content": "a"}, usage(2000))]))
+        second = Counting([ModelResponse({"content": "b"}, usage(1000))])
+        code, _, _ = self.run_once(["--session", "one", "--budget-cny", "0.001", "second"], second)
+        self.assertEqual((code, second.requests), (0, 1))
+        self.assertEqual(json.loads(json.dumps(self.store().load("one").metadata[BUDGET_TURNS]))["2"]["budget_cny"], "0.001")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -945,12 +945,12 @@ class ModeAndCompatibilityTests(MainAgentTestCase):
         self.assertIn("The shared turn budget ran out first (main agent + workers): model calls 16/16",
                       stop_explanation(state, interactive=True))
 
-    def test_worker_and_budget_options_are_chat_only(self):
-        for option in (["--max-workers", "3"], ["--budget-cny", "1"]):
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
-                main(["--db", str(self.db), *option, "task"])
-            self.assertIn("apply to main-agent chat", stderr.getvalue())
+    def test_max_workers_is_chat_only(self):
+        # --budget-cny also applies to one-shot prompts (tests/test_budget_accounting.py).
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            main(["--db", str(self.db), "--max-workers", "3", "task"])
+        self.assertIn("--max-workers applies to main-agent chat", stderr.getvalue())
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["--db", str(self.db), "--max-workers", "0"])
 
