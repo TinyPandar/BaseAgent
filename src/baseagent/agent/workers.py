@@ -184,6 +184,29 @@ def turn_record(state, turn):
     return dict(((state.metadata.get(BUDGET_TURNS) or {}).get(str(turn))) or {})
 
 
+def turn_settings(store, main_state, records, turn):
+    """``(budget_cny, max_model_calls, max_steps)`` that ``turn`` ran with, None where unknown.
+
+    The main session's record comes first. Each worker also carries them in its own session (tagged when
+    it starts), so a turn whose main record is missing (sessions from before the record, or pruned) does
+    not lose its CNY cap: the largest cap and limits recorded by its workers apply.
+    """
+    record = turn_record(main_state, turn) if main_state is not None else {}
+    values = [record.get("budget_cny"), record.get("max_model_calls"), record.get("max_steps")]
+    if any(value is None for value in values):
+        for item in records:
+            if item.main_turn != turn:
+                continue
+            worker = store.load(item.session_id)
+            tagged = (worker.metadata.get("turn_budget") or {}) if worker is not None else {}
+            for index, key in enumerate(("budget_cny", "max_model_calls", "max_steps")):
+                if record.get(key) is None and tagged.get(key) is not None:
+                    current = values[index]
+                    values[index] = tagged[key] if current is None else (
+                        str(max(Decimal(current), Decimal(tagged[key]))) if key == "budget_cny" else max(current, tagged[key]))
+    return tuple(values)
+
+
 def seed_turn_usage(budget, store, main_state, records, turn):
     """Seed ``budget`` with everything already spent in main turn ``turn``.
 
@@ -243,7 +266,11 @@ class SharedBudgetMiddleware(AgentMiddleware):
                       "main": {"model_calls": state.model_calls, "steps": state.step,
                                "prompt_tokens": state.prompt_tokens, "completion_tokens": state.completion_tokens,
                                "unknown": state.unknown_usage_calls > 0}}
-        for old in list(turns)[:-BUDGET_TURNS_KEPT]:
+        # Keep every turn a worker could still resume in (anything not completed: parked, failed, cancelled),
+        # so its pool is rebuilt with the main agent's share; prune only the rest beyond the newest turns.
+        open_turns = {str(value.get("main_turn")) for value in (state.metadata.get("workers") or {}).values()
+                      if isinstance(value, dict) and value.get("status") != COMPLETED}
+        for old in [key for key in list(turns)[:-BUDGET_TURNS_KEPT] if key not in open_turns]:
             del turns[old]
 
     def _refuse(self, state, reason):
@@ -484,15 +511,26 @@ class WorkerManager:
     def pool_for(self, record):
         """The pool of the main turn that dispatched ``record``. A worker restored after a restart (for example
         resumed after an approval) gets that turn's pool rebuilt from saved usage, never a fresh one."""
-        if record.budget is None:
-            if record.main_turn is not None and self.budget is not None and self.budget.turn == record.main_turn:
-                record.budget = self.budget
-            elif record.main_turn is not None:
-                record.budget = self.budget_factory(turn=record.main_turn)
-            else:
-                # Records from before main_turn was saved: charge the current pool rather than a fresh one.
-                record.budget = self.budget or self.budget_factory()
-        return record.budget
+        with self._lock:
+            if record.budget is None:
+                if record.main_turn is None:
+                    # Records from before main_turn was saved: charge the current pool rather than a fresh one.
+                    record.budget = self.budget or self.budget_factory()
+                else:
+                    # Every worker of one turn draws from one pool: the main agent's, or the one another worker
+                    # of that turn already rebuilt. Two pools would each let the whole remaining cap be spent.
+                    shared = [pool for pool in (self.budget, *(other.budget for other in self.records.values()))
+                              if pool is not None and pool.turn == record.main_turn]
+                    record.budget = shared[0] if shared else self.budget_factory(turn=record.main_turn)
+            return record.budget
+
+    def _turn_tag(self, record):
+        """The turn's cap and shared limits, kept in the worker session so they survive a pruned main record."""
+        pool = record.budget
+        if pool is None:
+            return {}
+        return {"turn_budget": {"budget_cny": None if pool.budget_cny is None else str(pool.budget_cny),
+                                "max_model_calls": pool.max_model_calls, "max_steps": pool.max_steps}}
 
     def _start(self, record, user_input):
         thread = threading.Thread(target=self._run, args=(record, user_input), name=f"worker-{record.id}", daemon=True)
@@ -511,7 +549,8 @@ class WorkerManager:
                                 middleware=self._layers(record), cancellation=record.cancellation,
                                 emit=lambda line: self._progress(record, line),
                                 metadata={"session_mode": "worker", "main_session": self.session_id, "worker_id": record.id,
-                                          **({"main_turn": record.main_turn} if record.main_turn is not None else {})})
+                                          **({"main_turn": record.main_turn} if record.main_turn is not None else {}),
+                                          **self._turn_tag(record)})
         except BaseException as exc:  # noqa: BLE001 -- a worker failure must not kill the chat.
             error = f"{type(exc).__name__}: {exc}"
         with self._lock:
