@@ -29,7 +29,7 @@
 | 多文件原子补丁 | 有，`apply_patch` | 一次调用新增 / 修改 / 删除最多 50 个文件，全有或全无，失败按快照回滚；`modify` 复用 `edit_file` 的 `edits`；`--mode edit\|full` 下直接执行并展示整批 diff，`--tool-policy` 写 `ask` 才先批；`/undo` 整批撤回；不是文件系统事务，不包 `run_command`；离线测试，见 [docs/patch.md](docs/patch.md) |
 | JSON 输出 | 有，一次性和 `--resume` | `--output-format json\|jsonl`，jsonl 复用元数据事件信封，末行 `result`，`schema_version` 1；默认 `text` 与 master 逐字一致 |
 | 权限预设 | 有 | `--mode read-only\|edit\|full` 映射到 `--allow-write` / `--allow-command`；矛盾的显式标志直接报错；`--tool-policy` 只能再收紧 |
-| Terminal-Bench | 离线管道 | 固定 18 题 id；真实子集未跑 |
+| Terminal-Bench | 接上 Harbor，未跑分 | 通过 Harbor 0.26.0 外部 agent 接口参赛，命令经 `environment.exec` 进任务容器，评分由 Harbor 做；本地 fixture 是合法 Harbor 任务；固定 18 题 id；真实子集和 Docker 评分都未跑，见 [docs/terminal_bench.md](docs/terminal_bench.md) |
 | MCP 客户端 | 有，stdio，默认关闭 | 手写的工具子集客户端（`initialize` / `tools/list` / `tools/call`）加内部工具网关：MCP 工具与本地工具共用策略、审批、账本和钩子；有副作用的工具默认逐次审批；项目 `.mcp.json` 首次使用先列出服务器并询问是否信任，信任按文件内容记在用户配置目录，非交互不启动未信任的；Streamable HTTP、resources、prompts 未做；不是对外 MCP 服务；离线测试，见 [docs/mcp.md](docs/mcp.md) |
 | 项目规则文件 | 有，`AGENTS.md`，默认开启 | 每次会话把根目录 `AGENTS.md` 作为参考数据交给一次性任务、对话、主 Agent 和 Worker；超长截断并提示（每个文件 20 KB、合计 40 KB）；`/status` 和 json 看得出是否加载；`--no-project-rules` 关闭；不读 `CLAUDE.md`；离线测试 |
 | 在对话里继续 | 有，`/continue [N]` | 撞上步数 / 模型调用 / 工具调用上限后，在 CLI / TUI / Web 对话里提高本轮上限接着做，已用计数不清零、已完成的工具调用不重做；一次性任务仍用 `--resume`；离线测试 |

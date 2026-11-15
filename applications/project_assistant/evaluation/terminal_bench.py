@@ -12,6 +12,7 @@ Harbor (pinned 0.26.0) owns the containers, ``/app``, same-container grading, ti
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from decimal import ROUND_DOWN, Decimal
@@ -263,6 +264,10 @@ def run_fixture(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", *, env=
         runner = subprocess.run
     else:
         reason = "injected runner (test)"
+    if env is None:
+        # Harbor imports the adapter from this checkout.
+        source = str(EVALUATION_DIR.parents[2] / "src")
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [source, os.environ.get("PYTHONPATH")]))}
     jobs = {}
     for name, argv in fixture_jobs(harbor, jobs_dir).items():
         completed = runner(argv, env=env, check=False)

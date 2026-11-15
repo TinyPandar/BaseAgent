@@ -1,14 +1,99 @@
 # Terminal-Bench
 
-离线管道用一个本地伪造题证明计分和报告。真实 `terminal-bench@2.0` 子集不在这里下载，也不调用模型。
+BaseAgent 通过 Harbor 官方的外部 agent 接口参加 Terminal-Bench 2.0。Harbor 版本锁定 `0.26.0`。容器、`/app`、同容器评分、超时和 `result.json` 都由 Harbor 负责；本仓库不自建评测运行器。
 
-Harbor 是官方 harness。题目包保持它的形状：`task.toml`、`instruction.md`、`tests/test.sh`。固定子集是 Harbor registry `7367e809` 里 `terminal-bench@2.0` 按字母序的前 18 个 id，写在 `applications/project_assistant/evaluation/terminal_bench_subset.json`。
+**还没有真实跑分。** 下面所有数字都来自离线检查。旧版 `--fixture` 的「1/1」是一条写死 `passed=True` 的记录，不是评分结果，那条路径已删除。
 
-失败分成沙箱拦下、步数耗尽、答案错、基础设施失败。基础设施失败不算模型能力。
+## 怎么接上
 
-```bash
-python scripts/evaluate_terminal_bench.py --fixture
-python scripts/evaluate_terminal_bench.py --live --budget-cny 15
+```text
+harbor run ──► 任务容器（/app，题目自己的镜像、超时、资源）
+   │                ▲
+   │                │ environment.exec（命令、读写文件；不带任何环境变量）
+   ▼                │
+BaseAgentHarborAgent（宿主上的 Harbor 进程里）
+   └─ run_agent 循环 + 模型调用（密钥只在宿主）
 ```
 
-第二条只打印计划并退出。15 到 20 题大约 10 到 15 元，全量大约 40 到 60 元，另一次授权。不要为了分数改题目。
+- 适配器：`baseagent.tbench.harbor_agent:BaseAgentHarborAgent`。`setup()` 什么都不装；循环在宿主，命令和文件操作全部经 `environment.exec` 进入任务容器。
+- 后端：`baseagent.backends.ExecBackend`。工作目录取容器自己报告的 `pwd -P`（TB 2.0 是 `/app`），在宿主上是 `PurePosixPath`，不可能对它做本地 I/O。文件传输只依赖容器里的 POSIX `sh`、`base64`、`wc`、`mktemp`、`mv`、`ln`、`cp`、`rm`；有 `timeout` 时用它在容器内停命令。
+- `/app` 下不写框架文件。写文件时的 base64 分块暂存在容器的 `$TMPDIR`（默认 `/tmp`），只在最后一步用同目录临时文件做原子改名，失败时在同一条命令里清掉。
+- 密钥：从宿主环境变量（`BASEAGENT_LLM_*` 或 `DEEPSEEK_*`）读，从不传给 `environment.exec`。测试会把假密钥放进宿主环境，再确认容器命令、`env` 输出、元数据和日志里都没有它。
+- `grep` / `glob` / `search_files` 仍然只支持本地后端；模型在容器里用 `run_command` 跑 `grep`。
+
+## 超时
+
+- 单条命令的超时上限默认仍是 60 秒（`Workspace(max_command_timeout=...)`，工具 schema 的 `maximum` 随之变化）。TB 运行用 agent 参数 `max_command_timeout_sec` 调高，`--plan` 里是 600。
+- 无论上限多少，命令都不会超过题目剩余的墙钟时间：适配器把 `max_duration_seconds` 设为「agent 超时 − 15 秒余量 − 已用时间」，`Workspace` 本来就按回合剩余时间截断每条命令。
+- agent 超时：Harbor 0.26.0 不把超时传给外部 agent。适配器按顺序取 agent 参数 `agent_timeout_sec`，再从本次 trial 目录的 `config.json` 和题目 `task.toml` 按 Harbor 0.26.0 的公式（`min(base, max) × multiplier`）算；都拿不到时元数据里 `deadline_source` 记为 `unknown`，只靠 Harbor 外层超时。
+- Harbor 外层超时取消 `run()` 时：先冻结已统计的用量，再置取消标记。之后不会再发新的模型请求，进行中的 `exec` 在 0.05 秒内被取消，后续文件和命令操作直接拒绝。写进 `AgentContext` 的 token 是取消那一刻的累计值；如果当时有一个模型请求在途，`in_flight_model_calls_at_stop` 记为 1（那次请求可能已计费但没统计）。
+
+## 结果分类
+
+适配器把停止原因写进 `agent_result.metadata.stop_reason`，并用异常类名告诉 Harbor 怎么处理：
+
+| 情况 | 适配器 | Harbor 处理（`override_error_policy`） | 报告 |
+| --- | --- | --- | --- |
+| 正常结束 | 返回 | 评分 | reward 1 为通过，否则答错 |
+| 步数 / 模型调用 / 工具调用用尽、循环保护 | 返回，`steps_exhausted` | 评分 | reward 1 为通过，否则步数用尽 |
+| 自己的墙钟到了 / Harbor `AgentTimeoutError` | 返回 `timeout` / 被取消 | 评分（Harbor 默认） | reward 1 为通过，否则超时 |
+| 等待审批而停 | 返回，`permission_blocked` | 评分 | reward 1 为通过，否则权限拦截 |
+| CNY 预算用完 | 抛 `BudgetExceededError` | 评分、奖励无效、不重试 | 预算停止 |
+| 环境、provider、harness 出错 | 抛 `BaseAgentInfrastructureError` | 不评分、奖励无效、不重试 | 基础设施失败 |
+| Harbor / 环境自己的 `RuntimeError`（缺镜像、docker 失败） | — | 不评分、奖励无效、不重试 | 基础设施失败 |
+
+导入时（`--import`），除 `AgentTimeoutError`、`BudgetExceededError` 和上下文 / 输出长度类异常外，任何异常类型都算基础设施失败，所以未知异常不会被算成答错；没有有效 reward 的 trial 也算基础设施失败。基础设施失败单列（`infrastructure_tasks`），不进成功率分母。预算停止进分母（算没通过），单独计数。
+
+`BaseAgentInfrastructureError` 也包括 provider 错误（鉴权、网络）和模型输出格式错到内核直接失败的情况（例如同一轮重复的工具调用 ID）。后者其实是模型的问题，但它会被排除出分母；报告的 `exception_types` 和 `metadata.error` 里能看到原因。
+
+## 命令
+
+```bash
+# 需要 harbor==0.26.0 的单独 Python 环境（不装进项目 .venv）；BaseAgent 用 PYTHONPATH=src 引入，
+# 适配器只用到 Harbor 环境里已有的包（openai、jsonschema、python-dotenv 等）：
+uv venv -p 3.12 .harbor-venv
+uv pip install -p .harbor-venv harbor==0.26.0
+
+# 只打印付费子集的 harbor run 命令和 job 配置，不执行：
+python scripts/evaluate_terminal_bench.py --plan --budget-cny 15 --write-config terminal-bench-job.json
+
+# 用 Harbor 自己的代码检查这份配置（dry-run 的全部检查，除了需要 Docker 的环境预检）：
+PYTHONPATH=src .harbor-venv/bin/python scripts/check_harbor_plan.py --config terminal-bench-job.json
+# 有 Docker 时再跑完整的：
+PYTHONPATH=src .harbor-venv/bin/harbor run -c terminal-bench-job.json --dry-run
+
+# 用 Harbor 给本地 fixture 评分（需要 Docker，不调模型）：
+PATH=.harbor-venv/bin:$PATH PYTHONPATH=src python scripts/evaluate_terminal_bench.py --fixture
+
+# 把 Harbor 的结果导入报告：
+python scripts/evaluate_terminal_bench.py --import jobs/terminal-bench/<job>
+
+# 报告管道冒烟（合成记录，不是 Terminal-Bench 分数）：
+python scripts/evaluate_terminal_bench.py --synthetic
+```
+
+`--plan` 生成的配置：`timeout_multiplier` 1.0，不设任何超时倍数、超时上限、覆盖或资源字段；`n_concurrent_trials` 1、`n_attempts` 1、`max_retries` 0；数据集用子集文件里的 Harbor registry 提交 `7367e809` 和 18 个 `task_names`；每题预算是总预算的 1/18（向下取整到 0.0001 元），每题各自封顶，所以总花费不超过总预算，不需要共享账本。预算在每次模型调用前检查，越线那一次已经发出的调用会被计费。
+
+费用按人民币算（`metadata.cost_cny`，默认用 `baseagent.agent.workers` 里现有的计费单价，可用 `input_cny_per_million` / `output_cny_per_million` 改）。没有显式给 `usd_per_cny` 时 `cost_usd` 保持为空，不编汇率。
+
+## 本地 fixture
+
+`applications/project_assistant/evaluation/fixtures/terminal_bench/local-echo/` 是一个合法的 Harbor 任务：`task.toml`（`verifier.environment_mode = "shared"`，与 TB 2.0 一样在 agent 的容器里评分）、`instruction.md`、`environment/Dockerfile`（`ubuntu:24.04`，`WORKDIR /app`）、`solution/solve.sh`（官方 oracle 用）、`tests/test.sh`（只有 `/app/answer.txt` 恰好是 `ok` 时写 reward 1，否则写 0）。它不是 Terminal-Bench 的题。
+
+`--fixture` 跑三个 Harbor job：官方 oracle（期望 1）、`--ak scripted=correct`（期望 1）、`--ak scripted=wrong`（期望 0），再从 Harbor 写的 `result.json` 导入。脚本化模型不连 provider、用量为 0。没有 Docker 时输出 `verified: false` 和原因，退出码 2，不声称通过。`harbor lint` 对这个任务会提示 `shared-verifier`（建议分开评分容器）；这是有意的，与 TB 2.0 一致。
+
+## 升级 Harbor
+
+适配器启动和预检时检查 `harbor` 版本，必须正好是 `0.26.0`（`baseagent/tbench/settings.py` 的 `HARBOR_VERSION`）。升级时改这个常量，然后重跑：
+
+```bash
+PYTHONPATH=src:tests:. .harbor-venv/bin/python -B -m unittest tests/test_tbench_harbor.py tests/test_tbench_runner.py tests/test_tbench_exec_backend.py
+PYTHONPATH=src .harbor-venv/bin/python scripts/check_harbor_plan.py
+PATH=.harbor-venv/bin:$PATH PYTHONPATH=src python scripts/evaluate_terminal_bench.py --fixture   # 有 Docker 时
+```
+
+`tests/test_tbench_harbor.py` 用 Harbor 自己的模型校验 job 配置和错误策略，并真实运行两次 `harbor run`（环境故意失败：缺镜像、运行中 exec 断开），确认导入后都是基础设施失败。没装 Harbor 的环境里这些测试跳过。
+
+## 子集
+
+固定子集是 Harbor registry `7367e809` 里 `terminal-bench@2.0` 按字母序的前 18 个 id，写在 `applications/project_assistant/evaluation/terminal_bench_subset.json`。`check_harbor_plan.py` 用 Harbor 解析这份 registry，确认解析出的任务正好是这 18 个、来自数据集提交 `69671fba`。15 到 20 题大约 10 到 15 元，全量大约 40 到 60 元，另一次授权。不要为了分数改题目。
