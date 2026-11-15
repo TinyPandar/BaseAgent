@@ -1,5 +1,7 @@
 """Score a local Terminal-Bench fixture, or print the paid subset command and stop.
 
+The fixture proves the pipeline only; its success rate is not a Terminal-Bench score.
+
 ``--fixture --backend docker`` runs the real ``baseagent`` CLI on the local task with
 ``--backend docker``: a scripted fake model (no provider call) runs the task's check in the
 container, then the verifier runs ``tests/test.sh`` in a fresh container. The fake Docker
@@ -73,7 +75,7 @@ def docker_executor(*, real=False, image=FIXTURE_IMAGE):
                 return {"infrastructure": True, "steps": 0, "tokens": 0, "cost_cny": 0, "backend": "docker",
                         "docker": mode, "error": stderr.getvalue().strip()[-300:]}
             result = json.loads(stdout.getvalue())
-            # The verifier: tests/test.sh in a fresh container, like Harbor after the agent finishes.
+            # The check: tests/test.sh in a fresh container (pipeline check, not Harbor's verifier).
             verifier = DockerBackend(task, image=image, network="none", **({"runner": fake} if fake else {}))
             started.append(verifier.name)
             try:
@@ -122,6 +124,9 @@ def main(argv=None):
     report["subset_size"] = len(subset["task_ids"])
     report["live_executed"] = False
     report["provider_calls"] = 0
+    report["fixture_only"] = True
+    report["note"] = ("Local fake task with a scripted model: proves the pipeline runs. "
+                      "Not a Terminal-Bench score.")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if report["success_rate"] != 1:
         return 1

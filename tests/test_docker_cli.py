@@ -694,12 +694,15 @@ class TerminalBenchTests(unittest.TestCase):
         self.assertEqual(task["docker"], "fake")
         self.assertTrue(task["container_removed"])
         self.assertEqual(report["provider_calls"], 0)
+        self.assertTrue(report["fixture_only"])                  # a pipeline check, not a benchmark score
+        self.assertIn("Not a Terminal-Bench score", report["note"])
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             evaluate_terminal_bench.main(["--live", "--budget-cny", "15"])
         plan = json.loads(stdout.getvalue())
         self.assertIn("--backend docker", plan["agent_command"])
         self.assertFalse(plan["executed"])
+        self.assertEqual(plan["harbor_integration"], "unverified")
 
 
 if __name__ == "__main__":

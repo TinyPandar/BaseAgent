@@ -70,5 +70,7 @@ def planned_live(budget_cny="15"):
     return {"executed": False, "provider_calls": 0, "cost_cny": 0, "status": "authorization_required",
             "budget_cny": str(budget_cny),
             "command": f"python scripts/evaluate_terminal_bench.py --live --budget-cny {budget_cny}",
-            "backend": "docker", "agent_command": AGENT_COMMAND,
-            "note": "15-20 task subset is about 10-15 CNY. Full Terminal-Bench is a separate authorization. Do not run this."}
+            "backend": "docker", "agent_command": AGENT_COMMAND, "harbor_integration": "unverified",
+            "note": ("15-20 task subset is about 10-15 CNY. Full Terminal-Bench is a separate authorization. Do not run "
+                     "this. agent_command is the local --backend docker form, not a verified Harbor integration; check "
+                     "Harbor's official agent setup before a real run.")}

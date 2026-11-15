@@ -170,7 +170,7 @@
 | 14 运行中容器挂掉 | 完成（假 Docker） | `cli::test_a_dead_container_fails_the_turn_readably_and_resume_continues`、`test_a_command_in_a_dead_container_returns_a_clear_tool_error`、`int::test_status_survives_a_dead_container` | 新增：容器挂掉后 `/status` 的规则行报错而不崩 |
 | 15 清理 | 完成（真实冒烟未跑） | `cli::test_container_is_removed_on_every_exit_path`、`test_uncaught_exception_and_frontend_close_remove_the_container`、`test_sigterm_and_sighup_still_remove_the_container`、`test_leftover_containers_…`；`smoke::test_ctrl_c_exits_130_and_removes_the_container` | |
 | 16 可见性 | 完成 | `cli::test_json_jsonl_status_and_stderr_name_the_backend` | 没有 `backend` 键即 local |
-| 17 Terminal-Bench | 完成 | `cli::TerminalBenchTests::test_fixture_runs_through_the_docker_backend_offline`；本机 `python -B scripts/evaluate_terminal_bench.py --fixture --backend docker` 成功率 1.0、容器已删 | `score_records` 未改 |
+| 17 Terminal-Bench | 完成 | `cli::TerminalBenchTests::test_fixture_runs_through_the_docker_backend_offline`；本机 `python -B scripts/evaluate_terminal_bench.py --fixture --backend docker` 链路走通、容器已删 | `score_records` 未改。fixture 只证明链路，不是跑分成绩（报告带 `fixture_only: true`）；`--live` 计划里的 `--backend docker` 标为 `harbor_integration: "unverified"` |
 | 18 测试 | 部分 | 见下「全量测试」；`test_docker_backend.py`、`test_docker_cli.py`、`test_docker_integrate.py`、`test_docker_smoke.py`、`test_demo_docker.py`、`test_apply_patch*.py` 连跑 3 遍：每遍 96 passed、4 skipped | 真实冒烟没跑过 |
 | 19 文档 | 完成 | 81e3bf6、b82f9db | |
 | 20 离线演示 | 完成（真 Docker 部分未跑） | `tests/test_demo_docker.py`；docs/demo.md | |
@@ -208,15 +208,14 @@
 
 **拍板的点：** 设计小节已写（AC 22 方案 1、AC 23 方案 1、只加回 `CHOWN` / `DAC_OVERRIDE` / `FOWNER`）。另外：local 下符号链接的 `AGENTS.md` 在 `/status` / json 里照旧按链接目标描述（master 行为不变）；docker 下同样的情况报 `could not be read (symlink)`，两边因此不同，这是有意的。加固设置进了后端契约（`capabilities`、`no_new_privileges`），旧分支上起的未完成 docker 轮次续跑要 `--accept-config-changes`（docker 后端从没进过 master，影响面只有旧分支的试用会话）。
 
-**Terminal-Bench 付费跑之前还缺（沿用旧清单，按本轮更新）：**
+**范围（2026-11-14 对齐）：** 本分支只交付本地编码用的 Docker 沙箱，不承载真实 Terminal-Bench。没有、也不会为了 TB 改成 `/app` 工作目录、为判分保留容器或默认开网；默认断网、`/workspace` 挂载、每次运行结束删容器、能力收紧都保持不变。旧清单里「对接 `/app`」「判分用同一个容器」「给跑分放宽加固」这几条不再作为本后端的待办。现有 fixture 只证明「CLI → docker 后端 → 计分」链路能走通，不是跑分成绩。
 
-- `--live` 仍只打印计划、不执行：没有下载 Harbor 题目包、逐题起环境、汇总的执行器。
-- 题目镜像和工作目录（常见 `/app`）没对接：现在只能把宿主目录挂到 `/workspace`。
-- Harbor 在同一个容器里判分；我们结束就删容器，工作区以外的改动（装的包、起的服务）判分时已不在。
-- 默认断网、内存固定 512m；默认镜像没有 `git`。
-- 新增：加固后去掉了 `SETUID` / `SETGID`，题目里 `apt-get install` 要加 `-o APT::Sandbox::User=root`，用到 `su` / `sudo` 的题会失败；跑分前要看题目集里有多少这种情况，决定是否给跑分单独放宽。
-- 一次性任务没有 `--budget-cny`，付费预算要靠 `--max-steps` / `--max-total-tokens` 和外层脚本。
-- **先在有 Docker 的跑分机上真跑一遍 `tests/test_docker_smoke.py` 和 `python -B scripts/demo_docker.py`**：两轮都没跑过，AC 5–8、27 的真实部分都悬着。
+**真实评测另行处理（不在本分支）：**
+
+- 按 Harbor 官方的 agent 接入方案核实 BaseAgent 怎么接进去，不以本仓库的 docker 后端为前提；`--live` 目前只打印计划、不执行。
+- 一次性任务没有 `--budget-cny`，付费评测要另有总预算控制。
+
+**本后端自己还要做的：** 在有 Docker 的机器上真跑一遍 `tests/test_docker_smoke.py` 和 `python -B scripts/demo_docker.py`。两轮都没跑过，AC 5–8、27 的真实部分都悬着。
 
 ## 库与 CLI
 
