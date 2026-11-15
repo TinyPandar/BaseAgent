@@ -123,7 +123,26 @@
 
 ### 设计（实现者填写）
 
-（至少两套方案，写清数据形状、接口、模块边界、影响面，以及选哪套、为什么。重点是 AC 22 / 23：规则读取放在后端还是 `Workspace` 层、容器里怎么算整文件哈希。）
+**沿用旧分支的拍板。** 方案 A（命令和文件读写都在容器里）、`--backend` / `--docker-image` / `--docker-network` 参数和默认值、一个 CLI 进程一个容器、`.baseagent` tmpfs、`.git` 只读、属主交还、退出码 3、json `backend` / jsonl `backend_ready` 全部不变。搬运方式：`3fb6462` 和 `b49cd2f` 只改旧施工段，解决冲突后是空提交，跳过（`git cherry-pick --skip`）；其余 8 个逐个解决冲突，冲突处一律「master 的新功能 + docker 的接入」都保留。
+
+只有 AC 22（规则读取放哪、容器里怎么算整文件哈希）和 AC 23（`/status` / json 的规则元数据从哪读）真有取舍，下面只写这两处，外加 AC 27 的能力集合。
+
+**AC 22，方案 1：后端各自实现，截断规则抽成纯函数共用（选定）。**
+
+- 数据形状：master 的 `read_rules_file` 拆成两步：取「整文件 SHA-256、字节数、开头至多 `limit + 4` 字节」这个三元组，再由纯函数 `rules_entry(digest, size, head, shown_limit)` 决定 `content` / `truncated` / `size_bytes` / `shown_bytes`。LocalBackend 照旧用 `_read` 流式取三元组，代码路径和输出不变。
+- DockerBackend：容器脚本新增两个操作。`heads`：对目录链上每个 `AGENTS.md`，先在容器的 `/tmp` 里拷一份快照，从快照算 `sha256sum` 和字节数，再 `head -c 20004` 输出开头；哈希和正文出自同一份字节，不会对不上。`sums`：只回「大小 + 哈希」，不传正文，给漂移检查用。Python 侧拿到三元组后用同一个 `rules_entry` 和同一个 `instruction_digest`，所以截断边界、提示、摘要与 local 逐字节相同。链接规则不变：路径上有任何符号链接就报「repository instructions cannot use symlinks」。
+- 接口：`WorkspaceBackend` 协议不变（仍是 `get_instructions`，加可选的 `observe_many`），第三方后端和测试里的内存后端不用改。
+- 漂移检查：`observe_many` 改用 `sums`，一次 exec，文件和规则都只传哈希，不再传文件内容；大于 20 KB 的 `AGENTS.md` 不再是 `unavailable`。普通文件仍按 200 KB 读上限判 `unavailable`，与 local 的 `file_hash` 相同。
+
+**AC 22，方案 2：规则读取上移到 `Workspace` 层（不选）。** `tools/instructions.py` 实现唯一一份目录链遍历、截断和摘要；后端只提供原语 `rule_heads(paths, limit) -> {path: (sha, size, head)}`。好处是链遍历只有一份代码。不选的理由：要改 `WorkspaceBackend` 协议（第三方后端、`tests/test_backends.py` 的内存后端都得补方法）；LocalBackend 的 `get_instructions` 要换实现，碰 master 刚稳定的规则代码和逐字一致的基线；而两个后端里真正需要共用的只有「截断 + 摘要」这一段，方案 1 用纯函数已经共用了。
+
+**AC 23，方案 1：非本机后端经后端读取（选定）。** `rules_summary(workspace)`：LocalBackend 保持宿主读取不变（本机后端下 agent 的命令本来就以宿主用户身份运行，宿主读取不越过任何边界，而且这样 local 输出逐字不变）。其它后端（DockerBackend）改为：`AGENTS.md`、`CLAUDE.md` 的存在与类型在容器里判断（容器脚本不跟随出界链接），大小、哈希、截断字段取自 `backend.get_instructions(".")` 的根条目。容器里把 `AGENTS.md` 换成指向宿主 `/etc/passwd` 的链接时，宿主只报「读不了（symlink）」，不会报出宿主文件的大小或哈希。
+
+**AC 23，方案 2：宿主读取改成不跟随链接（不选）。** 逐级 `lstat` 加 `O_NOFOLLOW` 打开。不选：只能挡住打开那一刻的链接，挡不住容器在检查和打开之间换掉父目录的竞态，这正是旧分支选方案 A 的原因；而且会改变 local 下符号链接 `AGENTS.md` 的现有输出。
+
+**接带的时序问题（两套都要处理）。** master 在 `finally` 之后才算 json 的 `project_rules`；docker 下那时容器已删，经后端读不到。改成在 `try` 里、本轮结束之后、删容器之前算好，`finally` 之后只用算好的值；local 的值和时机等价，输出不变。
+
+**AC 27 的能力集合。** `--cap-drop ALL` 加 `--security-opt no-new-privileges`，只加回 `CHOWN`、`DAC_OVERRIDE`、`FOWNER`。`CHOWN`：属主交还（AC 8）要 `chown` 回宿主用户。`DAC_OVERRIDE`、`FOWNER`：命令以镜像默认用户 root 运行，而 Linux 上 bind mount 里的工作区文件属于宿主用户（例如 uid 1000、权限 644）；没有这两个能力，root 就改不了、`chmod` / `touch` 不了 agent 要处理的工作区文件，`--mode full` 等于不能用。其余默认能力（`SETUID`、`SETGID`、`KILL`、`NET_RAW`、`MKNOD`、`SYS_CHROOT` 等）全部去掉：清理命令时杀的是同一用户的进程，不需要 `KILL`；代价是 `apt-get` 降权到 `_apt` 会失败，写进已知限制。
 
 ### 完成情况（实现者填写）
 
