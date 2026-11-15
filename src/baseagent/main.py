@@ -109,7 +109,7 @@ MODES = {"read-only": (False, False), "edit": (True, False), "full": (True, True
 OUTPUT_FORMATS = ("text", "json", "jsonl")
 FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machine; LocalBackend is not a sandbox. "
                      "/undo restores files written by write_file/edit_file/apply_patch, not changes made by commands. "
-                     "For isolation use DockerBackend (docs/docker_backend.md).")
+                     "For isolation use --backend docker (docs/docker_backend.md).")
 DOCKER_FULL_MODE_NOTE = ("Note: --mode full runs commands inside the Docker container ({network}). /undo restores files "
                          "written by write_file/edit_file/apply_patch, not changes made by commands.")
 # Exit code when --backend docker cannot start (Docker missing, daemon down, image missing); see docs/output.md.

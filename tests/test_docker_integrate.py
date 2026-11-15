@@ -14,6 +14,8 @@ from mcp_helpers import write_config
 from test_docker_cli import DOCKER, DockerCliCase
 
 from baseagent.backends import DockerBackend
+from baseagent.backends.docker import ADDED_CAPABILITIES
+from baseagent.main import FULL_MODE_WARNING
 from baseagent.tools.instructions import FILE_LIMIT, describe_rules, rules_summary
 from baseagent.tools.result import ErrorCode, ToolFailure
 from baseagent.tools.workspace import Workspace
@@ -228,3 +230,40 @@ class OutputFieldTests(RulesCase):
         self.assertNotIn("PATCHED-LINE", results["jsonl"])         # no diff text in jsonl
         self.assertNotIn(RULES_TEXT, results["jsonl"])             # no rules text in jsonl
         self.assertNotIn(RULES_TEXT, results["json"])
+
+
+# ----- AC 26 and 27 -------------------------------------------------------------------------------
+class HardeningTests(RulesCase):
+    def test_local_full_mode_warning_points_to_the_docker_backend(self):
+        self.assertIn("For isolation use --backend docker", FULL_MODE_WARNING)
+        self.assertNotIn("DockerBackend", FULL_MODE_WARNING)
+        code, _, err = self.run_cli(["--mode", "full", "--session", "w", "hi"], Script([{"content": "ok"}]))
+        self.assertEqual(code, 0, err)
+        self.assertIn(FULL_MODE_WARNING, err)
+
+    def test_containers_drop_capabilities_and_privilege_gain(self):
+        backend = DockerBackend(self.root, runner=self.fake, owner=(1234, 5678))
+        run = next(argv for argv in self.fake.calls if argv[1] == "run")
+        self.assertEqual(run[run.index("--cap-drop") + 1], "ALL")
+        added = [run[index + 1] for index, value in enumerate(run) if value == "--cap-add"]
+        self.assertEqual(added, ["CHOWN", "DAC_OVERRIDE", "FOWNER"])
+        self.assertEqual(tuple(added), ADDED_CAPABILITIES)
+        self.assertEqual(run[run.index("--security-opt") + 1], "no-new-privileges")
+        self.assertLess(run.index("--cap-drop"), run.index("--cap-add"))
+        self.assertLess(run.index("--security-opt"), run.index(backend.image))      # options, not command args
+        self.assertNotIn("--privileged", run)
+        self.assertEqual(backend.contract()["capabilities"], list(ADDED_CAPABILITIES))
+        # The ownership hand-back (AC 8) and the removal (AC 15) still run.
+        Workspace(backend=backend, allow_command=True).run_command(["echo", "hi"])
+        backend.close()
+        after = [argv for argv in self.fake.calls if "after" in argv]
+        self.assertTrue(after and after[-1][-2:] == ["1234", "5678"])
+        self.assertIn(backend.name, self.fake.removed())
+
+    def test_hardening_is_part_of_the_resume_contract(self):
+        # A turn started before hardening (contract without capabilities) asks to accept the change on resume.
+        old = DockerBackend(self.root, runner=self.fake, owner=False, start=False).contract()
+        old.pop("capabilities")
+        old.pop("no_new_privileges")
+        self.assertNotEqual(old, DockerBackend(self.root, runner=self.fake, owner=False, start=False).contract())
+

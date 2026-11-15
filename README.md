@@ -704,7 +704,7 @@ Deleting an unfinished session requires the explicit discard flag. A held sessio
 | --- | --- | --- | --- |
 | `read-only` | 不传标志时的默认值 | 无：`write_file`、`edit_file`、`apply_patch`、`run_command`、`verify_command` 都不暴露 | 读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
 | `edit` | `--allow-write` | `write_file`、`edit_file`、`apply_patch` | 文件写入都有检查点，可 `/undo` |
-| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 DockerBackend；`--backend docker` 下改为说明命令在容器里、网络是否开启 |
+| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command` | LocalBackend 下 stderr 打印一行警告：命令不在沙箱里，`/undo` 撤不回命令造成的改动，建议用 `--backend docker`；`--backend docker` 下改为说明命令在容器里、网络是否开启 |
 
 未开启的工具不出现在发给模型的工具列表里（`ExecutionGuidanceMiddleware`），模型硬要调用也会在工作区边界返回 `permission_denied`。`publish_memory` / `withdraw_memory` 另由 `--allow-memory-publish` 控制，不在 `--mode` 里。
 

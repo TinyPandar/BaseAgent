@@ -34,6 +34,13 @@ LABEL = "baseagent.workspace"
 READ_LIMIT = 200_000
 BATCH = 200                      # paths per batched read exec
 PROTECTED_PARTS = {".git", ".venv", ".baseagent"}
+# No Linux capabilities except the three the design needs, and no privilege gain through setuid binaries.
+# CHOWN: hand files back to the host user (docs/docker_backend.md, ownership). DAC_OVERRIDE, FOWNER:
+# commands run as the image user (usually root) on a bind mount whose files belong to the host user;
+# without them root cannot modify, chmod or touch the workspace files the agent works on.
+ADDED_CAPABILITIES = ("CHOWN", "DAC_OVERRIDE", "FOWNER")
+HARDENING = ("--cap-drop", "ALL", *[part for cap in ADDED_CAPABILITIES for part in ("--cap-add", cap)],
+             "--security-opt", "no-new-privileges")
 CLI_MISSING = ("Docker is not installed: there is no `docker` command on PATH. Install Docker Desktop or "
                "Docker Engine, or run without --backend docker.")
 
@@ -193,7 +200,8 @@ class DockerBackend:
         # No container id or name: a resumed turn runs in a new container with the same settings.
         return {"kind": "docker", "version": 2, "image": self.image, "network": self.network,
                 "cpus": self.cpus, "memory": self.memory, "pids": self.pids,
-                "mount": MOUNT, "isolation": "container", "git": "read-only", "harness_dir": "tmpfs"}
+                "mount": MOUNT, "isolation": "container", "git": "read-only", "harness_dir": "tmpfs",
+                "capabilities": list(ADDED_CAPABILITIES), "no_new_privileges": True}
 
     def describe(self):
         """Non-secret facts for json output and /status."""
@@ -217,7 +225,7 @@ class DockerBackend:
                     "--label", f"{LABEL}={self.workspace_key}", "--label", f"baseagent.pid={os.getpid()}",
                     "--label", f"baseagent.host={socket.gethostname()}",
                     "--network", self.network, "--cpus", str(self.cpus), "--memory", self.memory,
-                    "--pids-limit", str(self.pids), "--entrypoint", "sleep",
+                    "--pids-limit", str(self.pids), *HARDENING, "--entrypoint", "sleep",
                     "--mount", f"type=bind,source={self.root},target={MOUNT}"]
             git = self.root / ".git"
             if git.is_dir() and not git.is_symlink():
