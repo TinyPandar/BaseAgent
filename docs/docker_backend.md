@@ -32,6 +32,7 @@ Note: --mode full runs commands inside the Docker container (no network access).
 - **一个 CLI 进程一个容器。** 一次性任务、一次 `--resume`、一整段连续对话（所有轮次，加上主 Agent 派出的全部 Worker）各用一个容器。Worker 和主 Agent 共用工作区挂载，所以共用容器；每条命令结束后只清理它自己留下的进程（见下），不会误杀并行 Worker 的命令。
 - **起：** 解析参数、读完会话之后，调用模型之前。先预检（`docker version`、`docker image inspect`），再清理同一工作区的残留容器，再 `docker run -d … sleep infinity`。
 - **停：** `finally` 里 `docker rm -f`：正常结束、Ctrl+C（130）、未捕获异常、对话 `/exit` 或 EOF、TUI 退出、Web 服务停止，都会删。关掉终端窗口（SIGHUP）和 `kill`（SIGTERM）在 docker 后端运行期间也转成正常退出（退出码 128+信号），同样会删。删之前把工作区文件属主交还宿主用户（Linux）。
+- **起到一半就失败：** `docker run` 一旦发出，容器可能已经建好，而此时还没有调用方拿到后端对象来收尾。所以 `DockerBackend.start` 自己兜底：`docker run` 期间或之后遇到 Ctrl+C、超时、非 0 退出（例如 OCI runtime 起不来，容器停在 Created）、没返回容器 id，都先按本次的容器名 `docker rm -f`，再把**原来的错误原样抛出**（同一个异常对象，Ctrl+C 仍是退出码 130，其它 Docker 错误仍是 `Docker error: …` 加退出码 3）。删除本身失败（包括删的时候再按一次 Ctrl+C）不会顶替原错误，只在原错误上附一条说明，stderr 打印 `Docker warning: could not remove container … ; the next run in this workspace removes it.`，下次同一工作区启动时按上面的残留规则删掉。SIGTERM/SIGHUP 的处理在建容器之前就装好，起到一半被 `kill` 也走同样的清理。预检和残留清理阶段还没有本次的容器，失败时不发 `docker rm`。边界情况：真实 Docker 下 Ctrl+C 打断 CLI 时 daemon 可能还没建完容器，`docker rm` 会先到、报 no such container，随后建成的容器同样留给下次启动的残留清理。
 - **续跑是新容器。** 会话状态在宿主的会话库里，工作区文件在宿主目录，都不丢；容器里工作区以外的东西（装的包、`/tmp`）不保留。`contract()` 不含容器 id，所以同样的镜像和网络设置能续跑；换后端、换镜像或换网络续跑一个未完成的轮次会被拒绝：
 
   ```text
@@ -138,4 +139,4 @@ python -B scripts/demo_docker.py                # 真 Docker：改文件 → 跑
 python -B scripts/demo_docker.py --fake-docker  # 同一流程走假 Docker（离线、不隔离）
 ```
 
-没有 Docker 的机器上第一条打印 `Docker error (cli_missing): …` 并以 3 退出。离线测试在 `tests/test_docker_cli.py`、`tests/test_docker_backend.py`、`tests/test_demo_docker.py`；真实冒烟测试在 `tests/test_docker_smoke.py`（隔离、断网、属主、撤销、正常结束和 Ctrl+C 清理），没有 Docker / daemon / 镜像时带原因跳过；镜像用 `BASEAGENT_DOCKER_TEST_IMAGE` 指定，默认 `python:3.12-slim`，拉镜像以外不联网。
+没有 Docker 的机器上第一条打印 `Docker error (cli_missing): …` 并以 3 退出。离线测试在 `tests/test_docker_cli.py`、`tests/test_docker_backend.py`、`tests/test_docker_startup.py`（启动到一半的 Ctrl+C 和异常）、`tests/test_demo_docker.py`；真实冒烟测试在 `tests/test_docker_smoke.py`（隔离、断网、属主、撤销、正常结束和 Ctrl+C 清理），没有 Docker / daemon / 镜像时带原因跳过；镜像用 `BASEAGENT_DOCKER_TEST_IMAGE` 指定，默认 `python:3.12-slim`，拉镜像以外不联网。

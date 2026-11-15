@@ -200,6 +200,12 @@ def _exit_on_signals():
     return previous
 
 
+def _print_notes(exc):
+    """Warnings attached to an error (e.g. a container that could not be removed after a failed start)."""
+    for note in getattr(exc, "__notes__", ()):
+        print(note, file=sys.stderr)
+
+
 def _restore_signals(previous):
     import signal
     for number, handler in previous.items():
@@ -711,6 +717,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 mismatch = _backend_mismatch(existing, planned, args.session)
                 if mismatch:
                     raise ValueError(mismatch)
+            # A closed terminal (SIGHUP) or `kill` (SIGTERM) must still reach cleanup, also while the container
+            # starts: DockerBackend.start removes a half-started container, `finally` removes a started one.
+            signals = _exit_on_signals()
             try:
                 # Starts the container before any model call; Docker problems end the run here (cost 0).
                 backend = (backend_factory or _make_backend)(args, root, protected)
@@ -718,12 +727,14 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 backend_info = {"kind": "docker", "image": args.docker_image or DEFAULT_DOCKER_IMAGE,
                                 "network": args.docker_network or "none", "container": None, "unavailable": exc.kind}
                 print(f"Docker error ({exc.kind}): {exc}", file=sys.stderr)
+                _print_notes(exc)
                 if machine.enabled:
                     machine.finish(machine_result(session_id=args.session, status="error", code=BACKEND_UNAVAILABLE_EXIT,
                                                   error=f"Docker error ({exc.kind}): {exc}", backend=backend_info))
                 return BACKEND_UNAVAILABLE_EXIT
             except DockerError as exc:
                 print(f"Docker error: {exc}", file=sys.stderr)
+                _print_notes(exc)
                 if machine.enabled:
                     machine.finish(machine_result(session_id=args.session, status="error", code=BACKEND_UNAVAILABLE_EXIT,
                                                   error=f"Docker error: {exc}"))
@@ -732,8 +743,6 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 print(f"--backend docker: {exc}", file=sys.stderr)
                 return 2
             backend_info = backend.describe()
-            # A closed terminal (SIGHUP) or `kill` (SIGTERM) must still reach `finally` and remove the container.
-            signals = _exit_on_signals()
             for name in getattr(backend, "reaped", []):
                 print(f"Removed leftover container {name} of an earlier run that did not exit cleanly.", file=sys.stderr)
             print(f"Backend: {backend.summary()}", file=sys.stderr)
@@ -1026,7 +1035,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if machine.enabled:
             # Read before `finally` removes a Docker container: rule metadata comes through the backend.
             final_rules = rules_summary(workspace, enabled=project_rules)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        _print_notes(exc)
         if machine.enabled:
             machine.finish(machine_result(session_id=args.session, status="interrupted", code=130,
                                           error="interrupted before the turn finished", backend=backend_info))

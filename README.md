@@ -168,7 +168,7 @@
 | 12 `post_edit_check` / `max_changed_lines` | 完成 | `cli::test_post_edit_check_and_diff_limit_work_in_the_container`、`test_backends_that_cannot_roll_back_refuse_post_edit_check_at_startup` | |
 | 13 Docker 不可用 | 完成 | `cli::test_docker_unavailable_fails_before_the_model_with_exit_3` | 退出码 3；本机实测 `python -B scripts/demo_docker.py` 退出 3 |
 | 14 运行中容器挂掉 | 完成（假 Docker） | `cli::test_a_dead_container_fails_the_turn_readably_and_resume_continues`、`test_a_command_in_a_dead_container_returns_a_clear_tool_error`、`int::test_status_survives_a_dead_container` | 新增：容器挂掉后 `/status` 的规则行报错而不崩 |
-| 15 清理 | 完成（真实冒烟未跑） | `cli::test_container_is_removed_on_every_exit_path`、`test_uncaught_exception_and_frontend_close_remove_the_container`、`test_sigterm_and_sighup_still_remove_the_container`、`test_leftover_containers_…`；`smoke::test_ctrl_c_exits_130_and_removes_the_container` | |
+| 15 清理 | 完成（真实冒烟未跑） | `cli::test_container_is_removed_on_every_exit_path`、`test_uncaught_exception_and_frontend_close_remove_the_container`、`test_sigterm_and_sighup_still_remove_the_container`、`test_leftover_containers_…`；启动到一半：`startup::test_ctrl_c_while_the_container_starts`、`test_an_exception_while_the_container_starts`；`smoke::test_ctrl_c_exits_130_and_removes_the_container` | 见下「启动到一半的清理」 |
 | 16 可见性 | 完成 | `cli::test_json_jsonl_status_and_stderr_name_the_backend` | 没有 `backend` 键即 local |
 | 17 Terminal-Bench | 完成 | `cli::TerminalBenchTests::test_fixture_runs_through_the_docker_backend_offline`；本机 `python -B scripts/evaluate_terminal_bench.py --fixture --backend docker` 链路走通、容器已删 | `score_records` 未改。fixture 只证明链路，不是跑分成绩（报告带 `fixture_only: true`）；`--live` 计划里的 `--backend docker` 标为 `harbor_integration: "unverified"` |
 | 18 测试 | 部分 | 见下「全量测试」；`test_docker_backend.py`、`test_docker_cli.py`、`test_docker_integrate.py`、`test_docker_smoke.py`、`test_demo_docker.py`、`test_apply_patch*.py` 连跑 3 遍：每遍 96 passed、4 skipped | 真实冒烟没跑过 |
@@ -207,6 +207,8 @@
 - `/status` 在会话还没落盘时（第一轮之前）不显示规则行，local 也一样，这是 master 的行为，没改。
 
 **拍板的点：** 设计小节已写（AC 22 方案 1、AC 23 方案 1、只加回 `CHOWN` / `DAC_OVERRIDE` / `FOWNER`）。另外：local 下符号链接的 `AGENTS.md` 在 `/status` / json 里照旧按链接目标描述（master 行为不变）；docker 下同样的情况报 `could not be read (symlink)`，两边因此不同，这是有意的。加固设置进了后端契约（`capabilities`、`no_new_privileges`），旧分支上起的未完成 docker 轮次续跑要 `--accept-config-changes`（docker 后端从没进过 master，影响面只有旧分支的试用会话）。
+
+**启动到一半的清理（2026-11-14 补）：** 之前 `docker run` 发出后若被 Ctrl+C 打断、超时、非 0 退出（容器停在 Created）或没返回 id，构造函数直接抛错，`main` 的 `finally` 拿不到后端对象，已建的容器留到下次启动才被当残留删。现在 `DockerBackend.start` 在这些情况下先按容器名 `docker rm -f`，再原样抛出原来的异常（Ctrl+C 仍退 130，其它仍是 `Docker error: …` 退 3）；删除失败（含再按一次 Ctrl+C）只在原异常上附说明并打印 `Docker warning`，不顶替原错误。SIGTERM/SIGHUP 处理挪到建容器之前。回归测试 `tests/test_docker_startup.py`（11 条，后端层 + CLI 层各覆盖 Ctrl+C 与异常），在旧代码上 Ctrl+C、异常和 SIGTERM 这几条都失败。
 
 **范围（2026-11-14 对齐）：** 本分支只交付本地编码用的 Docker 沙箱，不承载真实 Terminal-Bench。没有、也不会为了 TB 改成 `/app` 工作目录、为判分保留容器或默认开网；默认断网、`/workspace` 挂载、每次运行结束删容器、能力收紧都保持不变。旧清单里「对接 `/app`」「判分用同一个容器」「给跑分放宽加固」这几条不再作为本后端的待办。现有 fixture 只证明「CLI → docker 后端 → 计分」链路能走通，不是跑分成绩。
 

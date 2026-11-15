@@ -232,18 +232,38 @@ class DockerBackend:
                 self.git_mount = "read-only"
                 argv += ["--mount", f"type=bind,source={git},target={MOUNT}/.git,readonly"]
             argv += ["--mount", f"type=tmpfs,destination={MOUNT}/.baseagent", "-w", MOUNT, self.image, "infinity"]
-            code, stdout, stderr = self.runner.run(argv, timeout=120)
-            if code != 0:
-                message = explain_docker_failure(stderr, image=self.image)
-                if message.startswith("Docker image is missing"):
-                    raise DockerUnavailable("image_missing", message)
-                if message.startswith("Docker daemon"):
-                    raise DockerUnavailable("daemon_unreachable", message)
-                raise DockerError(message)
-            self.container_id = stdout.decode().strip()
-            if not self.container_id:
-                raise DockerError("Docker did not return a container id")
-            return self.container_id
+            try:
+                code, stdout, stderr = self.runner.run(argv, timeout=120)
+                if code != 0:
+                    message = explain_docker_failure(stderr, image=self.image)
+                    if message.startswith("Docker image is missing"):
+                        raise DockerUnavailable("image_missing", message)
+                    if message.startswith("Docker daemon"):
+                        raise DockerUnavailable("daemon_unreachable", message)
+                    raise DockerError(message)
+                container_id = stdout.decode().strip()
+                if not container_id:
+                    raise DockerError("Docker did not return a container id")
+                self.container_id = container_id
+                return container_id
+            except BaseException as exc:
+                # Ctrl+C, a timeout, a failed start or a missing id: `docker run` may already have created the
+                # container, and no caller holds this backend yet to close it. Remove it here, keep `exc`.
+                self._discard_unstarted(exc)
+                raise
+
+    def _discard_unstarted(self, original):
+        """Best-effort ``docker rm -f`` of this run's name after a failed start; never replaces ``original``."""
+        try:
+            code, stdout, stderr = self.runner.run(["docker", "rm", "-f", self.name], timeout=60)
+        except BaseException as cleanup:  # noqa: BLE001 -- a second Ctrl+C or Docker gone: report, keep the original.
+            problem = f"{type(cleanup).__name__}: {cleanup}".rstrip(": ")
+        else:
+            if code == 0 or b"no such container" in (stdout + stderr).lower():
+                return
+            problem = explain_docker_failure(stderr, image=self.image)
+        original.add_note(f"Docker warning: could not remove container {self.name} after the failed start "
+                          f"({problem}); the next run in this workspace removes it.")
 
     def close(self):
         """Remove this run's container (idempotent). Files are handed back to the host user first."""
