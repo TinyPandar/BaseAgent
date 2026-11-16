@@ -19,6 +19,7 @@ BaseAgentHarborAgent（宿主上的 Harbor 进程里）
 - 后端：`baseagent.backends.ExecBackend`。工作目录取容器自己报告的 `pwd -P`（TB 2.0 是 `/app`），在宿主上是 `PurePosixPath`，不可能对它做本地 I/O。文件传输只依赖容器里的 POSIX `sh`、`base64`、`wc`、`mktemp`、`mv`、`ln`、`cp`、`rm`；有 `timeout` 时用它在容器内停命令。
 - `/app` 下不写框架文件。写文件时的 base64 分块暂存在容器的 `$TMPDIR`（默认 `/tmp`），只在最后一步用同目录临时文件做原子改名，失败时在同一条命令里清掉。
 - 密钥：从宿主环境变量（`BASEAGENT_LLM_*` 或 `DEEPSEEK_*`）读，从不传给 `environment.exec`。测试会把假密钥放进宿主环境，再确认容器命令、`env` 输出、元数据和日志里都没有它。
+- 错误文本：provider 或环境的异常文字可能带着密钥。写进 `metadata.error`、`agent/baseagent-summary.json` 和抛给 Harbor 的异常（会进 `result.json` 的 `exception_message` / `exception_traceback`）之前一律脱敏：模型适配器自己持有的 key、宿主环境里名字含 KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL 的变量值，以及 `sk-…`、`Bearer …` 形状。适配器抛出的异常都不带原始异常链（`from None`），所以 Harbor 记录的 traceback 里也没有原始异常的文字。
 - `grep` / `glob` / `search_files` 仍然只支持本地后端；模型在容器里用 `run_command` 跑 `grep`。
 
 ## 超时
@@ -26,7 +27,8 @@ BaseAgentHarborAgent（宿主上的 Harbor 进程里）
 - 单条命令的超时上限默认仍是 60 秒（`Workspace(max_command_timeout=...)`，工具 schema 的 `maximum` 随之变化）。TB 运行用 agent 参数 `max_command_timeout_sec` 调高，`--plan` 里是 600。
 - 无论上限多少，命令都不会超过题目剩余的墙钟时间：适配器把 `max_duration_seconds` 设为「agent 超时 − 15 秒余量 − 已用时间」，`Workspace` 本来就按回合剩余时间截断每条命令。
 - agent 超时：Harbor 0.26.0 不把超时传给外部 agent。适配器按顺序取 agent 参数 `agent_timeout_sec`，再从本次 trial 目录的 `config.json` 和题目 `task.toml` 按 Harbor 0.26.0 的公式（`min(base, max) × multiplier`）算；都拿不到时元数据里 `deadline_source` 记为 `unknown`，只靠 Harbor 外层超时。
-- Harbor 外层超时取消 `run()` 时：先冻结已统计的用量，再置取消标记。之后不会再发新的模型请求，进行中的 `exec` 在 0.05 秒内被取消，后续文件和命令操作直接拒绝。写进 `AgentContext` 的 token 是取消那一刻的累计值；如果当时有一个模型请求在途，`in_flight_model_calls_at_stop` 记为 1（那次请求可能已计费但没统计）。
+- 取消一次 `exec` 只是放弃了客户端：和 `docker exec` 一样，容器里的进程会继续跑。所以每个操作都经一个小启动器运行，它把自己和子进程的 pid 记在容器的 `/tmp/baseagent-run-*`。命令到截止时间或被取消时，后端再发一条 `exec`：先写停止标记（还没启动的同一操作看到标记就不再启动），再杀掉记录的进程树（有 `setsid` 时杀整个进程组，否则用 `pgrep` 逐层杀）。文件操作被取消时先让它在约 3 秒内自然结束（避免留下半写的临时文件），之后再杀。容器里有 `timeout` 时只作兜底，比宿主截止时间晚 5 秒。确认不了命令已停时，按基础设施失败停下整轮，不在旁边继续跑。
+- Harbor 外层超时取消 `run()` 时：先冻结已统计的用量，再置取消标记，然后在 Harbor 进入评分之前，从事件循环直接发出停止命令，停掉容器里所有还在跑的操作。之后不会再发新的模型请求，后续文件和命令操作直接拒绝。写进 `AgentContext` 的 token 是取消那一刻的累计值；如果当时有一个模型请求在途，`in_flight_model_calls_at_stop` 记为 1（那次请求可能已计费但没统计）。
 
 ## 结果分类
 
@@ -80,7 +82,7 @@ python scripts/evaluate_terminal_bench.py --synthetic
 
 `applications/project_assistant/evaluation/fixtures/terminal_bench/local-echo/` 是一个合法的 Harbor 任务：`task.toml`（`verifier.environment_mode = "shared"`，与 TB 2.0 一样在 agent 的容器里评分）、`instruction.md`、`environment/Dockerfile`（`ubuntu:24.04`，`WORKDIR /app`）、`solution/solve.sh`（官方 oracle 用）、`tests/test.sh`（只有 `/app/answer.txt` 恰好是 `ok` 时写 reward 1，否则写 0）。它不是 Terminal-Bench 的题。
 
-`--fixture` 跑三个 Harbor job：官方 oracle（期望 1）、`--ak scripted=correct`（期望 1）、`--ak scripted=wrong`（期望 0），再从 Harbor 写的 `result.json` 导入。脚本化模型不连 provider、用量为 0。没有 Docker 时输出 `verified: false` 和原因，退出码 2，不声称通过。`harbor lint` 对这个任务会提示 `shared-verifier`（建议分开评分容器）；这是有意的，与 TB 2.0 一致。
+`--fixture` 跑三个 Harbor job：官方 oracle（期望 1）、`--ak scripted=correct`（期望 1）、`--ak scripted=wrong`（期望 0），再从 Harbor 写的 `result.json` 导入。每次调用用新的 job 名（`fixture-<agent>-<时间>-<随机>`；同名 job 会被 Harbor 续跑，旧目录也不能冒充新结果），目录事先存在就不算；一个 job 只有在 `harbor run` 退出码为 0、正好一个 trial、trial 记录的 agent 就是期望的那个、reward 符合期望时才算通过。脚本化模型不连 provider、用量为 0。没有 Docker 时输出 `verified: false` 和原因，退出码 2，不声称通过。`harbor lint` 对这个任务会提示 `shared-verifier`（建议分开评分容器）；这是有意的，与 TB 2.0 一致。
 
 ## 升级 Harbor
 
