@@ -89,6 +89,31 @@ class HarborContractTests(unittest.TestCase):
         self.assertEqual(dumped["n_input_tokens"], 0)
         self.assertIsNone(dumped["cost_usd"])
 
+    def test_harbor_records_no_credentials_from_error_text(self):
+        import os
+        from unittest import mock
+        from baseagent.tbench.harbor_agent import BaseAgentHarborAgent
+        secret = "sk-harbor-test-secret-0123456789"
+
+        class LeakyModel:
+            def complete(self, messages, tools):
+                raise RuntimeError(f"provider said: invalid api key {secret}")
+
+        workdir = temporary_workdir(self)
+        with mock.patch.dict(os.environ, {"BASEAGENT_LLM_API_KEY": secret}):
+            agent = BaseAgentHarborAgent(workdir.parent / "logs", "x", budget_cny="1", agent_timeout_sec="300")
+            agent._model = lambda: LeakyModel()
+            context = AgentContext()
+            try:
+                asyncio.run(agent.run("t", ShellEnvironment(workdir), context))
+            except Exception as exc:  # noqa: BLE001 -- recorded the way Harbor's trial does
+                info = ExceptionInfo.from_exception(exc)
+        self.assertEqual(info.exception_type, "BaseAgentInfrastructureError")
+        for text in (info.exception_message, info.exception_traceback, context.model_dump_json(),
+                     (workdir.parent / "logs" / "baseagent-summary.json").read_text()):
+            self.assertNotIn(secret, text)
+        self.assertIn("invalid api key", info.exception_message)
+
     def test_import_reads_harbor_trial_results(self):
         overrides = JobConfig.model_validate(plan_job("15")["job_config"]).override_error_policy
 

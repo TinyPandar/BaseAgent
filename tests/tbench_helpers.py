@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-import signal
+import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -10,8 +10,10 @@ from types import SimpleNamespace
 
 
 class ShellEnvironment:
-    """``async exec`` like Harbor's, backed by bash in a local directory.
+    """``async exec`` like Harbor's docker environment, backed by bash in a local directory.
 
+    Like ``docker exec``: cancelling the call stops waiting for the client, but the process
+    keeps running until it ends on its own or something inside the environment kills it.
     Commands get a minimal environment (PATH only), like a task container that never
     received host variables. Every call is recorded for assertions.
     """
@@ -25,21 +27,23 @@ class ShellEnvironment:
         self.calls.append({"command": command, "cwd": cwd, "env": env, "timeout_sec": timeout_sec, "user": user})
         if self.fail_with is not None:
             raise self.fail_with
-        process = await asyncio.create_subprocess_exec(
-            "bash", "-c", command, cwd=cwd or self.workdir, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            start_new_session=True)
-        try:
-            out, err = await process.communicate()
-        except asyncio.CancelledError:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        process = subprocess.Popen(["bash", "-c", command], cwd=cwd or self.workdir, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True,
+                                   env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+
+        def wait():
+            out, err = process.communicate()
+            result = SimpleNamespace(stdout=out.decode("utf-8", "replace"), stderr=err.decode("utf-8", "replace"),
+                                     return_code=process.returncode)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            await process.wait()
-            raise
-        return SimpleNamespace(stdout=out.decode("utf-8", "replace"), stderr=err.decode("utf-8", "replace"),
-                               return_code=process.returncode)
+                loop.call_soon_threadsafe(lambda: future.done() or future.set_result(result))
+            except RuntimeError:
+                pass        # the caller's loop is gone; the process still ran to completion
+
+        threading.Thread(target=wait, daemon=True).start()
+        return await future
 
 
 class MappedShellEnvironment(ShellEnvironment):

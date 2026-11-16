@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -33,7 +34,7 @@ from baseagent.agent.workers import (
     SharedBudgetMiddleware,
     TurnBudget,
 )
-from baseagent.backends.exec_backend import EnvironmentUnavailable, ExecBackend
+from baseagent.backends.exec_backend import STOP_TIMEOUT, EnvironmentUnavailable, ExecBackend, stop_command
 from baseagent.kernel.cancellation import CancellationToken, Cancelled
 from baseagent.kernel.state import RunStatus
 from baseagent.middleware import AgentMiddleware
@@ -157,12 +158,48 @@ def stop_reason(state, budget) -> str:
     return "infrastructure"
 
 
+def model_secrets(model):
+    """Credentials the model adapter holds, so error text can be scrubbed of them."""
+    values = []
+    for owner, name in ((getattr(model, "client", None), "api_key"), (model, "api_key"), (model, "_key")):
+        value = getattr(owner, name, None) if owner is not None else None
+        if isinstance(value, str) and value:
+            values.append(value)
+    return values
+
+
+def redact(text, secrets=()) -> str:
+    """Error text safe for metadata, logs and Harbor's result.json.
+
+    Removes the model's key, every host environment value whose name looks like a credential
+    (KEY / TOKEN / SECRET / PASSWORD), and ``sk-...`` / ``Bearer ...`` shapes.
+    """
+    from baseagent.testing.redaction import Redactor
+    extra = [value for name, value in os.environ.items()
+             if value and len(value) >= 6 and any(part in name.upper() for part in ("PASSWORD", "CREDENTIAL"))]
+    return Redactor(secrets=[*secrets, *extra]).text(str(text))
+
+
+async def stop_running(environment, backend) -> bool:
+    """Stop every launch the backend still has in flight, from the event loop. True when confirmed."""
+    entries = backend.active_launches() if backend is not None else []
+    if not entries:
+        return True
+    try:
+        result = await asyncio.wait_for(environment.exec(stop_command(entries), timeout_sec=int(STOP_TIMEOUT) + 5),
+                                        STOP_TIMEOUT + 10)
+        return result.return_code == 0
+    except Exception:  # noqa: BLE001 -- the environment may already be gone
+        return False
+
+
 async def discover_workdir(environment) -> str:
     """The task's working directory as the environment itself reports it (TB 2.0: /app)."""
     try:
         result = await environment.exec("pwd -P", timeout_sec=60)
     except Exception as exc:  # noqa: BLE001
-        raise BaseAgentInfrastructureError(f"environment exec failed before the agent started: {type(exc).__name__}: {exc}") from exc
+        raise BaseAgentInfrastructureError(
+            f"environment exec failed before the agent started: {type(exc).__name__}: {exc}") from None
     lines = (result.stdout or "").strip().splitlines()
     if result.return_code != 0 or not lines or not lines[-1].startswith("/"):
         raise BaseAgentInfrastructureError(f"could not determine the task working directory (exit {result.return_code})")
@@ -174,8 +211,22 @@ async def run_in_environment(instruction: str, environment, context, *, model, c
     """Run the agent for one task and fill ``context``. Returns the stop reason or raises.
 
     ``budget`` may be any ``TurnBudget``-compatible ledger (admit/charge/snapshot); by default
-    each task gets its own ``TurnBudget`` with ``config.budget_cny``.
+    each task gets its own ``TurnBudget`` with ``config.budget_cny``. Every exception that leaves
+    this function is ``BudgetExceededError``, ``BaseAgentInfrastructureError`` or a cancellation,
+    raised without its cause chain and with credentials removed from its text.
     """
+    secrets = model_secrets(model)
+    try:
+        return await _run(instruction, environment, context, model=model, config=config, logs_dir=logs_dir,
+                          budget=budget, secrets=secrets)
+    except (BudgetExceededError, BaseAgentInfrastructureError, asyncio.CancelledError):
+        raise
+    except Exception as exc:  # noqa: BLE001 -- anything else is the harness's own failure
+        message = redact(f"{type(exc).__name__}: {exc}", secrets)
+    raise BaseAgentInfrastructureError(message) from None
+
+
+async def _run(instruction, environment, context, *, model, config, logs_dir, budget, secrets):
     started = time.monotonic()
     loop = asyncio.get_running_loop()
     cancellation = CancellationToken()
@@ -209,7 +260,7 @@ async def run_in_environment(instruction: str, environment, context, *, model, c
                     "budget_cny": None if config.budget_cny is None else str(config.budget_cny),
                     "elapsed_sec": round(time.monotonic() - started, 3), **record}
         if error:
-            metadata["error"] = error[:2000]
+            metadata["error"] = redact(error, secrets)[:2000]
         context.metadata = {**(context.metadata or {}), **metadata}
         if logs_dir is not None:
             try:
@@ -224,8 +275,9 @@ async def run_in_environment(instruction: str, environment, context, *, model, c
     try:
         root = await discover_workdir(environment)
     except BaseAgentInfrastructureError as exc:
-        finish("infrastructure", usage=observer.usage(), error=str(exc))
-        raise
+        message = redact(str(exc), secrets)
+        finish("infrastructure", usage=observer.usage(), error=message)
+        raise BaseAgentInfrastructureError(message) from None
     record["workdir"] = root
     backend = ExecBackend(AsyncExecChannel(environment, loop), root, cancellation=cancellation)
     workspace = Workspace(backend=backend, allow_write=True, allow_command=True,
@@ -268,29 +320,27 @@ async def run_in_environment(instruction: str, environment, context, *, model, c
         state = await outcome
     except asyncio.CancelledError:
         # Harbor's agent timeout (or job cancellation). Nothing new is dispatched after this point
-        # and counted usage is frozen at the current total.
+        # and counted usage is frozen at the current total. Whatever is still running in the
+        # container is stopped before Harbor moves on to grading.
         usage = observer.freeze()
-        finish("timeout", usage=usage, error="cancelled by the evaluation harness (agent timeout or job cancellation)")
+        stopped = await stop_running(environment, backend)
+        finish("timeout", usage=usage, error="cancelled by the evaluation harness (agent timeout or job cancellation)"
+               + ("" if stopped else "; stopping running commands could not be confirmed"))
         raise
-    except _Wrapped as wrapped:
+    except Exception as exc:  # noqa: BLE001 -- includes _Wrapped BaseExceptions from the worker thread
         usage = observer.freeze()
-        inner = wrapped.inner
-        message = f"{type(inner).__name__}: {inner}"
+        inner = exc.inner if isinstance(exc, _Wrapped) else exc
+        message = redact(f"{type(inner).__name__}: {inner}", secrets)
         finish("infrastructure", usage=usage, error=message)
         raise BaseAgentInfrastructureError(message) from None
-    except Exception as exc:  # noqa: BLE001
-        usage = observer.freeze()
-        message = f"{type(exc).__name__}: {exc}"
-        finish("infrastructure", usage=usage, error=message)
-        raise BaseAgentInfrastructureError(message) from exc
     usage = observer.freeze()
     reason = stop_reason(state, budget)
     finish(reason, usage=usage, run_status=str(state.status), error=state.error if reason != "completed" else None,
            steps=state.step, tool_calls=state.tool_calls)
     if reason == "budget_stopped":
-        raise BudgetExceededError(state.error or "CNY budget exhausted")
+        raise BudgetExceededError(redact(state.error or "CNY budget exhausted", secrets))
     if reason == "infrastructure":
-        raise BaseAgentInfrastructureError(f"run ended with status {state.status}: {state.error}")
+        raise BaseAgentInfrastructureError(redact(f"run ended with status {state.status}: {state.error}", secrets))
     return reason
 
 

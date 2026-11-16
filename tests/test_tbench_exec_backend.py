@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import unittest
+from unittest import mock
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
@@ -135,6 +136,32 @@ class ExecBackendTests(unittest.TestCase):
         self.assertEqual(len(self.env.calls), commands, "an action reached the environment after cancellation")
         self.assertFalse((self.workdir / "cancelled").exists())
         self.assertFalse((self.workdir / "after").exists())
+
+    def test_whole_process_group_is_killed_where_setsid_exists(self):
+        # macOS has no setsid; a shim gives the launcher the Linux behavior (new session, group kill).
+        shims = self.workdir.parent / "shims"
+        shims.mkdir()
+        (shims / "setsid").write_text("#!/bin/sh\nexec python3 -c 'import os,sys; os.setsid(); "
+                                      "os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"\n")
+        (shims / "setsid").chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{shims}:{os.environ['PATH']}"}):
+            result = self.backend.execute(["sh", "-c", "(sleep 3; touch grandchild) & sleep 3; touch child"], timeout=1)
+            self.assertEqual(result.error.code, ErrorCode.TIMEOUT)
+            time.sleep(3.5)
+        self.assertFalse((self.workdir / "child").exists())
+        self.assertFalse((self.workdir / "grandchild").exists())
+
+    def test_a_stopped_launch_never_starts_late(self):
+        prefix = "/tmp/baseagent-run-test-" + os.urandom(4).hex()
+        self.addCleanup(lambda: [Path(prefix + suffix).unlink(missing_ok=True) for suffix in (".stop", ".pid", ".child")])
+        from baseagent.backends.exec_backend import _LAUNCH, _STOP, _script
+        import asyncio
+        stop = asyncio.run_coroutine_threadsafe(self.env.exec(_script(_STOP, "kill", prefix)), self.loop).result(10)
+        self.assertEqual(stop.return_code, 0)
+        late = asyncio.run_coroutine_threadsafe(
+            self.env.exec(_script(_LAUNCH, prefix, "touch", "started")), self.loop).result(10)
+        self.assertEqual(late.return_code, 125)
+        self.assertFalse((self.workdir / "started").exists())
 
     def test_environment_failure_is_infrastructure(self):
         self.env.fail_with = RuntimeError("container is gone")
