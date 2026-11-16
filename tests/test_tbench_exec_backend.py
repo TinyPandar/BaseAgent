@@ -1,6 +1,8 @@
 """ExecBackend over a fake Harbor environment: no Docker, no Harbor, no provider."""
 
+import asyncio
 import os
+import subprocess
 import threading
 import time
 import unittest
@@ -11,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from tbench_helpers import LoopThread, MappedShellEnvironment, ShellEnvironment, temporary_workdir
 
 from baseagent.backends import LocalBackend
+from baseagent.backends import exec_backend
 from baseagent.backends.exec_backend import EnvironmentUnavailable, ExecBackend
 from baseagent.kernel.cancellation import CancellationToken, Cancelled
 from baseagent.tbench.channel import AsyncExecChannel
@@ -137,31 +140,87 @@ class ExecBackendTests(unittest.TestCase):
         self.assertFalse((self.workdir / "cancelled").exists())
         self.assertFalse((self.workdir / "after").exists())
 
-    def test_whole_process_group_is_killed_where_setsid_exists(self):
-        # macOS has no setsid; a shim gives the launcher the Linux behavior (new session, group kill).
-        shims = self.workdir.parent / "shims"
-        shims.mkdir()
-        (shims / "setsid").write_text("#!/bin/sh\nexec python3 -c 'import os,sys; os.setsid(); "
-                                      "os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"\n")
-        (shims / "setsid").chmod(0o755)
-        with mock.patch.dict(os.environ, {"PATH": f"{shims}:{os.environ['PATH']}"}):
-            result = self.backend.execute(["sh", "-c", "(sleep 3; touch grandchild) & sleep 3; touch child"], timeout=1)
-            self.assertEqual(result.error.code, ErrorCode.TIMEOUT)
-            time.sleep(3.5)
+    def test_timed_out_command_takes_its_background_children_along(self):
+        result = self.backend.execute(["sh", "-c", "(sleep 2; touch background) >/dev/null 2>&1 & sleep 30"],
+                                      timeout=1)
+        self.assertEqual(result.error.code, ErrorCode.TIMEOUT)
+        time.sleep(2.5)
+        self.assertFalse((self.workdir / "background").exists())
+
+    def test_an_unconfirmed_stop_is_never_reported_as_a_clean_timeout(self):
+        # No /proc to check with; a kill builtin that rejects the syntax (nothing can be killed).
+        missing = str(self.workdir.parent / "no-proc")
+        for label, shims, proc in (("no /proc", ("setsid",), missing),
+                                   ("no /proc, no setsid", (), missing),
+                                   ("incompatible kill", ("setsid", "sh"), exec_backend.PROC_ROOT)):
+            with self.subTest(label), mock.patch.object(exec_backend, "PROC_ROOT", proc):
+                env = ShellEnvironment(self.workdir, shims=shims)
+                backend = ExecBackend(AsyncExecChannel(env, self.loop), str(self.workdir))
+                started = time.monotonic()
+                with self.assertRaises(EnvironmentUnavailable):
+                    backend.execute(["sh", "-c", "sleep 9"], timeout=1)
+                self.assertLess(time.monotonic() - started, 30)
+
+    def test_proc_scan_finds_tagged_grouped_and_session_members_only(self):
+        proc = self.workdir.parent / "fake-proc"
+        entries = {
+            # pid: (comm, state, pgid, sid, environment)
+            "101": ("sh", "S", 7, 7, b""),                                     # recorded group
+            "102": ("we ird) (name", "R", 50, 7, b""),                        # recorded session, odd name
+            "103": ("daemon", "S", 103, 103, b"A=1\0BASEAGENT_LAUNCH=rabcx3x\0"),   # setsid'd, tagged
+            "104": ("other", "S", 104, 104, b"BASEAGENT_LAUNCH=rabcx31x\0"),      # another launch's tag
+            "105": ("gone", "Z", 7, 7, b"BASEAGENT_LAUNCH=rabcx3x\0"),            # zombie
+            "106": ("init", "S", 1, 1, b"PATH=/bin\0"),                           # not ours
+            "107": ("stopper", "S", 9, 9, b""),     # the stop's own session, even when 9 was recorded
+            "108": ("shared", "S", 9, 9, b"BASEAGENT_LAUNCH=rabcx3x\0"),     # same session, but tagged
+        }
+        for pid, (comm, state, pgid, sid, environ) in entries.items():
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "stat").write_text(f"{pid} ({comm}) {state} 1 {pgid} {sid} 0 0 0\n")
+            (proc / pid / "environ").write_bytes(environ)
+        script = exec_backend._SCAN + 'PROC=$1; TAG=$2; G=$3; MINE=9; scan'
+        out = subprocess.run(["sh", "-c", script, "sh", str(proc), "rabcx3x", " 7 9"], capture_output=True, text=True)
+        self.assertEqual(sorted(out.stdout.split()), ["101", "102", "103", "108"], out.stderr)
+        out = subprocess.run(["sh", "-c", script, "sh", str(proc), "rabcx", ""], capture_output=True, text=True)
+        self.assertEqual(sorted(out.stdout.split()), ["103", "104", "108"])   # the whole run, by tag prefix
+
+    def test_whole_process_tree_is_killed(self):
+        result = self.backend.execute(["sh", "-c", "(sleep 3; touch grandchild) & sleep 3; touch child"], timeout=1)
+        self.assertEqual(result.error.code, ErrorCode.TIMEOUT)
+        time.sleep(3.5)
         self.assertFalse((self.workdir / "child").exists())
         self.assertFalse((self.workdir / "grandchild").exists())
 
+    def test_stopping_the_run_reaches_children_of_finished_commands(self):
+        # The child lets go of the output pipe, so the command (like docker exec) returns at once.
+        result = self.backend.execute(["sh", "-c", "(sleep 2; touch background) >/dev/null 2>&1 & exit 0"],
+                                      timeout=10)
+        self.assertTrue(result.ok, result)
+        command = self.backend.stop_all_command()
+        stop = asyncio.run_coroutine_threadsafe(self.env.exec(command), self.loop).result(40)
+        self.assertEqual(stop.return_code, 0, stop.stderr)
+        time.sleep(2.5)
+        self.assertFalse((self.workdir / "background").exists(), "a background child outlived the run's stop")
+        with self.assertRaises(EnvironmentUnavailable):        # nothing new starts after the stop
+            self.backend.execute(["touch", "after"], timeout=10)
+
     def test_a_stopped_launch_never_starts_late(self):
-        prefix = "/tmp/baseagent-run-test-" + os.urandom(4).hex()
-        self.addCleanup(lambda: [Path(prefix + suffix).unlink(missing_ok=True) for suffix in (".stop", ".pid", ".child")])
-        from baseagent.backends.exec_backend import _LAUNCH, _STOP, _script
-        import asyncio
-        stop = asyncio.run_coroutine_threadsafe(self.env.exec(_script(_STOP, "kill", prefix)), self.loop).result(10)
-        self.assertEqual(stop.return_code, 0)
-        late = asyncio.run_coroutine_threadsafe(
-            self.env.exec(_script(_LAUNCH, prefix, "touch", "started")), self.loop).result(10)
-        self.assertEqual(late.return_code, 125)
-        self.assertFalse((self.workdir / "started").exists())
+        from baseagent.backends.exec_backend import _LAUNCH, _script, _stop_script
+        for scope in ("launch", "run"):
+            with self.subTest(scope):
+                run = "/tmp/baseagent-test-" + os.urandom(4).hex()
+                prefix = run + "-1"
+                self.addCleanup(lambda run=run: [path.unlink(missing_ok=True) for path in Path("/tmp").glob(
+                    Path(run).name + "*")])
+                marker, records = (prefix + ".stop", prefix + ".child") if scope == "launch" else (
+                    run + ".stop", run + ".groups")
+                stop = asyncio.run_coroutine_threadsafe(
+                    self.env.exec(_script(_stop_script(), "rtestx", marker, records)), self.loop).result(30)
+                self.assertEqual(stop.return_code, 0, stop.stderr)
+                late = asyncio.run_coroutine_threadsafe(
+                    self.env.exec(_script(_LAUNCH, prefix, run, "touch", "started")), self.loop).result(10)
+                self.assertEqual(late.return_code, 125)
+                self.assertFalse((self.workdir / "started").exists())
 
     def test_environment_failure_is_infrastructure(self):
         self.env.fail_with = RuntimeError("container is gone")

@@ -34,7 +34,7 @@ from baseagent.agent.workers import (
     SharedBudgetMiddleware,
     TurnBudget,
 )
-from baseagent.backends.exec_backend import STOP_TIMEOUT, EnvironmentUnavailable, ExecBackend, stop_command
+from baseagent.backends.exec_backend import STOP_TIMEOUT, EnvironmentUnavailable, ExecBackend
 from baseagent.kernel.cancellation import CancellationToken, Cancelled
 from baseagent.kernel.state import RunStatus
 from baseagent.middleware import AgentMiddleware
@@ -180,13 +180,17 @@ def redact(text, secrets=()) -> str:
     return Redactor(secrets=[*secrets, *extra]).text(str(text))
 
 
-async def stop_running(environment, backend) -> bool:
-    """Stop every launch the backend still has in flight, from the event loop. True when confirmed."""
-    entries = backend.active_launches() if backend is not None else []
-    if not entries:
+async def stop_everything(environment, backend) -> bool:
+    """Stop everything the agent started in the environment, from the event loop.
+
+    Covers commands still running and children that finished commands left in the background.
+    True only when the environment confirms nothing of the agent's is still alive.
+    """
+    command = backend.stop_all_command() if backend is not None else None
+    if command is None:
         return True
     try:
-        result = await asyncio.wait_for(environment.exec(stop_command(entries), timeout_sec=int(STOP_TIMEOUT) + 5),
+        result = await asyncio.wait_for(environment.exec(command, timeout_sec=int(STOP_TIMEOUT) + 5),
                                         STOP_TIMEOUT + 10)
         return result.return_code == 0
     except Exception:  # noqa: BLE001 -- the environment may already be gone
@@ -238,7 +242,7 @@ async def _run(instruction, environment, context, *, model, config, logs_dir, bu
               "agent_timeout_sec": config.agent_timeout_sec,
               "max_command_timeout_sec": config.max_command_timeout_sec, **config.extra_metadata}
 
-    def finish(reason, *, usage, run_status=None, error=None, steps=None, tool_calls=None):
+    def finish(reason, *, usage, run_status=None, error=None, steps=None, tool_calls=None, stopped=None):
         cost = (Decimal(usage["prompt_tokens"]) * Decimal(config.input_cny_per_million)
                 + Decimal(usage["completion_tokens"]) * Decimal(config.output_cny_per_million)) / Decimal(1_000_000)
         if not config.provider_calls_are_billed:
@@ -258,6 +262,9 @@ async def _run(instruction, environment, context, *, model, config, logs_dir, bu
                     "pricing_cny_per_million": {"input": str(config.input_cny_per_million),
                                                 "output": str(config.output_cny_per_million)},
                     "budget_cny": None if config.budget_cny is None else str(config.budget_cny),
+                    # True: everything the agent started was confirmed stopped; None: not attempted
+                    # (a finished run keeps processes it left running, as a service the tests use would).
+                    "agent_processes_stopped": stopped,
                     "elapsed_sec": round(time.monotonic() - started, 3), **record}
         if error:
             metadata["error"] = redact(error, secrets)[:2000]
@@ -320,27 +327,43 @@ async def _run(instruction, environment, context, *, model, config, logs_dir, bu
         state = await outcome
     except asyncio.CancelledError:
         # Harbor's agent timeout (or job cancellation). Nothing new is dispatched after this point
-        # and counted usage is frozen at the current total. Whatever is still running in the
+        # and counted usage is frozen at the current total. Everything the agent started in the
         # container is stopped before Harbor moves on to grading.
         usage = observer.freeze()
-        stopped = await stop_running(environment, backend)
-        finish("timeout", usage=usage, error="cancelled by the evaluation harness (agent timeout or job cancellation)"
-               + ("" if stopped else "; stopping running commands could not be confirmed"))
+        stopped = await stop_everything(environment, backend)
+        if not stopped:
+            # Grading beside processes that may still write would not be a real result.
+            message = ("cancelled by the evaluation harness, and stopping the agent's processes in the "
+                       "environment could not be confirmed")
+            finish("infrastructure", usage=usage, error=message, stopped=False)
+            raise BaseAgentInfrastructureError(message) from None
+        finish("timeout", usage=usage, error="cancelled by the evaluation harness (agent timeout or job cancellation)",
+               stopped=True)
         raise
     except Exception as exc:  # noqa: BLE001 -- includes _Wrapped BaseExceptions from the worker thread
         usage = observer.freeze()
         inner = exc.inner if isinstance(exc, _Wrapped) else exc
         message = redact(f"{type(inner).__name__}: {inner}", secrets)
-        finish("infrastructure", usage=usage, error=message)
+        stopped = await stop_everything(environment, backend)
+        finish("infrastructure", usage=usage, error=message, stopped=stopped)
         raise BaseAgentInfrastructureError(message) from None
     usage = observer.freeze()
     reason = stop_reason(state, budget)
-    finish(reason, usage=usage, run_status=str(state.status), error=state.error if reason != "completed" else None,
-           steps=state.step, tool_calls=state.tool_calls)
+    error = state.error if reason != "completed" else None
+    stopped = None
+    if reason in ("timeout", "budget_stopped", "infrastructure"):
+        # Past the deadline (or not to be graded as a normal run): nothing the agent started,
+        # including children it left in the background, may keep running or writing.
+        stopped = await stop_everything(environment, backend)
+        if not stopped and reason != "infrastructure":
+            error = f"{reason}: stopping the agent's processes in the environment could not be confirmed"
+            reason = "infrastructure"
+    finish(reason, usage=usage, run_status=str(state.status), error=error, steps=state.step,
+           tool_calls=state.tool_calls, stopped=stopped)
     if reason == "budget_stopped":
         raise BudgetExceededError(redact(state.error or "CNY budget exhausted", secrets))
     if reason == "infrastructure":
-        raise BaseAgentInfrastructureError(redact(f"run ended with status {state.status}: {state.error}", secrets))
+        raise BaseAgentInfrastructureError(redact(f"run ended with status {state.status}: {error}", secrets))
     return reason
 
 
