@@ -18,7 +18,7 @@ from scripts import evaluate_terminal_bench
 
 
 def trial(name, reward, *, error=None, policy=None, stop="completed", tokens=(0, 0), cost="0", provider_calls=0,
-          agent=None):
+          agent=None, model=None):
     """A parsed Harbor 0.26.0 TrialResult with the fields the importer reads."""
     exception = None
     if error is not None:
@@ -30,7 +30,7 @@ def trial(name, reward, *, error=None, policy=None, stop="completed", tokens=(0,
             "verifier_result": None if reward is None else {"rewards": {"reward": reward}},
             "agent_result": {"n_input_tokens": tokens[0], "n_output_tokens": tokens[1], "cost_usd": None,
                              "metadata": {"stop_reason": stop, "cost_cny": cost, "provider_calls": provider_calls,
-                                          "steps": 3}}}
+                                          "steps": 3, "model": model}}}
 
 
 INFRA_POLICY = {"should_retry": False, "should_grade": False, "has_valid_reward": False}
@@ -99,8 +99,11 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("NOT verified", err.getvalue())
 
     @staticmethod
-    def harbor_writing(rewards, *, exit_code=0, agents=None):
-        """A stand-in for ``harbor run`` that writes one trial result per job, like Harbor does."""
+    def harbor_writing(rewards, *, exit_code=0, agents=None, changes=None):
+        """A stand-in for ``harbor run`` that writes one trial result per job, like Harbor does.
+
+        ``changes`` (job name -> keyword arguments of ``trial``) alters what that job's trial records.
+        """
         def run(argv, env=None, check=False):
             job = argv[argv.index("--job-name") + 1]
             name = next(key for key in tb.FIXTURE_AGENTS if job.startswith(f"fixture-{key}-"))
@@ -112,7 +115,9 @@ class FixtureTests(unittest.TestCase):
                     {"name": spec["import_path"], "import_path": None, "kwargs": {"scripted": spec["scripted"]}})
                 path = Path(argv[argv.index("-o") + 1]) / job / "local-echo__x" / "result.json"
                 path.parent.mkdir(parents=True)
-                path.write_text(json.dumps(trial("local-echo", rewards[name], agent=agent)))
+                fields = {"agent": agent, "model": "scripted:" + spec["scripted"] if "scripted" in spec else None,
+                          **(changes or {}).get(name, {})}
+                path.write_text(json.dumps(trial("local-echo", rewards[name], **fields)))
             return SimpleNamespace(returncode=exit_code)
         return run
 
@@ -154,6 +159,28 @@ class FixtureTests(unittest.TestCase):
             result = run_fixture("harbor", Path(directory), runner=swapped)
             self.assertFalse(result["verified"])
             self.assertIn("trial result belongs to a different agent", result["jobs"]["scripted-wrong"]["problems"])
+
+    def test_invalid_infrastructure_or_billed_trials_are_not_verified(self):
+        probes = {
+            # Harbor graded, but the reward is not valid (an exception whose policy invalidates it).
+            "invalid reward": ("scripted-correct", {"error": "BudgetExceededError", "policy": BUDGET_POLICY}),
+            # The run imports as infrastructure although Harbor wrote the expected reward.
+            "infrastructure stop": ("scripted-wrong", {"stop": "infrastructure"}),
+            "infrastructure exception": ("oracle", {"error": "RuntimeError", "policy": INFRA_POLICY}),
+            "nonzero cost": ("scripted-correct", {"cost": "0.0012"}),
+            "provider calls": ("scripted-wrong", {"provider_calls": 1}),
+            "tokens": ("oracle", {"tokens": (10, 2)}),
+            "not completed": ("scripted-correct", {"stop": "steps_exhausted"}),
+            "missing record": ("scripted-correct", {"model": None}),
+        }
+        for label, (job, change) in probes.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                runner = self.harbor_writing(self.EXPECTED, changes={job: change})
+                result = run_fixture("harbor", Path(directory), runner=runner)
+                self.assertFalse(result["verified"], result["jobs"][job])
+                self.assertTrue(result["jobs"][job]["problems"])
+                others = [name for name in self.EXPECTED if name != job]
+                self.assertTrue(all(result["jobs"][name]["as_expected"] for name in others))
 
     def test_no_hardcoded_pass_remains(self):
         source = Path(evaluate_terminal_bench.__file__).read_text() + Path(tb.__file__).read_text()
