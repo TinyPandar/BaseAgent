@@ -15,14 +15,18 @@ Any other exception means the environment itself failed; the backend then raises
 showing the model an infrastructure error as an ordinary tool failure.
 
 Cancelling an exec only abandons its client: like ``docker exec``, the process keeps
-running in the environment. So every operation runs under a small launcher that records
-its pids under ``/tmp/baseagent-run-*``; on a timeout or cancellation a second exec writes
-a stop marker (a launch that has not started yet then refuses to start) and kills the
-recorded process tree. Nothing keeps running or writing after the deadline.
+running in the environment. So every operation runs under a small launcher that tags it
+(``BASEAGENT_LAUNCH`` in the environment of everything it starts) and records its session
+under ``/tmp/baseagent-*``. A timed-out command is stopped by a second exec that writes a
+stop marker (a launch that has not started yet then refuses to start), kills every process
+of that launch found in ``/proc`` and confirms none is left. ``stop_all_command`` does the
+same for everything the run ever started, including children that finished commands left
+in the background; the Terminal-Bench runner sends it when a run ends past its deadline.
+A stop that cannot be confirmed is reported as a failure, never as a clean stop.
 
 File transfer only needs POSIX ``sh`` plus ``base64``, ``wc``, ``mktemp``, ``mv``,
-``ln``, ``cp``, ``rm`` and ``kill`` in the environment; ``setsid`` and ``pgrep`` make the
-kill cover the whole process tree, and ``timeout`` (when present) is a backstop.
+``ln``, ``cp``, ``rm`` in the environment; stopping needs ``/proc``, ``grep`` and ``kill``
+(``setsid`` and ``timeout`` are used when present).
 """
 
 from __future__ import annotations
@@ -148,61 +152,106 @@ done
 '''
 
 
-# Every operation runs under this launcher. $1 is a host-chosen path prefix under /tmp; the
-# launcher records its own pid and its child's, and refuses to start once a stop marker exists.
-# Cancelling an exec only abandons the client (docker exec keeps the process alive), so stopping
-# a command is a separate exec of _STOP that kills what the launcher recorded.
-_LAUNCH = r'''
-P=$1; shift
-echo $$ > "$P.pid" 2>/dev/null
-if [ -e "$P.stop" ]; then rm -f "$P.pid"; exit 125; fi
-if command -v setsid >/dev/null 2>&1; then setsid "$@" & else "$@" & fi
-c=$!
-echo "$c" > "$P.child" 2>/dev/null
-wait "$c"; r=$?
-rm -f "$P.pid" "$P.child"
+# Every operation runs under this launcher, started as ``BASEAGENT_LAUNCH=<tag> sh -c _LAUNCH``:
+# the tag is in the environment of the launcher and of everything it starts, from the moment
+# each process starts. $1 is the launch's path prefix, $2 the run's. The launched child (in a
+# new session where `setsid` exists) records "g<pid>" (its own group) or "n<pid>" (no group of
+# its own) in "$1.child" and in the run's "$2.groups", and only then checks the stop markers:
+# a stop that writes its marker and then reads the records cannot miss a child that went on.
+# Records stay after the command ends, so children it left in the background are still found.
+_CHILD = r"""
+printf "%s%s\n" "$1" "$$" > "$2.child" && printf "%s%s\n" "$1" "$$" >> "$3.groups" || {
+  echo __BASEAGENT_LAUNCH_FAILED__ >&2; exit 126; }
+if [ -e "$2.stop" ] || [ -e "$3.stop" ]; then exit 125; fi
+shift 3
+exec "$@"
+"""
+_LAUNCH = r"""
+P=$1; RUN=$2; shift 2
+echo $$ > "$P.pid" || { echo __BASEAGENT_LAUNCH_FAILED__ >&2; exit 126; }
+if [ -e "$P.stop" ] || [ -e "$RUN.stop" ]; then rm -f "$P.pid"; exit 125; fi
+C='__CHILD__'
+if command -v setsid >/dev/null 2>&1; then setsid sh -c "$C" sh g "$P" "$RUN" "$@" &
+else sh -c "$C" sh n "$P" "$RUN" "$@" &
+fi
+wait $!; r=$?
+rm -f "$P.pid"
 exit $r
-'''
+""".replace("__CHILD__", _CHILD)
 
-# $1 "kill" (commands) or "drain" (file operations: let them finish, kill after ~3 s); then prefixes.
-_STOP = r'''
-mode=$1; shift
-killtree() {
-  kill -STOP "$1" 2>/dev/null
-  for k in $(pgrep -P "$1" 2>/dev/null); do killtree "$k"; done
-  kill -KILL "$1" 2>/dev/null
-}
-for P in "$@"; do
-  : > "$P.stop"
-  i=0
-  while [ $i -lt 50 ]; do
-    if [ -f "$P.child" ] && { [ "$mode" = kill ] || [ $i -ge 30 ]; }; then
-      c=$(cat "$P.child" 2>/dev/null)
-      if [ -n "$c" ]; then kill -KILL -- "-$c" 2>/dev/null; killtree "$c"; fi
-    fi
-    if [ -f "$P.pid" ]; then
-      r=$(cat "$P.pid" 2>/dev/null)
-      if [ -z "$r" ] || ! kill -0 "$r" 2>/dev/null; then break; fi
-    elif [ $i -ge 3 ]; then
-      break
-    fi
-    sleep 0.1 2>/dev/null || sleep 1
-    i=$((i+1))
+# Stops everything carrying a tag (one launch, or a whole run by the tag's prefix) and confirms
+# it is gone. $1 tag, $2 stop marker to write, $3 record file ("$P.child" or the run's
+# ".groups"), then launch prefixes of file operations to let finish first (about 3 s).
+#
+# A process is ours when its environment carries the tag (that survives `setsid`), or its
+# process group or session is one we recorded (that survives a cleared environment; a session
+# also survives `setpgid`). Each candidate is read from /proc/<pid>/stat and environ and killed
+# by pid: no pgrep, ps or group-kill syntax is needed, and success is never inferred from a
+# kill's exit status. Exit 0 only once a /proc scan finds nothing of ours alive (zombies
+# excepted); 69 when there is no /proc to check with, 71 when the marker cannot be written,
+# 75 when something survives.
+_STOP = r"""
+LC_ALL=C; export LC_ALL
+PROC=__PROC_ROOT__
+TAG=$1; M=$2; RECORDS=$3; shift 3
+: > "$M" || exit 71
+i=0
+while [ $# -gt 0 ] && [ $i -lt 30 ]; do
+  busy=
+  for P in "$@"; do
+    r=$(cat "$P.pid" 2>/dev/null) && [ -n "$r" ] && kill -0 "$r" 2>/dev/null && busy=1
   done
-  rm -f "$P.pid" "$P.child"
+  [ -z "$busy" ] && break
+  sleep 0.1 2>/dev/null || sleep 1
+  i=$((i+1))
 done
-'''
+G=
+for e in $(cat "$RECORDS" 2>/dev/null); do G="$G ${e#[gn]}"; done
+# A recorded id may be an old pid reused for this stop's own session: ids never match
+# there (the tag still does, for launches that share the session where setsid is missing).
+s=; IFS= read -r s 2>/dev/null < "$PROC/self/stat" || [ -n "$s" ] || exit 69
+set -- ${s##*') '}
+MINE=${4:-none}
+__SCAN__
+n=0
+while :; do
+  L=$(scan)
+  [ -z "$L" ] && exit 0
+  n=$((n+1))
+  [ $n -gt 50 ] && exit 75
+  for p in $L; do kill -9 "$p" 2>/dev/null || kill -s KILL "$p" 2>/dev/null; done
+  sleep 0.1 2>/dev/null || sleep 1
+done
+"""
+# Prints the pids under $PROC that are alive and ours (see _STOP); uses $PROC, $TAG, $G and $MINE.
+_SCAN = r"""
+scan() {
+  for d in "$PROC"/[0-9]*; do
+    s=
+    IFS= read -r s 2>/dev/null < "$d/stat" || [ -n "$s" ] || continue
+    set -- ${s##*') '}
+    case $1 in Z|X) continue;; esac
+    hit=
+    if [ "$4" != "$MINE" ]; then
+      for g in $G; do if [ "$3" = "$g" ] || [ "$4" = "$g" ]; then hit=1; fi; done
+    fi
+    if [ -z "$hit" ] && grep -q "BASEAGENT_LAUNCH=$TAG" "$d/environ" 2>/dev/null; then hit=1; fi
+    if [ -n "$hit" ]; then echo "${d##*/}"; fi
+  done
+  return 0
+}
+"""
+# Where the stop script reads processes from; tests on machines without /proc point it elsewhere.
+PROC_ROOT = "/proc"
+
+
+def _stop_script():
+    return _STOP.replace("__SCAN__", _SCAN).replace("__PROC_ROOT__", shlex.quote(PROC_ROOT))
+
+
 RUN_DIR = "/tmp"
-STOP_TIMEOUT = 15.0
-
-
-def stop_command(entries):
-    """Shell command that stops the given (prefix, mode) launches; used from the event loop on cancellation."""
-    kill = [prefix for prefix, mode in entries if mode == "kill"]
-    drain = [prefix for prefix, mode in entries if mode != "kill"]
-    parts = [_script(_STOP, "kill", *kill)] if kill else []
-    parts += [_script(_STOP, "drain", *drain)] if drain else []
-    return "; ".join(parts)
+STOP_TIMEOUT = 30.0
+LAUNCH_FAILED = "__BASEAGENT_LAUNCH_FAILED__"
 
 
 def _script(body, *args):
@@ -244,6 +293,13 @@ class ExecBackend:
         self.commands = 0
         self._active = {}
         self._lock = threading.Lock()
+        # One id per backend (one agent run): every launch is tagged r<id>x<n>x, and the run's
+        # records and stop marker live at /tmp/baseagent-<id>.*.
+        run_id = uuid4().hex[:16]
+        self._run_tag = f"r{run_id}x"
+        self._run_prefix = f"{RUN_DIR}/baseagent-{run_id}"
+        self._sequence = 0
+        self._closed = False
 
     def contract(self):
         return {"kind": "exec", "version": 1, "root": str(self.root), "isolation": "task-environment"}
@@ -279,39 +335,61 @@ class ExecBackend:
     def _run(self, argv, *, timeout, cancellation=None, mode="drain"):
         """Run ``argv`` under the launcher. A timeout or cancellation stops it inside the environment."""
         token = cancellation if cancellation is not None else self.cancellation
-        key = uuid4().hex
-        prefix = f"{RUN_DIR}/baseagent-run-{key}"
-        # Register before the cancellation check: a stop issued after cancellation sees every
-        # launch that could still pass the check.
         with self._lock:
-            self._active[key] = (prefix, mode)
+            if self._closed:
+                raise EnvironmentUnavailable("environment operations were stopped for this run")
+            self._sequence += 1
+            number = self._sequence
+            prefix, tag = f"{self._run_prefix}-{number}", f"{self._run_tag}{number}x"
+            # Registered before the cancellation check: a stop issued after cancellation sees
+            # every launch that could still pass the check.
+            self._active[number] = (prefix, mode)
         try:
             if token is not None:
                 token.check()
             self.commands += 1
+            command = f"BASEAGENT_LAUNCH={tag} " + _script(_LAUNCH, prefix, self._run_prefix, *argv)
             try:
-                return self.channel(_script(_LAUNCH, prefix, *argv), cwd=str(self.root), timeout=timeout,
-                                    cancellation=token)
+                output = self.channel(command, cwd=str(self.root), timeout=timeout, cancellation=token)
             except (ExecTimeout, ExecCancelled) as stopped:
-                self._stop(prefix, mode, required=isinstance(stopped, ExecTimeout))
+                self._stop(tag, prefix, mode, required=isinstance(stopped, ExecTimeout))
                 raise
             except Exception as exc:  # noqa: BLE001 -- any other channel failure is the environment's
                 raise EnvironmentUnavailable(f"environment exec failed: {type(exc).__name__}: {exc}") from None
+            if output.return_code == 126 and LAUNCH_FAILED in (output.stderr or ""):
+                raise EnvironmentUnavailable("environment could not record a launch under /tmp")
+            return output
         finally:
             with self._lock:
-                self._active.pop(key, None)
+                self._active.pop(number, None)
 
-    def _stop(self, prefix, mode, *, required):
-        """Stop one launch inside the environment. Bypasses the cancellation token on purpose."""
+    def _stop(self, tag, prefix, mode, *, required):
+        """Stop one launch and everything it started. Bypasses the cancellation token on purpose."""
+        command = _script(_stop_script(), tag, f"{prefix}.stop", f"{prefix}.child",
+                          *([prefix] if mode != "kill" else []))
         try:
-            output = self.channel(_script(_STOP, mode, prefix), cwd=str(self.root), timeout=STOP_TIMEOUT,
-                                  cancellation=None)
-            ok = output.return_code == 0
+            ok = self.channel(command, cwd=str(self.root), timeout=STOP_TIMEOUT, cancellation=None).return_code == 0
         except Exception:  # noqa: BLE001
             ok = False
         if required and not ok:
             # The command may still be running: stop the run instead of carrying on beside it.
-            raise EnvironmentUnavailable("could not stop a timed-out command in the environment")
+            raise EnvironmentUnavailable("could not confirm that a timed-out command stopped in the environment")
+
+    def stop_all_command(self):
+        """Shell command that stops everything this backend ever started, including children that
+        finished commands left in the background, and exits 0 only once that is confirmed.
+
+        Closes the backend: no further operation is launched. ``None`` when nothing was launched.
+        Run it with a plain ``environment.exec`` (not through this backend's channel), so it also
+        works from the event loop while the agent thread is blocked.
+        """
+        with self._lock:
+            self._closed = True
+            if not self._sequence:
+                return None
+            drain = [prefix for prefix, mode in self._active.values() if mode != "kill"]
+        return _script(_stop_script(), self._run_tag, f"{self._run_prefix}.stop", f"{self._run_prefix}.groups",
+                       *drain)
 
     def _file_op(self, body, *args):
         try:

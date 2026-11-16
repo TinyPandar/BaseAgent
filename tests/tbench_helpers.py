@@ -1,12 +1,20 @@
 """Harbor-shaped fake environments for offline tests (no Docker, no Harbor)."""
 
 import asyncio
+import atexit
+import ctypes
+import ctypes.util
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+from baseagent.backends import exec_backend
 
 
 class ShellEnvironment:
@@ -18,10 +26,13 @@ class ShellEnvironment:
     received host variables. Every call is recorded for assertions.
     """
 
-    def __init__(self, workdir):
+    def __init__(self, workdir, *, shims=("setsid",)):
         self.workdir = str(Path(workdir).resolve())
         self.calls = []
         self.fail_with = None
+        # macOS has neither /proc nor setsid. By default a setsid shim gives commands the Linux
+        # behavior (a new session per launch); tests can drop it or add other shims.
+        self.shim_dir = make_shims(Path(self.workdir).parent / f"shims-{os.urandom(4).hex()}", shims)
 
     async def exec(self, command, cwd=None, env=None, timeout_sec=None, user=None):
         self.calls.append({"command": command, "cwd": cwd, "env": env, "timeout_sec": timeout_sec, "user": user})
@@ -31,7 +42,8 @@ class ShellEnvironment:
         future = loop.create_future()
         process = subprocess.Popen(["bash", "-c", command], cwd=cwd or self.workdir, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True,
-                                   env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+                                   env={"PATH": os.pathsep.join(filter(None, [self.shim_dir, os.environ.get(
+                                       "PATH", "/usr/bin:/bin")]))})
 
         def wait():
             out, err = process.communicate()
@@ -46,6 +58,38 @@ class ShellEnvironment:
         return await future
 
 
+SHIMS = {
+    # util-linux setsid: a new session for the command (forks first when already a group leader).
+    "setsid": f"""#!/bin/sh
+exec "{sys.executable}" -c 'import os, sys
+if os.getpgrp() == os.getpid() and os.fork():
+    os._exit(0)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' "$@"
+""",
+    # A /bin/sh whose kill builtin accepts nothing, like a shell with an incompatible kill syntax.
+    "sh": """#!/bin/bash
+if [ "$1" = -c ]; then
+  body=$2; shift 2
+  exec /bin/bash -c "kill() { echo 'kill: unsupported syntax' >&2; return 2; }
+$body" "$@"
+fi
+exec /bin/bash "$@"
+""",
+}
+
+
+def make_shims(directory, names):
+    if not names:
+        return None
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / name).write_text(SHIMS[name])
+        (directory / name).chmod(0o755)
+    return str(directory)
+
+
 class MappedShellEnvironment(ShellEnvironment):
     """Shows ``alias`` (for example /app) as the working directory, backed by a local directory.
 
@@ -53,8 +97,8 @@ class MappedShellEnvironment(ShellEnvironment):
     it would hit a path that does not exist on this machine.
     """
 
-    def __init__(self, workdir, alias="/app"):
-        super().__init__(workdir)
+    def __init__(self, workdir, alias="/app", **kwargs):
+        super().__init__(workdir, **kwargs)
         self.alias = alias
 
     async def exec(self, command, cwd=None, env=None, timeout_sec=None, user=None):
@@ -91,3 +135,88 @@ def temporary_workdir(test):
     workdir = Path(directory.name) / "app"
     workdir.mkdir()
     return workdir.resolve()
+
+
+class _BSDInfo(ctypes.Structure):
+    """``struct proc_bsdinfo`` from <sys/proc_info.h>."""
+    _fields_ = [("pbi_flags", ctypes.c_uint32), ("pbi_status", ctypes.c_uint32), ("pbi_xstatus", ctypes.c_uint32),
+                ("pbi_pid", ctypes.c_uint32), ("pbi_ppid", ctypes.c_uint32), ("pbi_uid", ctypes.c_uint32),
+                ("pbi_gid", ctypes.c_uint32), ("pbi_ruid", ctypes.c_uint32), ("pbi_rgid", ctypes.c_uint32),
+                ("pbi_svuid", ctypes.c_uint32), ("pbi_svgid", ctypes.c_uint32), ("rfu_1", ctypes.c_uint32),
+                ("pbi_comm", ctypes.c_char * 16), ("pbi_name", ctypes.c_char * 32), ("pbi_nfiles", ctypes.c_uint32),
+                ("pbi_pgid", ctypes.c_uint32), ("pbi_pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
+                ("e_tpgid", ctypes.c_uint32), ("pbi_nice", ctypes.c_int32), ("pbi_start_tvsec", ctypes.c_uint64),
+                ("pbi_start_tvusec", ctypes.c_uint64)]
+
+
+class ProcMirror:
+    """A /proc view of this macOS machine for the stop script, which reads processes only from /proc.
+
+    Every 20 ms a thread writes ``<root>/<pid>/stat`` (Linux layout up to the session field)
+    for the user's processes started since the tests began, read from libproc, and removes
+    entries of processes that ended.
+    macOS does not show other processes' environments, so ``environ`` stays empty: the stop
+    finds processes by recorded group and session here; matching by the environment tag is
+    covered by a synthetic /proc test. On Linux the real /proc is used instead.
+    """
+
+    SZOMB = 5
+
+    def __init__(self):
+        self.started = int(time.time()) - 1
+        self.root = tempfile.mkdtemp(prefix="baseagent-proc-")
+        atexit.register(shutil.rmtree, self.root, True)
+        self._libproc = ctypes.CDLL(ctypes.util.find_library("proc"))
+        self._seen = {}
+        Path(self.root, "self").mkdir()
+        Path(self.root, "self", "stat").write_text("0 (self) S 0 0 0\n")
+        self.refresh()
+        threading.Thread(target=self._loop, name="proc-mirror", daemon=True).start()
+
+    def _loop(self):
+        while True:
+            time.sleep(0.02)
+            try:
+                self.refresh()
+            except Exception:  # noqa: BLE001 -- keep mirroring; a missed round is caught by the next
+                pass
+
+    def refresh(self):
+        pids = (ctypes.c_int * 8192)()
+        count = self._libproc.proc_listallpids(pids, ctypes.sizeof(pids))
+        uid, current = os.getuid(), {}
+        for pid in pids[:max(count, 0)]:
+            info = _BSDInfo()
+            if pid <= 0 or self._libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) <= 0:
+                continue
+            if info.pbi_uid != uid or info.pbi_start_tvsec < self.started:
+                continue        # only processes this test run started
+            try:
+                sid = os.getsid(pid)
+            except OSError:
+                continue
+            state = "Z" if info.pbi_status == self.SZOMB else "S"
+            comm = info.pbi_comm.decode("utf-8", "replace")
+            current[pid] = f"{pid} ({comm}) {state} {info.pbi_ppid} {info.pbi_pgid} {sid} 0 0\n"
+        for pid, line in current.items():
+            if self._seen.get(pid) != line:
+                directory = Path(self.root, str(pid))
+                directory.mkdir(exist_ok=True)
+                (directory / "environ").touch()
+                (directory / "stat.tmp").write_text(line)
+                os.replace(directory / "stat.tmp", directory / "stat")
+        for pid in set(self._seen) - set(current):
+            shutil.rmtree(Path(self.root, str(pid)), ignore_errors=True)
+        self._seen = current
+
+
+def _install_proc_view():
+    """Point the stop script at a /proc view on machines that have none (macOS)."""
+    if os.path.exists("/proc/self/stat"):
+        return None
+    mirror = ProcMirror()
+    exec_backend.PROC_ROOT = mirror.root
+    return mirror
+
+
+PROC_MIRROR = _install_proc_view()
