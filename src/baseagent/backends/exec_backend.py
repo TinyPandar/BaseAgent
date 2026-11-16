@@ -14,9 +14,15 @@ Any other exception means the environment itself failed; the backend then raises
 ``EnvironmentUnavailable`` (a ``BaseException``) so the agent loop stops instead of
 showing the model an infrastructure error as an ordinary tool failure.
 
+Cancelling an exec only abandons its client: like ``docker exec``, the process keeps
+running in the environment. So every operation runs under a small launcher that records
+its pids under ``/tmp/baseagent-run-*``; on a timeout or cancellation a second exec writes
+a stop marker (a launch that has not started yet then refuses to start) and kills the
+recorded process tree. Nothing keeps running or writing after the deadline.
+
 File transfer only needs POSIX ``sh`` plus ``base64``, ``wc``, ``mktemp``, ``mv``,
-``ln``, ``cp`` and ``rm`` in the environment. Commands use ``timeout`` when the
-environment has it; otherwise the host-side deadline stops them.
+``ln``, ``cp``, ``rm`` and ``kill`` in the environment; ``setsid`` and ``pgrep`` make the
+kill cover the whole process tree, and ``timeout`` (when present) is a backstop.
 """
 
 from __future__ import annotations
@@ -27,10 +33,12 @@ import math
 import posixpath
 import re
 import shlex
+import threading
 import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import PurePosixPath
+from uuid import uuid4
 
 from baseagent.tools.instructions import FILE_LIMIT, RULES_FILE, TOTAL_LIMIT, TRUNCATION_NOTE, _cut, instruction_digest
 from baseagent.tools.result import ErrorCode, ToolFailure, ToolResult
@@ -40,9 +48,8 @@ WRITE_LIMIT = 200_000
 # One argument of the command string stays well below Linux's 128 KiB MAX_ARG_STRLEN.
 CHUNK_CHARS = 60_000
 FILE_OP_TIMEOUT = 30.0
-# Kill grace given to the in-environment `timeout`, and slack before the host deadline fires.
+# The in-environment `timeout` backstop fires this much after the host deadline.
 KILL_GRACE = 5
-HOST_SLACK = 5
 BEGIN, END = "__BASEAGENT_BEGIN__", "__BASEAGENT_END__"
 PROTECTED = {".git", ".venv", ".baseagent"}
 
@@ -141,6 +148,63 @@ done
 '''
 
 
+# Every operation runs under this launcher. $1 is a host-chosen path prefix under /tmp; the
+# launcher records its own pid and its child's, and refuses to start once a stop marker exists.
+# Cancelling an exec only abandons the client (docker exec keeps the process alive), so stopping
+# a command is a separate exec of _STOP that kills what the launcher recorded.
+_LAUNCH = r'''
+P=$1; shift
+echo $$ > "$P.pid" 2>/dev/null
+if [ -e "$P.stop" ]; then rm -f "$P.pid"; exit 125; fi
+if command -v setsid >/dev/null 2>&1; then setsid "$@" & else "$@" & fi
+c=$!
+echo "$c" > "$P.child" 2>/dev/null
+wait "$c"; r=$?
+rm -f "$P.pid" "$P.child"
+exit $r
+'''
+
+# $1 "kill" (commands) or "drain" (file operations: let them finish, kill after ~3 s); then prefixes.
+_STOP = r'''
+mode=$1; shift
+killtree() {
+  kill -STOP "$1" 2>/dev/null
+  for k in $(pgrep -P "$1" 2>/dev/null); do killtree "$k"; done
+  kill -KILL "$1" 2>/dev/null
+}
+for P in "$@"; do
+  : > "$P.stop"
+  i=0
+  while [ $i -lt 50 ]; do
+    if [ -f "$P.child" ] && { [ "$mode" = kill ] || [ $i -ge 30 ]; }; then
+      c=$(cat "$P.child" 2>/dev/null)
+      if [ -n "$c" ]; then kill -KILL -- "-$c" 2>/dev/null; killtree "$c"; fi
+    fi
+    if [ -f "$P.pid" ]; then
+      r=$(cat "$P.pid" 2>/dev/null)
+      if [ -z "$r" ] || ! kill -0 "$r" 2>/dev/null; then break; fi
+    elif [ $i -ge 3 ]; then
+      break
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+    i=$((i+1))
+  done
+  rm -f "$P.pid" "$P.child"
+done
+'''
+RUN_DIR = "/tmp"
+STOP_TIMEOUT = 15.0
+
+
+def stop_command(entries):
+    """Shell command that stops the given (prefix, mode) launches; used from the event loop on cancellation."""
+    kill = [prefix for prefix, mode in entries if mode == "kill"]
+    drain = [prefix for prefix, mode in entries if mode != "kill"]
+    parts = [_script(_STOP, "kill", *kill)] if kill else []
+    parts += [_script(_STOP, "drain", *drain)] if drain else []
+    return "; ".join(parts)
+
+
 def _script(body, *args):
     return " ".join(["sh", "-c", shlex.quote(body), "sh", *(shlex.quote(str(arg)) for arg in args)])
 
@@ -178,6 +242,8 @@ class ExecBackend:
         self.file_op_timeout = file_op_timeout
         self._has_timeout = None
         self.commands = 0
+        self._active = {}
+        self._lock = threading.Lock()
 
     def contract(self):
         return {"kind": "exec", "version": 1, "root": str(self.root), "isolation": "task-environment"}
@@ -205,21 +271,51 @@ class ExecBackend:
 
     # -- transport ----------------------------------------------------------------------------------
 
-    def _run(self, command, *, timeout, cancellation=None):
+    def active_launches(self):
+        """(prefix, mode) of operations dispatched and not yet finished or stopped."""
+        with self._lock:
+            return list(self._active.values())
+
+    def _run(self, argv, *, timeout, cancellation=None, mode="drain"):
+        """Run ``argv`` under the launcher. A timeout or cancellation stops it inside the environment."""
         token = cancellation if cancellation is not None else self.cancellation
-        if token is not None:
-            token.check()
-        self.commands += 1
+        key = uuid4().hex
+        prefix = f"{RUN_DIR}/baseagent-run-{key}"
+        # Register before the cancellation check: a stop issued after cancellation sees every
+        # launch that could still pass the check.
+        with self._lock:
+            self._active[key] = (prefix, mode)
         try:
-            return self.channel(command, cwd=str(self.root), timeout=timeout, cancellation=token)
-        except (ExecTimeout, ExecCancelled):
-            raise
-        except Exception as exc:  # noqa: BLE001 -- any other channel failure is the environment's
-            raise EnvironmentUnavailable(f"environment exec failed: {type(exc).__name__}: {exc}") from exc
+            if token is not None:
+                token.check()
+            self.commands += 1
+            try:
+                return self.channel(_script(_LAUNCH, prefix, *argv), cwd=str(self.root), timeout=timeout,
+                                    cancellation=token)
+            except (ExecTimeout, ExecCancelled) as stopped:
+                self._stop(prefix, mode, required=isinstance(stopped, ExecTimeout))
+                raise
+            except Exception as exc:  # noqa: BLE001 -- any other channel failure is the environment's
+                raise EnvironmentUnavailable(f"environment exec failed: {type(exc).__name__}: {exc}") from None
+        finally:
+            with self._lock:
+                self._active.pop(key, None)
+
+    def _stop(self, prefix, mode, *, required):
+        """Stop one launch inside the environment. Bypasses the cancellation token on purpose."""
+        try:
+            output = self.channel(_script(_STOP, mode, prefix), cwd=str(self.root), timeout=STOP_TIMEOUT,
+                                  cancellation=None)
+            ok = output.return_code == 0
+        except Exception:  # noqa: BLE001
+            ok = False
+        if required and not ok:
+            # The command may still be running: stop the run instead of carrying on beside it.
+            raise EnvironmentUnavailable("could not stop a timed-out command in the environment")
 
     def _file_op(self, body, *args):
         try:
-            output = self._run(_script(body, *args), timeout=self.file_op_timeout)
+            output = self._run(["sh", "-c", body, "sh", *(str(arg) for arg in args)], timeout=self.file_op_timeout)
         except ExecTimeout:
             raise EnvironmentUnavailable("environment file operation timed out") from None
         except ExecCancelled:
@@ -397,14 +493,13 @@ class ExecBackend:
         if token is not None:
             token.check()
         # argv is quoted word by word: the environment's shell rebuilds exactly these arguments.
-        command = shlex.join(argv)
+        # The host deadline stops the command (see _run); `timeout` is only a backstop in case the
+        # host side disappears.
         limited = self._timeout_available()
-        if limited:
-            command = f"timeout -k {KILL_GRACE} {math.ceil(timeout)} {command}"
+        inner = ["timeout", "-s", "KILL", str(math.ceil(timeout) + KILL_GRACE), *argv] if limited else list(argv)
         started = time.monotonic()
         try:
-            output = self._run(command, timeout=timeout + (KILL_GRACE + HOST_SLACK if limited else 0),
-                               cancellation=token)
+            output = self._run(inner, timeout=timeout, cancellation=token, mode="kill")
         except ExecTimeout:
             return ToolResult.failure(ErrorCode.TIMEOUT, f"command timed out after {timeout} seconds",
                                       data=self._data(None, "", ""))
@@ -413,6 +508,8 @@ class ExecBackend:
                                       data=self._data(None, "", ""))
         data = self._data(output.return_code, output.stdout or "", output.stderr or "", output_limit)
         elapsed = time.monotonic() - started
+        if output.return_code == 125 and token is not None and token.cancelled():
+            return ToolResult.failure(ErrorCode.CANCELLED, "command cancelled before it started", data=data)
         if limited and output.return_code in (124, 137) and elapsed >= timeout * 0.9:
             return ToolResult.failure(ErrorCode.TIMEOUT, f"command timed out after {timeout} seconds", data=data)
         if output.return_code:

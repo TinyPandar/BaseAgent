@@ -29,7 +29,7 @@ from pathlib import Path
 from harbor.agents.base import BaseAgent as HarborBaseAgent
 
 from .errors import BaseAgentInfrastructureError
-from .runner import RunConfig, run_in_environment
+from .runner import RunConfig, redact, run_in_environment
 from .settings import HARBOR_VERSION, AgentSettings
 
 
@@ -101,7 +101,8 @@ class BaseAgentHarborAgent(HarborBaseAgent):
             from baseagent.main import initialize_model
             return initialize_model(self.model_name or None)
         except Exception as exc:  # noqa: BLE001
-            raise BaseAgentInfrastructureError(f"model configuration failed: {type(exc).__name__}: {exc}") from None
+            message = redact(f"model configuration failed: {type(exc).__name__}: {exc}")
+        raise BaseAgentInfrastructureError(message) from None
 
     async def run(self, instruction, environment, context) -> None:
         settings = self.settings

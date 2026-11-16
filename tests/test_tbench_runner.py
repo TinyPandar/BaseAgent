@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+import traceback
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
@@ -104,6 +105,43 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(context.metadata))
         self.assertNotIn(SECRET, (self.logs / SUMMARY_FILE).read_text())
 
+    def test_error_text_never_carries_credentials(self):
+        stray = "sk-unlisted0123456789abcdef"
+
+        class LeakyModel:
+            calls = 0
+
+            def complete(self, messages, tools):
+                raise RuntimeError(f"401 Unauthorized: key {SECRET} rejected; also {stray}; Bearer {SECRET}x")
+
+        def check(error, context, reason):
+            texts = [str(error), "".join(traceback.format_exception(error)), json.dumps(context.metadata),
+                     (self.logs / SUMMARY_FILE).read_text()]
+            for text in texts:
+                self.assertNotIn(SECRET, text)
+                self.assertNotIn(stray, text)
+            self.assertIsNone(error.__cause__)
+            self.assertTrue(error.__suppress_context__ or error.__context__ is None)
+            self.assertIn(reason, str(error))      # the reason itself survives
+
+        with mock.patch.dict(os.environ, {"BASEAGENT_LLM_API_KEY": SECRET}):
+            context = _context()
+            with self.assertRaises(BaseAgentInfrastructureError) as caught:
+                self.run_task(LeakyModel(), RunConfig(budget_cny=Decimal("1")), context=context)
+            check(caught.exception, context, "401 Unauthorized")
+            # A failure before the loop starts goes through the same scrubbing.
+            self.env.fail_with = RuntimeError(f"docker: auth header Bearer {SECRET} refused")
+            context = _context()
+            with self.assertRaises(BaseAgentInfrastructureError) as caught:
+                self.run_task(CountingModel([]), RunConfig(budget_cny=Decimal("1")), context=context)
+            check(caught.exception, context, "auth header")
+
+    def test_model_held_key_is_scrubbed_even_when_not_in_the_environment(self):
+        from baseagent.tbench.runner import model_secrets, redact
+        model = SimpleNamespace(client=SimpleNamespace(api_key="held-only-in-the-client-123"))
+        self.assertEqual(model_secrets(model), ["held-only-in-the-client-123"])
+        self.assertNotIn("held-only-in-the-client-123", redact("bad key held-only-in-the-client-123", model_secrets(model)))
+
     def test_outer_timeout_during_a_command_stops_new_model_requests(self):
         model = CountingModel([{"role": "assistant", "content": None, "tool_calls": [
             _call("run_command", {"argv": ["sh", "-c", "sleep 2; touch late"], "timeout": 30}, "slow")]},
@@ -190,6 +228,20 @@ class RunnerTests(unittest.TestCase):
         reason, context = self.run_task(CountingModel([loop]), RunConfig(max_steps=2, budget_cny=Decimal("1")))
         self.assertEqual(reason, "steps_exhausted")
         self.assertEqual(context.n_input_tokens, 200)
+
+    def test_nothing_is_written_after_the_wall_clock_deadline(self):
+        # 17 s of agent time minus the 15 s margin leaves about 2 s; the command asks for 30 s.
+        model = CountingModel([{"role": "assistant", "content": None, "tool_calls": [
+            _call("run_command", {"argv": ["sh", "-c", "sleep 4; touch late"], "timeout": 30}, "slow")]},
+            {"role": "assistant", "content": "done"}])
+        config = RunConfig(max_command_timeout_sec=60, agent_timeout_sec=17, safety_margin_sec=15,
+                           budget_cny=Decimal("1"))
+        started = time.monotonic()
+        reason, context = self.run_task(model, config)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(reason, "timeout")
+        time.sleep(4)
+        self.assertFalse((self.workdir / "late").exists(), "the command wrote after the wall-clock deadline")
 
     def test_command_timeout_never_exceeds_the_remaining_wall_clock(self):
         model = CountingModel([{"role": "assistant", "content": None,
