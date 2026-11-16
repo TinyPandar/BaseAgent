@@ -268,6 +268,42 @@ def _agent_matches(result, expected):
             and (agent.get("kwargs") or {}).get("scripted") == expected["scripted"])
 
 
+def _fixture_trial_problems(result, row, spec):
+    """Everything one fixture trial must show besides its identity: a valid graded reward with the
+    expected value and outcome, no exception, and no usage or cost at all."""
+    problems = []
+    expected_outcome = "passed" if spec["expect"] >= 1 else "wrong_answer"
+    if row["reward"] != spec["expect"]:
+        problems.append(f"reward {row['reward']!r} != expected {spec['expect']!r}")
+    if row["outcome"] != expected_outcome:
+        problems.append(f"outcome {row['outcome']} != expected {expected_outcome}")
+    if row["exception_types"]:
+        problems.append(f"trial recorded exceptions {row['exception_types']}")
+    agent = result.get("agent_result") or {}
+    metadata = agent.get("metadata") or {}
+    usage = {"n_input_tokens": agent.get("n_input_tokens"), "n_output_tokens": agent.get("n_output_tokens"),
+             "n_cache_tokens": agent.get("n_cache_tokens"), "cost_usd": agent.get("cost_usd"),
+             "cost_cny": metadata.get("cost_cny"), "provider_calls": metadata.get("provider_calls"),
+             "in_flight_model_calls_at_stop": metadata.get("in_flight_model_calls_at_stop")}
+    for field, value in usage.items():
+        try:
+            nonzero = value is not None and Decimal(str(value)) != 0
+        except ArithmeticError:
+            nonzero = True
+        if nonzero:
+            problems.append(f"{field} is {value!r}, expected none")
+    if "scripted" in spec["agent"]:
+        # The adapter's own record must say this scripted model ran to completion and was never billed.
+        if metadata.get("model") != "scripted:" + spec["agent"]["scripted"]:
+            problems.append(f"metadata model is {metadata.get('model')!r}")
+        if metadata.get("stop_reason") != "completed":
+            problems.append(f"stop_reason is {metadata.get('stop_reason')!r}")
+        for field in ("cost_cny", "provider_calls"):
+            if field not in metadata:
+                problems.append(f"metadata has no {field}")
+    return problems
+
+
 def check_fixture_job(name, exit_code, job_dir, *, existed_before):
     """Judge one fixture job only by what Harbor wrote for this invocation."""
     spec = FIXTURE_AGENTS[name]
@@ -283,8 +319,8 @@ def check_fixture_job(name, exit_code, job_dir, *, existed_before):
     elif not _agent_matches(results[0], spec["agent"]):
         problems.append("trial result belongs to a different agent")
     rewards = [row["reward"] for row in report["tasks"]]
-    if not problems and rewards != [spec["expect"]]:
-        problems.append(f"reward {rewards} != expected [{spec['expect']}]")
+    if not problems:
+        problems += _fixture_trial_problems(results[0], report["tasks"][0], spec)
     return {"exit_code": exit_code, "job_dir": str(job_dir), "rewards": rewards,
             "outcomes": [row["outcome"] for row in report["tasks"]], "cost_cny": report.get("cost_cny"),
             "provider_calls": report.get("provider_calls"), "as_expected": not problems, "problems": problems}
