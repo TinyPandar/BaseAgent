@@ -17,7 +17,8 @@ from applications.project_assistant.evaluation.terminal_bench import (
 from scripts import evaluate_terminal_bench
 
 
-def trial(name, reward, *, error=None, policy=None, stop="completed", tokens=(0, 0), cost="0", provider_calls=0):
+def trial(name, reward, *, error=None, policy=None, stop="completed", tokens=(0, 0), cost="0", provider_calls=0,
+          agent=None):
     """A parsed Harbor 0.26.0 TrialResult with the fields the importer reads."""
     exception = None
     if error is not None:
@@ -25,6 +26,7 @@ def trial(name, reward, *, error=None, policy=None, stop="completed", tokens=(0,
                      "occurred_at": "2026-11-15T00:00:00Z",
                      "policy": policy or {"should_retry": True, "should_grade": True, "has_valid_reward": True}}
     return {"task_name": name, "trial_name": name + "__abc", "exception_info": exception,
+            "config": {"agent": agent or {"name": "oracle"}},
             "verifier_result": None if reward is None else {"rewards": {"reward": reward}},
             "agent_result": {"n_input_tokens": tokens[0], "n_output_tokens": tokens[1], "cost_usd": None,
                              "metadata": {"stop_reason": stop, "cost_cny": cost, "provider_calls": provider_calls,
@@ -96,35 +98,62 @@ class FixtureTests(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("NOT verified", err.getvalue())
 
+    @staticmethod
+    def harbor_writing(rewards, *, exit_code=0, agents=None):
+        """A stand-in for ``harbor run`` that writes one trial result per job, like Harbor does."""
+        def run(argv, env=None, check=False):
+            job = argv[argv.index("--job-name") + 1]
+            name = next(key for key in tb.FIXTURE_AGENTS if job.startswith(f"fixture-{key}-"))
+            if name in rewards:
+                spec = tb.FIXTURE_AGENTS[name]["agent"]
+                agent = (agents or {}).get(name) or (
+                    {"name": "oracle"} if "name" in spec else
+                    # The shape `harbor run -a module:Class --ak scripted=...` records (checked with --print-config).
+                    {"name": spec["import_path"], "import_path": None, "kwargs": {"scripted": spec["scripted"]}})
+                path = Path(argv[argv.index("-o") + 1]) / job / "local-echo__x" / "result.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(trial("local-echo", rewards[name], agent=agent)))
+            return SimpleNamespace(returncode=exit_code)
+        return run
+
+    EXPECTED = {"oracle": 1.0, "scripted-correct": 1.0, "scripted-wrong": 0.0}
+
     def test_fixture_grading_comes_from_harbor_results(self):
-        """The three fixture jobs are judged only by the result.json files Harbor writes."""
-        rewards = {"oracle": 1.0, "scripted-correct": 1.0, "scripted-wrong": 0.0}
-
-        def fake_harbor(argv, env=None, check=False):
-            name = argv[argv.index("--job-name") + 1].removeprefix("fixture-")
-            jobs = Path(argv[argv.index("-o") + 1])
-            path = jobs / f"fixture-{name}" / "local-echo__x" / "result.json"
-            path.parent.mkdir(parents=True)
-            path.write_text(json.dumps(trial("local-echo", rewards[name])))
-            return SimpleNamespace(returncode=0)
-
         with tempfile.TemporaryDirectory() as directory:
-            result = run_fixture("harbor", Path(directory), runner=fake_harbor)
-            self.assertTrue(result["verified"])
+            result = run_fixture("harbor", Path(directory), runner=self.harbor_writing(self.EXPECTED))
+            self.assertTrue(result["verified"], result)
             self.assertEqual(result["jobs"]["scripted-wrong"]["outcomes"], ["wrong_answer"])
             self.assertEqual(result["jobs"]["scripted-correct"]["outcomes"], ["passed"])
             self.assertEqual(result["jobs"]["oracle"]["cost_cny"], 0)
+        with tempfile.TemporaryDirectory() as directory:      # a grader that passes everything is caught
+            everything = dict.fromkeys(self.EXPECTED, 1.0)
+            self.assertFalse(run_fixture("harbor", Path(directory), runner=self.harbor_writing(everything))["verified"])
 
-        def always_one(argv, env=None, check=False):     # a grader that passes everything is caught
-            jobs = Path(argv[argv.index("-o") + 1])
-            name = argv[argv.index("--job-name") + 1]
-            path = jobs / name / "t" / "result.json"
-            path.parent.mkdir(parents=True)
-            path.write_text(json.dumps(trial("local-echo", 1.0)))
-            return SimpleNamespace(returncode=0)
-
+    def test_old_results_never_count_for_a_failed_run(self):
         with tempfile.TemporaryDirectory() as directory:
-            self.assertFalse(run_fixture("harbor", Path(directory), runner=always_one)["verified"])
+            jobs = Path(directory)
+            # Passing results from earlier runs, under the old fixed names and under a reused run id.
+            for name, reward in self.EXPECTED.items():
+                for job in (f"fixture-{name}", tb.fixture_job_name(name, "old")):
+                    path = jobs / job / "t" / "result.json"
+                    path.parent.mkdir(parents=True)
+                    path.write_text(json.dumps(trial("local-echo", reward)))
+            failed = run_fixture("harbor", jobs, runner=lambda argv, env=None, check=False: SimpleNamespace(returncode=1))
+            self.assertFalse(failed["verified"])
+            self.assertTrue(all(job["rewards"] == [] for job in failed["jobs"].values()))
+            reused = run_fixture("harbor", jobs, runner=self.harbor_writing(self.EXPECTED), run_id="old")
+            self.assertFalse(reused["verified"])
+            self.assertIn("job directory existed before this run", reused["jobs"]["oracle"]["problems"])
+
+    def test_nonzero_exit_or_wrong_agent_is_not_verified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            crashed = run_fixture("harbor", Path(directory), runner=self.harbor_writing(self.EXPECTED, exit_code=1))
+            self.assertFalse(crashed["verified"])
+        with tempfile.TemporaryDirectory() as directory:
+            swapped = self.harbor_writing(self.EXPECTED, agents={"scripted-wrong": {"name": "oracle"}})
+            result = run_fixture("harbor", Path(directory), runner=swapped)
+            self.assertFalse(result["verified"])
+            self.assertIn("trial result belongs to a different agent", result["jobs"]["scripted-wrong"]["problems"])
 
     def test_no_hardcoded_pass_remains(self):
         source = Path(evaluate_terminal_bench.__file__).read_text() + Path(tb.__file__).read_text()

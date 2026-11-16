@@ -15,8 +15,10 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
+from uuid import uuid4
 
 from baseagent.tbench.errors import BaseAgentInfrastructureError, BudgetExceededError
 from baseagent.tbench.settings import AGENT_IMPORT_PATH, HARBOR_VERSION
@@ -223,16 +225,25 @@ def plan_job(budget_cny="15", *, model="deepseek-chat", max_command_timeout_sec=
 
 
 FIXTURE_AGENTS = {
-    "oracle": {"args": ["-a", "oracle"], "expect": 1.0},
-    "scripted-correct": {"args": ["-a", AGENT_IMPORT_PATH, "--ak", "scripted=correct"], "expect": 1.0},
-    "scripted-wrong": {"args": ["-a", AGENT_IMPORT_PATH, "--ak", "scripted=wrong"], "expect": 0.0},
+    "oracle": {"args": ["-a", "oracle"], "expect": 1.0, "agent": {"name": "oracle"}},
+    "scripted-correct": {"args": ["-a", AGENT_IMPORT_PATH, "--ak", "scripted=correct"], "expect": 1.0,
+                         "agent": {"import_path": AGENT_IMPORT_PATH, "scripted": "correct"}},
+    "scripted-wrong": {"args": ["-a", AGENT_IMPORT_PATH, "--ak", "scripted=wrong"], "expect": 0.0,
+                       "agent": {"import_path": AGENT_IMPORT_PATH, "scripted": "wrong"}},
 }
 
 
-def fixture_jobs(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", task_dir=None):
+def fixture_job_name(name, run_id):
+    return f"fixture-{name}-{run_id}"
+
+
+def fixture_jobs(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", task_dir=None, *, run_id):
+    """One ``harbor run`` per fixture agent. Job names are unique per invocation: Harbor resumes a job
+    whose name already exists, and an old directory must never stand in for a new result."""
     task_dir = str(Path(task_dir or FIXTURE).resolve())
-    return {name: [harbor, "run", "-p", task_dir, *spec["args"], "-n", "1", "--job-name", f"fixture-{name}",
-                   "-o", str(jobs_dir), "-y", "-q"] for name, spec in FIXTURE_AGENTS.items()}
+    return {name: [harbor, "run", "-p", task_dir, *spec["args"], "-n", "1",
+                   "--job-name", fixture_job_name(name, run_id), "-o", str(jobs_dir), "-y", "-q"]
+            for name, spec in FIXTURE_AGENTS.items()}
 
 
 def docker_status():
@@ -248,7 +259,38 @@ def docker_status():
     return True, "docker available"
 
 
-def run_fixture(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", *, env=None, runner=None):
+def _agent_matches(result, expected):
+    agent = (result.get("config") or {}).get("agent") or {}
+    if "name" in expected:
+        return agent.get("name") == expected["name"]
+    # `harbor run -a module:Class` records the import path as the agent name; a job config uses import_path.
+    return (expected["import_path"] in (agent.get("import_path"), agent.get("name"))
+            and (agent.get("kwargs") or {}).get("scripted") == expected["scripted"])
+
+
+def check_fixture_job(name, exit_code, job_dir, *, existed_before):
+    """Judge one fixture job only by what Harbor wrote for this invocation."""
+    spec = FIXTURE_AGENTS[name]
+    results = trial_results(job_dir) if job_dir.exists() and not existed_before else []
+    report = score_records([classify_trial(result) for result in results])
+    problems = []
+    if existed_before:
+        problems.append("job directory existed before this run")
+    if exit_code != 0:
+        problems.append(f"harbor exited with code {exit_code}")
+    if len(results) != 1:
+        problems.append(f"expected one trial result, found {len(results)}")
+    elif not _agent_matches(results[0], spec["agent"]):
+        problems.append("trial result belongs to a different agent")
+    rewards = [row["reward"] for row in report["tasks"]]
+    if not problems and rewards != [spec["expect"]]:
+        problems.append(f"reward {rewards} != expected [{spec['expect']}]")
+    return {"exit_code": exit_code, "job_dir": str(job_dir), "rewards": rewards,
+            "outcomes": [row["outcome"] for row in report["tasks"]], "cost_cny": report.get("cost_cny"),
+            "provider_calls": report.get("provider_calls"), "as_expected": not problems, "problems": problems}
+
+
+def run_fixture(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", *, env=None, runner=None, run_id=None):
     """Grade the fixture with Harbor: official oracle, scripted correct, scripted wrong.
 
     Returns the imported report plus whether each job got the expected reward. Requires Docker;
@@ -268,14 +310,12 @@ def run_fixture(harbor="harbor", jobs_dir="jobs/terminal-bench-fixture", *, env=
         # Harbor imports the adapter from this checkout.
         source = str(EVALUATION_DIR.parents[2] / "src")
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [source, os.environ.get("PYTHONPATH")]))}
+    run_id = run_id or time.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
     jobs = {}
-    for name, argv in fixture_jobs(harbor, jobs_dir).items():
-        completed = runner(argv, env=env, check=False)
-        job_dir = Path(jobs_dir) / f"fixture-{name}"
-        report = import_results(job_dir) if job_dir.exists() else {"tasks": []}
-        rewards = [row["reward"] for row in report["tasks"]]
-        jobs[name] = {"exit_code": completed.returncode, "rewards": rewards,
-                      "outcomes": [row["outcome"] for row in report["tasks"]],
-                      "cost_cny": report.get("cost_cny"), "provider_calls": report.get("provider_calls"),
-                      "as_expected": rewards == [FIXTURE_AGENTS[name]["expect"]]}
-    return {"verified": all(job["as_expected"] for job in jobs.values()), "reason": reason, "jobs": jobs}
+    for name, argv in fixture_jobs(harbor, jobs_dir, run_id=run_id).items():
+        job_dir = Path(jobs_dir) / fixture_job_name(name, run_id)
+        existed = job_dir.exists()
+        exit_code = None if existed else runner(argv, env=env, check=False).returncode
+        jobs[name] = check_fixture_job(name, exit_code, job_dir, existed_before=existed)
+    return {"verified": bool(jobs) and all(job["as_expected"] for job in jobs.values()), "reason": reason,
+            "run_id": run_id, "jobs": jobs}
