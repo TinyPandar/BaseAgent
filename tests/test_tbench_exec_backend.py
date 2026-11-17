@@ -157,9 +157,12 @@ class ExecBackendTests(unittest.TestCase):
                 env = ShellEnvironment(self.workdir, shims=shims)
                 backend = ExecBackend(AsyncExecChannel(env, self.loop), str(self.workdir))
                 started = time.monotonic()
+                # The command would end by itself 3 s in and write after its 1 s deadline. The stop
+                # must report failure before that; it must not wait the command out and call it clean.
                 with self.assertRaises(EnvironmentUnavailable):
-                    backend.execute(["sh", "-c", "sleep 9"], timeout=1)
-                self.assertLess(time.monotonic() - started, 30)
+                    backend.execute(["sh", "-c", "sleep 3; touch late-" + label.replace(" ", "-").replace(",", "")],
+                                    timeout=1)
+                self.assertLess(time.monotonic() - started, 2.8)
 
     def test_proc_scan_finds_tagged_grouped_and_session_members_only(self):
         proc = self.workdir.parent / "fake-proc"

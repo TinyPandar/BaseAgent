@@ -260,6 +260,20 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse((self.workdir / "late").exists(), "a background child wrote after the wall-clock deadline")
         self.assertIs(context.metadata["agent_processes_stopped"], True)
 
+    def test_a_stop_that_cannot_kill_ends_the_run_as_infrastructure(self):
+        # A kill builtin that accepts nothing: the command cannot be stopped at the deadline.
+        self.env = ShellEnvironment(self.workdir, shims=("setsid", "sh"))
+        model = CountingModel([{"role": "assistant", "content": None, "tool_calls": [
+            _call("run_command", {"argv": ["sh", "-c", "sleep 3; touch late"], "timeout": 30}, "slow")]},
+            {"role": "assistant", "content": "done"}])
+        config = RunConfig(max_command_timeout_sec=60, agent_timeout_sec=17, safety_margin_sec=15,
+                           budget_cny=Decimal("1"))
+        context = _context()
+        with self.assertRaises(BaseAgentInfrastructureError):
+            self.run_task(model, config, context=context)
+        self.assertEqual(context.metadata["stop_reason"], "infrastructure")
+        self.assertIs(context.metadata["agent_processes_stopped"], False)
+
     def test_command_timeout_never_exceeds_the_remaining_wall_clock(self):
         model = CountingModel([{"role": "assistant", "content": None,
                                 "tool_calls": [_call("run_command", {"argv": ["true"], "timeout": 600}, "x")]},
