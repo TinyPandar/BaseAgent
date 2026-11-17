@@ -817,7 +817,7 @@ tools = coding_tools(workspace)
 
 接口位于 `src/baseagent/backends/protocol.py`：`resolve_path`、`read_bytes`、`file_hash`、`get_instructions`、`search_files`、`write_file`、`delete_file`（后端入口，只给 `apply_patch` 的 `delete` 用，不是模型工具）、`execute` 和 `contract`。操作参数使用相对项目路径；`root`/`resolve_path` 返回稳定的项目命名空间标识，用于权限匹配和会话归属，工具层不能对这些 Path 执行宿主文件 I/O。未来远端实现需自行映射到环境内路径，并在该环境检查链接和目录边界。
 
-backend 实现是可信扩展，负责字节读取限额、受保护路径/搜索过滤、指令范围及限额、原子文件版本/指令摘要检查、命令期限/取消/输出限额与后代清理。`write_file` 必须在目标环境内完成 CAS、锁和原子发布；不能先在宿主检查再向远端无条件写入。`execute` 接收 argv，不自行转成 shell 字符串。其 `contract()` 应返回不含凭据的实现版本、环境身份与配置，工具恢复契约会绑定此信息，环境变化时先拒绝恢复。当前 master 提供 LocalBackend 和 DockerBackend；DockerBackend 的容器生命周期、挂载和清理由后端管理，可通过 `--backend docker` 使用。Harbor 的 ExecBackend 尚在未合入分支中。
+backend 实现是可信扩展，负责字节读取限额、受保护路径/搜索过滤、指令范围及限额、原子文件版本/指令摘要检查、命令期限/取消/输出限额与后代清理。`write_file` 必须在目标环境内完成 CAS、锁和原子发布；不能先在宿主检查再向远端无条件写入。`execute` 接收 argv，不自行转成 shell 字符串。其 `contract()` 应返回不含凭据的实现版本、环境身份与配置，工具恢复契约会绑定此信息，环境变化时先拒绝恢复。当前 master 提供 LocalBackend 和 DockerBackend；DockerBackend 的容器生命周期、挂载和清理由后端管理，可通过 `--backend docker` 使用。Harbor 的 ExecBackend 通过官方外部 agent 接口使用 environment.exec；任务容器生命周期与评分由 Harbor 管理，不复用 DockerBackend。离线假环境已验证，真实 Docker fixture 与完整 dry-run 尚未验证，见 [Terminal-Bench](terminal_bench.md)。
 
 所有指令读取、漂移检查、verify_command 和完成门槛也通过同一 backend。旧会话的工具契约因此发生变化，需要检查后显式接受配置变化才能继续。测试 `test_backends.py` 用完全不落盘的 backend 验证这些操作，没有宿主目录仍可读写和验收，同时宿主文件/搜索/进程调用被断言禁止。
 

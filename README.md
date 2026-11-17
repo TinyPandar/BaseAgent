@@ -29,13 +29,8 @@
 | Watchdog | 任务级停滞 / 重复 / 预算 / 超时巡检，默认关闭 | [docs/watchdog.md](docs/watchdog.md) |
 | HarnessKnight 适配层 | 可选的外部安全审查服务，默认关闭 | 下文「安全边界」 |
 | Docker 沙箱 | CLI `--backend docker`：一次运行一个容器（对话的各轮和 Worker 共用），命令和文件读写都在容器里；默认断网，工作区挂到 `/workspace`。Docker 起不来时调用模型前退出码 3，不会退回 local。默认仍是 LocalBackend，它不是沙箱。离线测试用假 Docker，真实冒烟尚未跑。 | [docs/docker_backend.md](docs/docker_backend.md) |
+| Harbor / Terminal-Bench 官方接入 | Harbor 0.26.0 外部 agent + ExecBackend；容器生命周期与评分由 Harbor 管理；固定 18 题 id。假环境与离线故障回归已验，真 Docker fixture、完整 dry-run 和真实成绩仍未验证。 | [docs/terminal_bench.md](docs/terminal_bench.md) |
 | Project Assistant（代码 RAG） | 文档 / 代码入库、带 `path:start-end` 引用的检索；默认 vector + BM25 混合检索，rerank 默认关闭 | [应用说明](applications/project_assistant/README.md) |
-
-### 未合入
-
-| 能力 | 现状 |
-| --- | --- |
-| Harbor / Terminal-Bench 官方接入 | 在分支 `plan/harbor-tbench`，尚未合入；没有真实 TB 成绩。真 Docker fixture 和官方 dry-run 尚未验证。 |
 
 ### 只有离线管道，没有真实结果
 
@@ -44,7 +39,7 @@
 | 流式输出、并行只读工具 | `--stream`、`--parallel-readonly-tools`，离线测试 | 付费冒烟 |
 | Trigger（定时 / 文件变化唤醒 Worker） | 库 + `scripts/demo_triggers.py` | CLI 入口 |
 | 生成答案质量 | 分层打分管道，用合成答案验证 | 真实模型 80 题结果 |
-| Terminal-Bench | 固定 18 题子集 id；默认本地 fixture 是合成结果，显式 `--fixture --backend docker` 用于容器链路冒烟（尚未实测）；两者都不是 TB2 成绩 | 真实子集成绩；Harbor 官方接入尚未合入 |
+| Terminal-Bench | `--synthetic` 为合成报告；`--fixture` 走 Harbor；`--fixture --backend docker` 保留独立的本地 CLI 容器链路冒烟（默认假 Docker）。两条 fixture 的真 Docker 路径均未实测 | 真实子集成绩、真 Docker fixture 与完整 dry-run |
 
 ## 评测数据
 

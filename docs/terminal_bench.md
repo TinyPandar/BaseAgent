@@ -29,7 +29,7 @@ BaseAgentHarborAgent（宿主上的 Harbor 进程里）
 - agent 超时：Harbor 0.26.0 不把超时传给外部 agent。适配器按顺序取 agent 参数 `agent_timeout_sec`，再从本次 trial 目录的 `config.json` 和题目 `task.toml` 按 Harbor 0.26.0 的公式（`min(base, max) × multiplier`）算；都拿不到时元数据里 `deadline_source` 记为 `unknown`，只靠 Harbor 外层超时。
 - 取消一次 `exec` 只是放弃了客户端：和 `docker exec` 一样，容器里的进程会继续跑。所以每个操作都经一个小启动器运行：
   - **打标记。** 启动器以 `BASEAGENT_LAUNCH=<本轮 id + 序号>` 的环境变量启动，它和它启动的一切进程从一开始就带着这个标记（`setsid` 改不掉它）。被启动的子进程有 `setsid` 时自成一个会话，并把自己的进程组 / 会话号记到容器的 `/tmp/baseagent-<本轮 id>.groups`（清空环境变量改不掉它）；**命令结束后记录也保留**，所以命令退出时留在后台的子进程以后还找得到。子进程先记录、再看停止标记，所以停止方「先写标记、再读记录」不会漏掉一个照样启动了的进程。
-  - **停。** 停止是另一条 `exec`：先写停止标记（还没启动的操作看到就不再启动），再扫描 `/proc`：环境变量带标记、或进程组 / 会话是记录过的，就按 pid 杀掉（不依赖 `pgrep`、`ps` 或进程组版的 `kill` 语法），反复扫描直到一个都不剩（僵尸进程除外）才算停住。记录的会话号可能是被复用的旧 pid，所以停止命令自己所在的会话不按会话号匹配（带标记的照样匹配）。没有 `/proc` 可查、写不了标记、杀不掉，都报失败，**从不凭 `kill` 的返回值认定已经停干净**。进程消失也不等于是我们停掉的（它可能自己跑完了、途中还写了文件），所以：第一次杀之前，先用同样的方式杀停止脚本自己起的一个探针子进程（它本来要睡 20 秒），必须先在 `/proc` 里看到它活着、随后结束，且 `wait` 报告它是被信号杀死的，才算 `kill` 在这个容器里真的有效；每轮杀完后真实地 `sleep 0.3`，再逐个读被杀进程的状态，还活着就失败；`kill` 报了「No such process」以外的错也立即失败。本轮里只要有一次停止失败，之后即使已经没有活进程，`agent_processes_stopped` 也记为 `false`。文件操作被停时先让它在约 3 秒内自然结束（避免留下半写的临时文件）。
+  - **停。** 停止是另一条 `exec`：先写停止标记（还没启动的操作看到就不再启动），再扫描 `/proc`：环境变量带标记、或进程组 / 会话是记录过的，就按 pid 杀掉（不依赖 `pgrep`、`ps` 或进程组版的 `kill` 语法），反复扫描直到一个都不剩（僵尸进程除外）才算停住。记录的会话号可能是被复用的旧 pid，所以停止命令自己所在的会话不按会话号匹配（带标记的照样匹配）。没有 `/proc` 可查、写不了标记、杀不掉，都报失败，**从不凭 `kill` 的返回值认定已经停干净**。进程消失也不等于是我们停掉的（它可能自己跑完了、途中还写了文件），所以：第一次杀之前，先用同样的方式杀停止脚本自己起的一个探针子进程（它本来要睡 20 秒），必须先在 `/proc` 里看到它活着、随后结束，且 `wait` 报告它是被信号杀死的，才算 `kill` 在这个容器里真的有效；每轮杀完后实际等待 `sleep 0.3`，再逐个读被杀进程的状态，还活着就失败；`kill` 报了「No such process」以外的错也立即失败。本轮里只要有一次停止失败，之后即使已经没有活进程，`agent_processes_stopped` 也记为 `false`。文件操作被停时先让它在约 3 秒内自然结束（避免留下半写的临时文件）。
   - **什么时候停。** 单条命令超时：停这一条命令启动的全部进程（含后台子进程）。整轮因墙钟到点（自己的截止或 Harbor 外层超时）、预算或基础设施失败而结束：停本轮启动过的**全部**进程，包括早已结束的命令留在后台的子进程，然后再交给 Harbor 评分。元数据 `agent_processes_stopped` 记为 `true`。
   - **确认不了就不评分。** 任何一次需要的停止确认不了，这一轮就按基础设施失败结束（`BaseAgentInfrastructureError`，不评分、奖励无效），不在可能还在写文件的进程旁边照常评分。
   - **正常结束不杀后台进程。** 模型自己说完成（或步数 / 权限停下）时，它特意留着的后台进程保持运行，元数据 `agent_processes_stopped` 为 `null`。TB 2.0 有题目要求留一个服务给测试连（例如测试去访问 agent 启动的服务器），一律杀掉会把这类题判错。
@@ -80,7 +80,7 @@ python scripts/evaluate_terminal_bench.py --import jobs/terminal-bench/<job>
 python scripts/evaluate_terminal_bench.py --synthetic
 ```
 
-`--plan` 生成的配置：`timeout_multiplier` 1.0，不设任何超时倍数、超时上限、覆盖或资源字段；`n_concurrent_trials` 1、`n_attempts` 1、`max_retries` 0；数据集用子集文件里的 Harbor registry 提交 `7367e809` 和 18 个 `task_names`；每题预算是总预算的 1/18（向下取整到 0.0001 元），每题各自封顶，所以总花费不超过总预算，不需要共享账本。预算在每次模型调用前检查，越线那一次已经发出的调用会被计费。
+`--plan` 生成的配置：`timeout_multiplier` 1.0，不设任何超时倍数、超时上限、覆盖或资源字段；`n_concurrent_trials` 1、`n_attempts` 1、`max_retries` 0；数据集用子集文件里的 Harbor registry 提交 `7367e809` 和 18 个 `task_names`；每题预算是总预算的 1/18（向下取整到 0.0001 元），每题使用独立的 CNY 软上限，不提供跨 trial 共享账本。预算在派发前检查，在途请求可能超过每题份额及总预算，超出部分仍计费；当前保持单并发。
 
 费用按人民币算（`metadata.cost_cny`，默认用 `baseagent.agent.workers` 里现有的计费单价，可用 `input_cny_per_million` / `output_cny_per_million` 改）。没有显式给 `usd_per_cny` 时 `cost_usd` 保持为空，不编汇率。
 
@@ -105,3 +105,17 @@ PATH=.harbor-venv/bin:$PATH PYTHONPATH=src python scripts/evaluate_terminal_benc
 ## 子集
 
 固定子集是 Harbor registry `7367e809` 里 `terminal-bench@2.0` 按字母序的前 18 个 id，写在 `applications/project_assistant/evaluation/terminal_bench_subset.json`。`check_harbor_plan.py` 用 Harbor 解析这份 registry，确认解析出的任务正好是这 18 个、来自数据集提交 `69671fba`。15 到 20 题大约 10 到 15 元，全量大约 40 到 60 元，另一次授权。不要为了分数改题目。
+
+
+## 保留的本地 Docker CLI 冒烟（与 Harbor 独立）
+
+```bash
+python scripts/evaluate_terminal_bench.py --fixture --backend docker
+# 真 Docker 版本需要本机已有 python:3.12-slim；当前尚未实测：
+python scripts/evaluate_terminal_bench.py --fixture --backend docker --real-docker
+```
+
+该路径保留 master 已有的真实 CLI → DockerBackend → 新容器验证链路，默认用 FakeDocker 与脚本模型，provider 调用 0；本地 echo 夹具单独保存在 `fixtures/terminal_bench/local-docker-echo/`。
+它不使用 Harbor 的任务、执行环境或评分，不是 TB2 成绩。普通 `--fixture` 则是 Harbor 官方 oracle / scripted-correct / scripted-wrong 三个 job，真 Docker 下仍未验证。`--synthetic` 只检查合成报告，不冒充任何 fixture 成绩。
+
+旧 `--live` 继续只打印本地 Docker 命令（`harbor_integration: unverified` 指该旧命令不是官方 Harbor 调用），不执行；Harbor 配置使用 `--plan`，评分结果使用 `--import`。两条入口均不授权付费执行。

@@ -1,0 +1,3 @@
+name = "local-echo"
+version = "fixture"
+schema = "harbor-task-like"

@@ -186,8 +186,8 @@ def plan_job(budget_cny="15", *, model="deepseek-chat", max_command_timeout_sec=
 
     Task timeouts and resources stay exactly as the tasks define them: timeout_multiplier is 1.0
     and no override, maximum or resource field is set. Trials run one at a time (-n 1) and each
-    task gets an equal share of the CNY budget as its own hard cap, so the job total stays within
-    ``budget_cny`` without a shared ledger.
+    task gets an equal share as a soft CNY limit. In-flight calls can exceed a share
+    and the total; there is no cross-trial shared ledger.
     """
     subset = subset or load_subset()
     tasks = subset["task_ids"]
