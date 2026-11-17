@@ -58,6 +58,17 @@ class ShellEnvironment:
         return await future
 
 
+_KILL_SHIM = """#!/bin/bash
+if [ "$1" = -c ] && [ $# -ge 2 ]; then
+  script=$2; shift 2
+  name=${1:-sh}; [ $# -gt 0 ] && shift
+  exec /bin/bash -c 'kill() { __KILL__; }
+script=$1; shift; eval "$script"' "$name" "$script" "$@"
+fi
+exec /bin/bash "$@"
+"""
+
+# Shim name -> script; the file is named by the part before the first "-" (sh-noop-kill -> sh).
 SHIMS = {
     # util-linux setsid: a new session for the command (forks first when already a group leader).
     "setsid": f"""#!/bin/sh
@@ -70,15 +81,9 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@"
     # A /bin/sh whose kill builtin accepts nothing, like a shell with an incompatible kill syntax.
     # The original script is passed through as its own argument and run unchanged by eval, with
     # its $0 and positional parameters; nothing is spliced into a quoted string.
-    "sh": """#!/bin/bash
-if [ "$1" = -c ] && [ $# -ge 2 ]; then
-  script=$2; shift 2
-  name=${1:-sh}; [ $# -gt 0 ] && shift
-  exec /bin/bash -c 'kill() { echo "kill: unsupported syntax" >&2; return 2; }
-script=$1; shift; eval "$script"' "$name" "$script" "$@"
-fi
-exec /bin/bash "$@"
-""",
+    "sh": _KILL_SHIM.replace("__KILL__", 'echo "kill: unsupported syntax" >&2; return 2'),
+    # A /bin/sh whose kill reports success and does nothing.
+    "sh-noop-kill": _KILL_SHIM.replace("__KILL__", "return 0"),
 }
 
 
@@ -88,8 +93,9 @@ def make_shims(directory, names):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     for name in names:
-        (directory / name).write_text(SHIMS[name])
-        (directory / name).chmod(0o755)
+        target = directory / name.split("-")[0]
+        target.write_text(SHIMS[name])
+        target.chmod(0o755)
     return str(directory)
 
 
@@ -189,15 +195,21 @@ class ProcMirror:
         count = self._libproc.proc_listallpids(pids, ctypes.sizeof(pids))
         uid, current = os.getuid(), {}
         for pid in pids[:max(count, 0)]:
+            if pid <= 0:
+                continue
             info = _BSDInfo()
-            if pid <= 0 or self._libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) <= 0:
+            try:
+                if self._libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) <= 0:
+                    raise OSError
+                sid = os.getsid(pid)
+            except OSError:
+                # macOS still lists a zombie but gives no details for it; Linux /proc keeps it as "Z".
+                if pid in self._seen:
+                    head, _, rest = self._seen[pid].rpartition(") ")
+                    current[pid] = f"{head}) Z {rest.split(' ', 1)[1]}"
                 continue
             if info.pbi_uid != uid or info.pbi_start_tvsec < self.started:
                 continue        # only processes this test run started
-            try:
-                sid = os.getsid(pid)
-            except OSError:
-                continue
             state = "Z" if info.pbi_status == self.SZOMB else "S"
             comm = info.pbi_comm.decode("utf-8", "replace")
             current[pid] = f"{pid} ({comm}) {state} {info.pbi_ppid} {info.pbi_pgid} {sid} 0 0\n"

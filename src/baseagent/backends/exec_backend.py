@@ -214,8 +214,11 @@ set -- ${s##*') '}
 MINE=${4:-none}
 __SCAN__
 # A process that disappears is not proof that this stop ended it: it may have run to its end
-# (and written) in the meantime. So a kill that fails for any reason but "No such process",
-# or a killed process still alive about 0.5 s later, fails the stop at once.
+# (and written) in the meantime. So nothing counts as stopped until kill is shown to work here:
+# before the first kill, a canary child of this script (which would sleep 20 s) is killed the
+# same way; it must be seen alive in /proc, then end, and `wait` must report it killed by a signal. After each round of kills, one real `sleep 0.3` and then
+# every killed process must be gone or a zombie. A kill error other than "No such process",
+# a canary that survives, or a killed process still alive fails the stop at once.
 kill_one() {
   e=$(kill -9 "$1" 2>&1) && return 0
   case $e in *"No such process"*) return 0;; esac
@@ -223,21 +226,41 @@ kill_one() {
   case $e in *"No such process"*) return 0;; esac
   return 1
 }
-n=0; K=; stuck=0
+state() {
+  s=; IFS= read -r s 2>/dev/null < "$PROC/$1/stat" || [ -n "$s" ] || { echo gone; return; }
+  set -- ${s##*') '}
+  echo "$1"
+}
+prove_kill() {
+  sleep 20 </dev/null >/dev/null 2>&1 & c=$!
+  i=0
+  while [ "$(state "$c")" = gone ]; do
+    i=$((i+1)); [ $i -gt 40 ] && return 1
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  kill_one "$c" || return 1
+  i=0
+  while :; do
+    case $(state "$c") in Z|X|gone) break;; esac
+    i=$((i+1)); [ $i -gt 40 ] && return 1
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  # The canary sleeps 20 s, so ending now means it was killed; its status must say by a signal.
+  wait "$c" 2>/dev/null; st=$?
+  [ "$st" -gt 128 ]
+}
+n=0; proven=
 while :; do
   L=$(scan)
   [ -z "$L" ] && exit 0
-  again=
-  for p in $L; do case " $K " in *" $p "*) again=1;; esac; done
-  if [ -n "$again" ]; then stuck=$((stuck+1)); else stuck=0; fi
-  [ $stuck -gt 5 ] && exit 75
+  if [ -z "$proven" ]; then prove_kill || exit 75; proven=1; fi
   n=$((n+1))
   [ $n -gt 50 ] && exit 75
+  for p in $L; do kill_one "$p" || exit 75; done
+  sleep 0.3 2>/dev/null || sleep 1
   for p in $L; do
-    kill_one "$p" || exit 75
-    K="$K $p"
+    case $(state "$p") in Z|X|gone) ;; *) exit 75;; esac
   done
-  sleep 0.1 2>/dev/null || sleep 1
 done
 """
 # Prints the pids under $PROC that are alive and ours (see _STOP); uses $PROC, $TAG, $G and $MINE.
@@ -317,6 +340,7 @@ class ExecBackend:
         self._run_prefix = f"{RUN_DIR}/baseagent-{run_id}"
         self._sequence = 0
         self._closed = False
+        self.stop_failed = False
 
     def contract(self):
         return {"kind": "exec", "version": 1, "root": str(self.root), "isolation": "task-environment"}
@@ -388,6 +412,10 @@ class ExecBackend:
             ok = self.channel(command, cwd=str(self.root), timeout=STOP_TIMEOUT, cancellation=None).return_code == 0
         except Exception:  # noqa: BLE001
             ok = False
+        if not ok:
+            # Remembered for the run: processes that were not stopped may since have ended on their
+            # own, so a later "nothing is alive" must not read as "everything was stopped".
+            self.stop_failed = True
         if required and not ok:
             # The command may still be running: stop the run instead of carrying on beside it.
             raise EnvironmentUnavailable("could not confirm that a timed-out command stopped in the environment")

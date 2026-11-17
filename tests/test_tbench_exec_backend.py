@@ -148,21 +148,24 @@ class ExecBackendTests(unittest.TestCase):
         self.assertFalse((self.workdir / "background").exists())
 
     def test_an_unconfirmed_stop_is_never_reported_as_a_clean_timeout(self):
-        # No /proc to check with; a kill builtin that rejects the syntax (nothing can be killed).
+        # No /proc to check with; a kill builtin that rejects the syntax; one that reports success
+        # and does nothing. In none of them may the stop be confirmed.
         missing = str(self.workdir.parent / "no-proc")
         for label, shims, proc in (("no /proc", ("setsid",), missing),
                                    ("no /proc, no setsid", (), missing),
-                                   ("incompatible kill", ("setsid", "sh"), exec_backend.PROC_ROOT)):
+                                   ("incompatible kill", ("setsid", "sh"), exec_backend.PROC_ROOT),
+                                   ("kill succeeds but does nothing", ("setsid", "sh-noop-kill"),
+                                    exec_backend.PROC_ROOT)):
             with self.subTest(label), mock.patch.object(exec_backend, "PROC_ROOT", proc):
                 env = ShellEnvironment(self.workdir, shims=shims)
                 backend = ExecBackend(AsyncExecChannel(env, self.loop), str(self.workdir))
                 started = time.monotonic()
-                # The command would end by itself 3 s in and write after its 1 s deadline. The stop
-                # must report failure before that; it must not wait the command out and call it clean.
+                # The command ends by itself 0.5 s after its 1 s deadline, writing a file. A stop that
+                # waits it out and then sees nothing alive must not call that a confirmed stop.
+                late = self.workdir / ("late-" + "".join(ch if ch.isalnum() else "-" for ch in label))
                 with self.assertRaises(EnvironmentUnavailable):
-                    backend.execute(["sh", "-c", "sleep 3; touch late-" + label.replace(" ", "-").replace(",", "")],
-                                    timeout=1)
-                self.assertLess(time.monotonic() - started, 2.8)
+                    backend.execute(["sh", "-c", f"sleep 1.5; touch '{late}'"], timeout=1)
+                self.assertLess(time.monotonic() - started, 10)
 
     def test_proc_scan_finds_tagged_grouped_and_session_members_only(self):
         proc = self.workdir.parent / "fake-proc"
