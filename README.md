@@ -85,7 +85,7 @@
 | 7 写死通过的路径消失 | 通过 | `scripts/evaluate_terminal_bench.py` 不再有 executor；`test_no_hardcoded_pass_remains`；`evaluate_suite.py terminal-bench` 默认改为 `--synthetic`（输出标明「not a Terminal-Bench score」）；文档改见上 |
 | 8 全量离线测试不新增失败 | 通过 | 见下 |
 
-**测试结果（本机 macOS，清掉 `SAND_*`，删掉 `.baseagent/live_answers_checkpoint.json`，`PYTHONPATH=src .venv/bin/python -B -m pytest tests`）。** 改动前的 master 基线：`8 failed, 1229 passed, 2 skipped`。本分支（含三轮验收反馈的修复）：`9 failed, 1272 passed, 9 skipped`（多出的 7 个 skipped 是 `tests/test_tbench_harbor.py`，项目环境没装 Harbor）。8 个失败与 master 基线完全相同：本机 `/var` → `/private/var` 软链 4 个（`test_backends.py::…keeps_native_cas`、`test_coding.py::…blocks_second_writer`、`test_config.py::…empty_package_selection`、`test_evaluate_retrieval_cli.py::…omits_secrets`，把 `TMPDIR` 设为真实路径后都通过），回放录像不一致 3 个（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py` 的 `fake_client` / `timing_normalize`），以及已知的 `test_all_real_recordings_replay_offline`。新增的 1 个是 corpus_version 测试 `test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines`：语料是全仓库的 `*.md` / `*.py`，本分支的代码、文档和这一段都会改变它；按以往约定由 PM 合并时重绑，本分支没重绑。Harbor 环境里：`PYTHONPATH=src:tests:. .harbor-venv/bin/python -B -m unittest tests/test_tbench_harbor.py tests/test_tbench_runner.py tests/test_tbench_exec_backend.py tests/test_terminal_bench.py` 全部通过（53 条）。已有测试改动：只重写了 `tests/test_terminal_bench.py`（它原来断言的正是写死的 1/1）。
+**测试结果（本机 macOS，清掉 `SAND_*`，删掉 `.baseagent/live_answers_checkpoint.json`，`PYTHONPATH=src .venv/bin/python -B -m pytest tests`）。** 改动前的 master 基线：`8 failed, 1229 passed, 2 skipped`。本分支（含四轮验收反馈的修复）：`9 failed, 1272 passed, 9 skipped`（多出的 7 个 skipped 是 `tests/test_tbench_harbor.py`，项目环境没装 Harbor）。8 个失败与 master 基线完全相同：本机 `/var` → `/private/var` 软链 4 个（`test_backends.py::…keeps_native_cas`、`test_coding.py::…blocks_second_writer`、`test_config.py::…empty_package_selection`、`test_evaluate_retrieval_cli.py::…omits_secrets`，把 `TMPDIR` 设为真实路径后都通过），回放录像不一致 3 个（`test_project_assistant_coding.py::test_coding_success_and_fresh_disconnected_replay`、`test_record_coding_scenario.py` 的 `fake_client` / `timing_normalize`），以及已知的 `test_all_real_recordings_replay_offline`。新增的 1 个是 corpus_version 测试 `test_retrieval_evaluation.py::EvidenceValidationTests::test_all_gold_evidence_matches_real_ingested_files_and_lines`：语料是全仓库的 `*.md` / `*.py`，本分支的代码、文档和这一段都会改变它；按以往约定由 PM 合并时重绑，本分支没重绑。Harbor 环境里：`PYTHONPATH=src:tests:. .harbor-venv/bin/python -B -m unittest tests/test_tbench_harbor.py tests/test_tbench_runner.py tests/test_tbench_exec_backend.py tests/test_terminal_bench.py` 全部通过（53 条）。已有测试改动：只重写了 `tests/test_terminal_bench.py`（它原来断言的正是写死的 1/1）。
 
 ### PM 第一轮验收反馈的修复（2026-11-15）
 
@@ -111,6 +111,15 @@
 | --- | --- | --- | --- |
 | 模拟 `kill` 不兼容时，截止后仍写文件，却报告已停干净 | 停止脚本杀不掉进程时继续反复扫描，命令在这期间自己跑完（并写了文件），下一次扫描看不到活进程就返回 0。原测试的命令 `sleep 9` 比停止脚本的轮数上限还长，所以没暴露 | 进程消失不再当作「我们停掉了」：`kill` 报「No such process」以外的错，或杀过的进程约 0.5 秒后仍在，立即返回 75（失败）。单条命令的停止失败让这一轮按基础设施结束，整轮停止也失败，元数据 `agent_processes_stopped` 为 `false` | `test_an_unconfirmed_stop_is_never_reported_as_a_clean_timeout` 改用会在截止后写文件的命令（`sleep 3; touch ...`，超时 1 秒），并要求在命令自己结束前（2.8 秒内）就报失败：修复前「`kill` 不兼容」一项稳定失败，修复后连续 3 次通过；新增整轮测试 `test_a_stop_that_cannot_kill_ends_the_run_as_infrastructure`（修复前不报基础设施，修复后 `stop_reason` 为 `infrastructure`、`agent_processes_stopped` 为 `false`） |
 | 测试垫片的引号问题 | 模拟 `kill` 不兼容的 `sh` 垫片把 `kill` 函数定义和原脚本拼进同一个双引号字符串 | 原脚本作为单独参数传入、用 `eval` 原样执行，`$0` 和位置参数不变；手工核对过带空格、单引号、双引号的参数原样传递，`kill` 返回错误 | `tests/tbench_helpers.py` 的 `SHIMS["sh"]` |
+
+### PM 第四轮验收反馈的修复（2026-11-17）
+
+| 问题 | 原因 | 修复 | 证据 |
+| --- | --- | --- | --- |
+| 模拟 `kill` 返回成功、实际没停进程时，截止后写了文件、进程自然退出，却报「已确认停止」 | 上一轮的「约 0.5 秒」实际是扫描轮数（6 轮），一轮扫描的耗时随机器变化，进程可以在这段时间里自己跑完；而且「进程不见了」本来就分不出是被杀还是自己结束 | 第一次杀之前先证明 `kill` 有效：停止脚本起一个本该睡 20 秒的探针子进程，用同样的方式杀它，必须先在 `/proc` 里看到它活着、随后结束，且 `wait` 报告它被信号杀死（状态 > 128），否则返回 75。每轮杀完后用一次真实的 `sleep 0.3`，再逐个读被杀进程的状态，还活着就返回 75。本轮里有过一次停止失败，之后整轮停止即使看不到活进程，`agent_processes_stopped` 也记为 `false` | 新增垫片 `sh-noop-kill`（`kill` 返回 0、什么都不做）。`test_an_unconfirmed_stop_is_never_reported_as_a_clean_timeout` 的命令改为截止后 0.5 秒自然结束并写文件（`sleep 1.5; touch …`，超时 1 秒）：修复前「kill 返回成功但没杀」一项连续 3 次误报，修复后连续 3 次通过；`test_a_stop_that_cannot_kill_ends_the_run_as_infrastructure` 加了同一垫片：修复前 `agent_processes_stopped` 为 `true`，修复后为 `false`、`stop_reason` 为 `infrastructure` |
+| 本机 `/proc` 视图里看不到僵尸进程 | macOS 仍列出僵尸进程，但读不到它的详细信息，视图把它当成已消失 | 视图对见过、现在只剩列表项的进程写状态 `Z`，与 Linux `/proc` 一致 | `tests/tbench_helpers.py::ProcMirror.refresh` |
+
+**还没覆盖的情形。** 能骗过探针的 `kill`（对探针有效、对目标进程谎报成功），而目标进程恰好在那 0.3 秒里自己结束，仍会被当成已停住。这需要针对性的恶意环境，不是兼容性问题；真实 Linux 上杀进程失败的情况还没有实测，要在有 Docker 的机器上补。
 
 ### 下一步付费试跑还缺什么
 
