@@ -184,7 +184,8 @@ async def stop_everything(environment, backend) -> bool:
     """Stop everything the agent started in the environment, from the event loop.
 
     Covers commands still running and children that finished commands left in the background.
-    True only when the environment confirms nothing of the agent's is still alive.
+    True only when the environment confirms nothing of the agent's is still alive and no earlier
+    stop during the run failed (a process that was not stopped may have ended on its own since).
     """
     command = backend.stop_all_command() if backend is not None else None
     if command is None:
@@ -192,7 +193,7 @@ async def stop_everything(environment, backend) -> bool:
     try:
         result = await asyncio.wait_for(environment.exec(command, timeout_sec=int(STOP_TIMEOUT) + 5),
                                         STOP_TIMEOUT + 10)
-        return result.return_code == 0
+        return result.return_code == 0 and not backend.stop_failed
     except Exception:  # noqa: BLE001 -- the environment may already be gone
         return False
 
