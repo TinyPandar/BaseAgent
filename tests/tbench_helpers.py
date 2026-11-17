@@ -68,11 +68,14 @@ os.setsid()
 os.execvp(sys.argv[1], sys.argv[1:])' "$@"
 """,
     # A /bin/sh whose kill builtin accepts nothing, like a shell with an incompatible kill syntax.
+    # The original script is passed through as its own argument and run unchanged by eval, with
+    # its $0 and positional parameters; nothing is spliced into a quoted string.
     "sh": """#!/bin/bash
-if [ "$1" = -c ]; then
-  body=$2; shift 2
-  exec /bin/bash -c "kill() { echo 'kill: unsupported syntax' >&2; return 2; }
-$body" "$@"
+if [ "$1" = -c ] && [ $# -ge 2 ]; then
+  script=$2; shift 2
+  name=${1:-sh}; [ $# -gt 0 ] && shift
+  exec /bin/bash -c 'kill() { echo "kill: unsupported syntax" >&2; return 2; }
+script=$1; shift; eval "$script"' "$name" "$script" "$@"
 fi
 exec /bin/bash "$@"
 """,

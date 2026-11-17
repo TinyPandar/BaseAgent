@@ -187,7 +187,7 @@ exit $r
 # process group or session is one we recorded (that survives a cleared environment; a session
 # also survives `setpgid`). Each candidate is read from /proc/<pid>/stat and environ and killed
 # by pid: no pgrep, ps or group-kill syntax is needed, and success is never inferred from a
-# kill's exit status. Exit 0 only once a /proc scan finds nothing of ours alive (zombies
+# kill's exit status (only failure is). Exit 0 only once a /proc scan finds nothing of ours alive (zombies
 # excepted); 69 when there is no /proc to check with, 71 when the marker cannot be written,
 # 75 when something survives.
 _STOP = r"""
@@ -213,13 +213,30 @@ s=; IFS= read -r s 2>/dev/null < "$PROC/self/stat" || [ -n "$s" ] || exit 69
 set -- ${s##*') '}
 MINE=${4:-none}
 __SCAN__
-n=0
+# A process that disappears is not proof that this stop ended it: it may have run to its end
+# (and written) in the meantime. So a kill that fails for any reason but "No such process",
+# or a killed process still alive about 0.5 s later, fails the stop at once.
+kill_one() {
+  e=$(kill -9 "$1" 2>&1) && return 0
+  case $e in *"No such process"*) return 0;; esac
+  e=$(kill -s KILL "$1" 2>&1) && return 0
+  case $e in *"No such process"*) return 0;; esac
+  return 1
+}
+n=0; K=; stuck=0
 while :; do
   L=$(scan)
   [ -z "$L" ] && exit 0
+  again=
+  for p in $L; do case " $K " in *" $p "*) again=1;; esac; done
+  if [ -n "$again" ]; then stuck=$((stuck+1)); else stuck=0; fi
+  [ $stuck -gt 5 ] && exit 75
   n=$((n+1))
   [ $n -gt 50 ] && exit 75
-  for p in $L; do kill -9 "$p" 2>/dev/null || kill -s KILL "$p" 2>/dev/null; done
+  for p in $L; do
+    kill_one "$p" || exit 75
+    K="$K $p"
+  done
   sleep 0.1 2>/dev/null || sleep 1
 done
 """
