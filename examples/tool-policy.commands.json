@@ -1,0 +1,31 @@
+{
+  "default": "ask",
+  "tools": {
+    "read_file": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "search_files": "allow",
+    "git_status": "allow",
+    "git_diff": "allow",
+    "run_command": {
+      "default": "ask",
+      "precedence": "strictest",
+      "rules": [
+        {"action": "allow", "match": {"argv_prefix": ["git", "status"]}},
+        {"action": "allow", "match": {"argv_prefix": ["git", "diff"]}},
+        {"action": "ask", "match": {"argv_prefix": ["git", "push"]}},
+        {"action": "deny", "match": {"argv_prefix": ["rm"]}}
+      ]
+    },
+    "verify_command": {
+      "default": "ask",
+      "precedence": "strictest",
+      "rules": [
+        {"action": "allow", "match": {"argv_prefix": ["git", "status"]}},
+        {"action": "allow", "match": {"argv_prefix": ["git", "diff"]}},
+        {"action": "ask", "match": {"argv_prefix": ["git", "push"]}},
+        {"action": "deny", "match": {"argv_prefix": ["rm"]}}
+      ]
+    }
+  }
+}
