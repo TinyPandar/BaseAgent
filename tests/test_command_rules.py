@@ -196,6 +196,12 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(policy.action(state, "a", name, argv("git", "push")), "ask")
             self.assertEqual(policy.action(state, "a", name, argv("rm", "-rf", ".")), "deny")
             self.assertEqual(policy.action(state, "a", name, argv("make")), "ask")
+        # Background jobs (--background-jobs) are listed explicitly: rules on run_command do not
+        # carry over to start_job, so the example asks for every job and denies rm.
+        start = lambda *parts: json.dumps({"argv": list(parts)})
+        self.assertEqual(policy.action(state, "a", "start_job", start("rm", "-rf", ".")), "deny")
+        self.assertEqual(policy.action(state, "a", "start_job", start("git", "status")), "ask")
+        self.assertEqual(policy.action(state, "a", "start_job", start("python", "train.py")), "ask")
 
 
 class CompatibilityTests(unittest.TestCase):
