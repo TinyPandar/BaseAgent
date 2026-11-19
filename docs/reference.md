@@ -103,7 +103,7 @@ The kernel imports only the standard library, its own modules, and `jsonschema>=
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_kernel*.py" -v
-.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -B -m pytest tests -q
 ```
 
 Kernel extraction acceptance requires three consecutive successful runs of the full test command. Differential tests use a frozen copy of the `v0.1-sync-baseline` loop under `tests/fixtures/`; production code does not execute that copy.
@@ -786,7 +786,7 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current roadmap and acceptance
 Run local tests without a model key:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -B -m pytest tests -q
 ```
 
 ## 分词器估算预算

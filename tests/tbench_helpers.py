@@ -11,10 +11,17 @@ import sys
 import tempfile
 import threading
 import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from baseagent.backends import exec_backend
+
+# The fake environments run a POSIX shell here and the stop script reads /proc (Linux) or a
+# mirror built from libproc (macOS). Elsewhere (Windows) every importing module is skipped,
+# under pytest and unittest alike, instead of failing collection.
+if not os.path.exists("/proc/self/stat") and not ctypes.util.find_library("proc"):
+    raise unittest.SkipTest("needs /proc (Linux) or libproc (macOS) and a POSIX shell")
 
 
 class ShellEnvironment:

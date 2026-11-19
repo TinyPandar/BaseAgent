@@ -50,6 +50,13 @@ frontends = [
 # project's hub 1.x, so it is not an install extra. Use a separate environment
 # when running --nli. Unit tests mock that release and do not download weights.
 
+# Installed by `uv sync` by default. Nine test modules use pytest fixtures, and
+# pytest also runs the unittest-style modules, so it is the full-suite runner.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13.0"]
 build-backend = "uv_build"

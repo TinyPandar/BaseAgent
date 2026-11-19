@@ -140,7 +140,7 @@ Kernel 的直接依赖只允许自身、标准库以及 `kernel/tools.py` 中的
 常用验证入口（PowerShell；bash 把 `.\.venv\Scripts\python.exe` 换成 `.venv/bin/python`）：
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -B -m pytest tests -q
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_rag*.py" -v
 .\.venv\Scripts\python.exe -B scripts/demo_replay.py
 .\.venv\Scripts\python.exe -B scripts/demo_knowledge_search.py

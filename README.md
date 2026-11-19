@@ -242,10 +242,12 @@ print(state.status, state.final_answer)
 
 ## 运行测试
 
-测试用标准库 `unittest`，不需要密钥，不联网：
+测试不需要密钥，不联网。全量用 pytest（`uv sync` 默认装上 dev 依赖组里的 pytest）：有 9 个模块用了 pytest 的 fixture，`unittest` 加载不了它们；其余用 `unittest` 写的模块 pytest 也照常运行。
 
 ```bash
-.venv/bin/python -B -m unittest discover -s tests -v                       # 全量
+.venv/bin/python -B -m pytest tests -q                                     # 全量
 .venv/bin/python -B -m unittest discover -s tests -p "test_kernel*.py" -v  # 内核
 .venv/bin/python -B -m unittest discover -s tests -p "test_rag*.py" -v     # RAG
 ```
+
+`unittest discover` 仍能跑用 `unittest` 写的模块，但会把那 9 个 pytest 模块报成导入失败，不能当全量。两种跑法都不会写真实的 MCP 信任库（`tests/config_isolation.py`）。
