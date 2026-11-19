@@ -24,7 +24,9 @@ and every line is split into segments of at most 1000 characters.
 
 import json
 import os
+import shutil
 import tempfile
+import weakref
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
@@ -102,8 +104,11 @@ class SpillStore:
         if self.store is not None and getattr(self.store, "durable", False):
             return self.store.path.parent / "spill" / session_id
         if self._temporary is None:
-            self._temporary = tempfile.TemporaryDirectory(prefix="baseagent-spill-")
-        return Path(self._temporary.name) / session_id
+            # Same lifetime as before (removed with this store, or at exit) without the
+            # ResourceWarning TemporaryDirectory emits when it is only garbage collected.
+            self._temporary = tempfile.mkdtemp(prefix="baseagent-spill-")
+            weakref.finalize(self, shutil.rmtree, self._temporary, ignore_errors=True)
+        return Path(self._temporary) / session_id
 
     def directory(self, state):
         root = self.root_path(state)
