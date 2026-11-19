@@ -255,12 +255,18 @@ def test_all_real_recordings_replay_offline(capsys, monkeypatch):
     from applications.project_assistant.evaluation import coding
     from scripts.record_coding_scenario import disconnected
 
-    # Historical cassettes bind the exact tool schemas offered at recording time.
+    # Historical cassettes bind the exact system prompt and tool schemas offered at
+    # recording time (2026-10). Later CLI additions are hidden for this replay only:
+    # grep/glob (10-22), git_status (11-10), apply_patch (11-13), prompt text (11-07/08).
+    with open("tests/cassettes/coding_scenario/run_1.json", encoding="utf-8") as handle:
+        first = json.loads([line for line in handle if line.strip()][1])
+    monkeypatch.setattr(coding, "CODING_SYSTEM_PROMPT", first["request"]["messages"][0]["content"])
     capabilities = coding._capabilities
+    added_later = {"grep", "glob", "git_status", "apply_patch"}
 
     def recorded_capabilities(*args, **kwargs):
         tools = capabilities(*args, **kwargs)
-        return tools.subset(name for name in tools._tools if name not in {"grep", "glob"})
+        return tools.subset(name for name in tools._tools if name not in added_later)
 
     monkeypatch.setattr(coding, "_capabilities", recorded_capabilities)
     with disconnected():

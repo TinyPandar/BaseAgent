@@ -209,7 +209,7 @@ class CassetteModel:
                 self._index += 1
                 if "error" in row:
                     raise _decode_error(row["error"])
-                return _decode(row["response"], messages, tools)
+                return _decode(self._restore(row["response"]), messages, tools)
             row = {"seq": len(self._rows), "request": normalized, "request_hash": digest}
             try:
                 value = call()
@@ -227,6 +227,11 @@ class CassetteModel:
             return value
         finally:
             self._lock.release()
+
+    def _restore(self, value):
+        # Recorded output is redacted; hand placeholders back as real paths on replay.
+        restore = getattr(self.redactor, "restore", None)
+        return restore(value) if restore else value
 
     def complete(self, messages, tools=None):
         return self._invoke("complete", messages, tools, lambda: self._model.complete(messages, tools))
@@ -302,8 +307,8 @@ class CassetteModel:
                 for chunk in row.get("chunks") or ():
                     if cancellation is not None:
                         cancellation.check()
-                    yield StreamDelta.from_dict(chunk)
-                return _decode(row["response"], messages, tools)
+                    yield StreamDelta.from_dict(self._restore(chunk))
+                return _decode(self._restore(row["response"]), messages, tools)
             row = {"seq": len(self._rows), "request": normalized, "request_hash": digest}
             chunks = []
             try:

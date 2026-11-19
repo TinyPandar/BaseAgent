@@ -60,6 +60,26 @@ class Redactor:
             return result
         return value
 
+    def restore(self, value):
+        """Undo path placeholders in replayed model output.
+
+        Recorded responses are redacted like requests, so a tool call that named
+        a file under the home directory would replay as a literal ``<HOME>/...``
+        path and fail. Replay hands the model's output back with the current
+        home (forward slashes, valid on Windows and safe inside JSON strings).
+        Secrets and other placeholders stay redacted.
+        """
+        if isinstance(value, str):
+            return self.restore_text(value)
+        if isinstance(value, list):
+            return [self.restore(item) for item in value]
+        if isinstance(value, dict):
+            return {self.restore(key): self.restore(item) for key, item in value.items()}
+        return value
+
+    def restore_text(self, text):
+        return text.replace("<HOME>", self._home.replace("\\", "/")) if self._home else text
+
     def assert_safe(self, text):
         # Parse JSON before scanning so escaped Windows paths are recognized.
         for line in text.splitlines():

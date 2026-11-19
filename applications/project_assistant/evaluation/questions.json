@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "bd4599782042a316",
+  "corpus_version": "0eab02654ea0a2b2",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "corpus_version_note": "2026-11-17 Harbor integration on d9c3b22 (plan/harbor-integrate), with separate retained local Docker smoke and README/reference alignment. Rebound with scripts/rebind_corpus_version.py --write: 2a25ece0dca30250 -> bd4599782042a316. All 101 evidence hashes still match their cited lines; 0 references moved. Gold ranges and summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {

@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from applications.project_assistant.evaluation.coding import (
+    PYTHON,
     run_scenario,
     scenario_workspace,
 )
@@ -102,6 +103,10 @@ class BoundedModel:
         return response
 
 
+# Interpreter of the host that recorded tests/cassettes/coding_scenario (2026-10).
+RECORDED_PYTHON = "/workspace/BaseAgent/.venv/bin/python"
+
+
 class EndpointRedactor(Redactor):
     def __init__(self, root, key="", base_url=""):
         super().__init__(patterns=(r"\b[0-9a-f]{32}\b",), secrets=([key] if key else []))
@@ -110,6 +115,10 @@ class EndpointRedactor(Redactor):
         self.artifact_hashes = {}
 
     def text(self, text):
+        # The check interpreter is machine-specific. Store it as <PYTHON>; the
+        # original recordings named the recording host's venv literally.
+        for interpreter in (PYTHON, RECORDED_PYTHON):
+            text = text.replace(interpreter, "<PYTHON>")
         # Accept the old path placeholder without conflating arbitrary secrets.
         text = text.replace(self.root, "<WORKSPACE>").replace("<SECRET>/", "<WORKSPACE>/")
         if self.base_url:
@@ -118,11 +127,16 @@ class EndpointRedactor(Redactor):
             text = text.replace(original, normalized)
         return super().text(text)
 
+    def restore_text(self, text):
+        # Replayed tool calls must run this machine's interpreter.
+        return super().restore_text(text.replace("<PYTHON>", PYTHON))
+
     def value(self, value):
         if isinstance(value, list):
-            # A report can quote a traceback containing the temporary root. Its
-            # original bytes/hash are lost after redaction. Compare the known
-            # write content and its derived bytes/hash in the same path namespace.
+            # A report can quote a traceback containing the temporary root, or the
+            # check interpreter. Its original bytes/hash are lost after redaction.
+            # Compare the known write content and its derived bytes/hash in the
+            # same path namespace.
             reports = {}
             for message in value:
                 if not isinstance(message, dict):
@@ -132,9 +146,9 @@ class EndpointRedactor(Redactor):
                     if function["name"] == "write_file":
                         args = json.loads(function["arguments"])
                         content = args.get("content", "")
-                        if args.get("path") == "REPORT.md" and any(
+                        if args.get("path") == "REPORT.md" and (any(
                             root + "/" in content for root in (self.root, "<SECRET>", "<WORKSPACE>")
-                        ):
+                        ) or any(python in content for python in (PYTHON, RECORDED_PYTHON, "<PYTHON>"))):
                             reports[call["id"]] = self.text(content).encode("utf-8")
             value = list(value)
             for index, message in enumerate(value):

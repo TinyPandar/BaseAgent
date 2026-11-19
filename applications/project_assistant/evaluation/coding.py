@@ -29,7 +29,10 @@ from baseagent.tools.workspace import Workspace, apply_edits
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 FIXTURE = Path(__file__).parent / "fixtures" / "coding"
-ARGV = [sys.executable, "-I", "-B", "check_addition.py"]
+# Forward slashes keep the interpreter path identical inside JSON tool arguments
+# on Windows; cassettes store it as <PYTHON> (scripts/record_coding_scenario.py).
+PYTHON = Path(sys.executable).as_posix()
+ARGV = [PYTHON, "-I", "-B", "check_addition.py"]
 PATHS = ["sample.py", "check_addition.py"]
 PATCH = [{"old_text": "return a - b", "new_text": "return a + b"}]
 REQUIREMENTS = {"require_plan": True,
