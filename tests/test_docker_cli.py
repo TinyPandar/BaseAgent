@@ -15,7 +15,7 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from chat_helpers import RUNNERS, ChatTestCase
+from chat_helpers import RUNNERS, ChatTestCase, require_frontend
 from checkpoint_helpers import Script, current_hash, tool_call, write_call, writes
 from test_main_agent import Duplex, Gate, delegate
 
@@ -619,6 +619,7 @@ class FailureTests(DockerCliCase):
                     return 0
 
                 model = Script([writes(self.root, ("a.txt", f"{ui}\n")), {"content": "ok"}])
+                require_frontend(self, ui)
                 with patch(RUNNERS[ui], frontend), patch("baseagent.main._missing_frontend", return_value=None):
                     code = main(["--root", str(self.root), "--db", str(self.db), *DOCKER, "--session", ui,
                                  "--mode", "edit", "--no-main-agent", "--ui", ui], model_factory=lambda args: model)

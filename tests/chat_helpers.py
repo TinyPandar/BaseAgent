@@ -21,6 +21,16 @@ HAS_WEB = importlib.util.find_spec("fastapi") is not None and importlib.util.fin
 NO_TEXTUAL = "textual is not installed (optional 'tui' extra): uv sync --extra tui"
 NO_WEB = "fastapi/uvicorn are not installed (optional 'web' extra): uv sync --extra web"
 RUNNERS = {"cli": "baseagent.cli_chat.run_chat", "tui": "baseagent.tui.app.run_tui", "web": "baseagent.web.server.serve"}
+MISSING_EXTRA = {"cli": None, "tui": None if HAS_TEXTUAL else NO_TEXTUAL, "web": None if HAS_WEB else NO_WEB}
+
+
+def require_frontend(test, ui):
+    """Skip the current test or subtest when the optional extra behind ``ui`` is not installed.
+
+    Patching RUNNERS[ui] imports baseagent.tui.app / baseagent.web.server, which fails without it.
+    """
+    if MISSING_EXTRA[ui]:
+        test.skipTest(MISSING_EXTRA[ui])
 
 
 def wait_until(predicate, timeout=WAIT, message="condition was never met"):
@@ -46,6 +56,7 @@ class ChatTestCase(MainAgentTestCase):
         self.stderr = self.enterContext(contextlib.redirect_stderr(io.StringIO()))
 
     def session(self, argv, model, ui="cli"):
+        require_frontend(self, ui)
         captured = {}
 
         def capture(session, **options):

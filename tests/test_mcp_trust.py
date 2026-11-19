@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config_isolation  # noqa: F401 -- also under plain unittest
+from chat_helpers import require_frontend
 from mcp_helpers import Script, server_entry, write_config
 
 from baseagent.main import main
@@ -137,6 +138,7 @@ class InteractiveTests(TrustCase):
     def test_tui_and_web_ask_on_the_terminal_before_the_frontend_starts(self):
         for ui, runner in (("tui", "baseagent.tui.app.run_tui"), ("web", "baseagent.web.server.serve")):
             with self.subTest(ui=ui):
+                require_frontend(self, ui)
                 seen = {}
 
                 def capture(session, **options):
