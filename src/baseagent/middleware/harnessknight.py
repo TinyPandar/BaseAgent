@@ -77,7 +77,7 @@ def infer_impacts(name: str, arguments: dict) -> list[dict]:
         return _patch_impacts(arguments)
     if name in {"read_file", "grep", "glob"}:
         return [{"kind": "file", "target": target("path", "pattern"), "operation": "read"}]
-    if name in {"run_command", "verify_command"}:
+    if name in {"run_command", "verify_command", "start_job"}:
         argv = arguments.get("argv", arguments.get("command", []))
         command = " ".join(str(x) for x in argv) if isinstance(argv, list) else str(argv)
         impacts = [{"kind": "agent", "target": (command or name)[:8192], "operation": "execute"}]
