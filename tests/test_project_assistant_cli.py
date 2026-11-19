@@ -6,6 +6,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from applications.project_assistant.app import main
 from baseagent.llm.response import ModelResponse, TokenUsage
 from baseagent.session import SessionStore

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.state import RunStatus, State
 from baseagent.main import main

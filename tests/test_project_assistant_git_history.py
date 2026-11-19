@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from applications.project_assistant.app import main
 from applications.project_assistant import git_history as module
 from applications.project_assistant.git_history import GitHistory, git_history_package

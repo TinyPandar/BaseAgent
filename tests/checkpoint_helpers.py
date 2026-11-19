@@ -4,6 +4,8 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.tools.workspace import Workspace
 
 

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.jsondata import object_from_json, read_json_object
 from baseagent.main import main

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.middleware.harnessknight import (
     HarnessKnightClient, HarnessKnightMiddleware, HarnessKnightToolPolicy,
     HarnessUnavailable, HttpTransport, build_event, idempotency_key, infer_impacts,

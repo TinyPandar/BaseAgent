@@ -10,6 +10,8 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.completion import CompletionPolicy
 from baseagent.agent.state import RunStatus

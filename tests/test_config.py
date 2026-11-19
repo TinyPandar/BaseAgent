@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.config import load_harness_config
 from baseagent.main import main
 from baseagent.session import SessionStore

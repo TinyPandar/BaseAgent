@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.kernel.errors import AuthError, ModelTimeoutError
 from baseagent.main import _list_preview, main
 from baseagent.session import SessionStore

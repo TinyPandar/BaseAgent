@@ -9,6 +9,8 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from tokenizers import Tokenizer, models, pre_tokenizers
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.scope import ExecutionScope
 from baseagent.agent.state import State, RunStatus

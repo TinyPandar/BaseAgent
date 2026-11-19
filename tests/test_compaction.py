@@ -8,6 +8,8 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.compaction import (
     ModelSummarizer,

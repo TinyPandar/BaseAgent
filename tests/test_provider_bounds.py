@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.cancellation import CancellationToken, Cancelled
 from baseagent.agent.state import RunStatus
@@ -124,7 +126,11 @@ class ProviderBoundTests(unittest.TestCase):
             return main()
 
     def environment(self):
-        return patch.dict(os.environ, {"DEEPSEEK_MODEL": "deepseek-flash", "DEEPSEEK_BASE_URL": "https://api.deepseek.com", "DEEPSEEK_API_KEY": "fake-key"})
+        # Any BASEAGENT_LLM_* value switches main() to the generic configuration; a developer
+        # shell (or an already loaded .env) must not turn these DeepSeek cases into that one.
+        values = {key: value for key, value in os.environ.items() if not key.startswith("BASEAGENT_LLM_")}
+        values.update({"DEEPSEEK_MODEL": "deepseek-flash", "DEEPSEEK_BASE_URL": "https://api.deepseek.com", "DEEPSEEK_API_KEY": "fake-key"})
+        return patch.dict(os.environ, values, clear=True)
 
     def test_cli_small_budget_refuses_before_adapter_or_metadata_network(self):
         with tempfile.TemporaryDirectory() as directory, self.environment(), patch("baseagent.main.load_dotenv"), patch("baseagent.main.Model", side_effect=AssertionError("unexpected adapter")), patch("socket.socket.connect", side_effect=AssertionError("unexpected network")):

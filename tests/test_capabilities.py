@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import os
 import subprocess
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.capabilities import assemble_capabilities, ToolPackage, SkillCatalog, SkillMiddleware
 from baseagent.session import SessionStore

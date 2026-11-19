@@ -11,6 +11,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent import run_agent
 from baseagent.agent.events import event
 from baseagent.agent.state import RunStatus, State

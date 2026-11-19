@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- no real .env or trust store, also under unittest
+
 from baseagent.agent.cancellation import Cancelled
 from baseagent.agent.errors import BudgetExceeded
 from baseagent.agent.router import MAIN_AGENT_PROMPT, SEQUENTIAL_MAIN_AGENT_PROMPT, is_main_agent_session

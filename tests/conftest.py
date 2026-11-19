@@ -1,9 +1,11 @@
-"""Test-wide isolation: the MCP trust store never touches the real user configuration.
+"""Test-wide isolation: no real MCP trust store and no real ``.env`` (config_isolation.py).
 
-This gives each pytest test its own directory. Plain ``unittest`` relies on config_isolation.py.
+This also gives each pytest test its own trust-store directory.
 """
 
 import pytest
+
+import config_isolation  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
