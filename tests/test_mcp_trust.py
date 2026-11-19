@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- also under plain unittest
 from mcp_helpers import Script, server_entry, write_config
 
 from baseagent.main import main

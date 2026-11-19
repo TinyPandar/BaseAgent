@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- also under plain unittest
 from chat_helpers import HAS_TEXTUAL, HAS_WEB, NO_TEXTUAL, NO_WEB, RUNNERS, join_background, wait_until
 from mcp_helpers import ECHO, NOTE, Script, process_gone, read_pid, server_entry, tool_call, write_config
 from test_main_agent import WAIT, Duplex, delegate, feed

@@ -9,6 +9,7 @@ import os
 from hashlib import sha256
 from unittest.mock import patch
 
+import config_isolation  # noqa: F401 -- also under plain unittest
 from checkpoint_helpers import Script, current_hash, tool_call
 from mcp_helpers import write_config
 from test_docker_cli import DOCKER, DockerCliCase

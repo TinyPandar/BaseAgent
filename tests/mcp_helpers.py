@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import config_isolation  # noqa: F401 -- trust records never reach the real configuration
 from baseagent.mcp import McpManager, ServerConfig
 from baseagent.middleware import AgentMiddleware
 

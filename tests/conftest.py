@@ -1,4 +1,7 @@
-"""Test-wide isolation: the MCP trust store never touches the real user configuration."""
+"""Test-wide isolation: the MCP trust store never touches the real user configuration.
+
+This gives each pytest test its own directory. Plain ``unittest`` relies on config_isolation.py.
+"""
 
 import pytest
 
