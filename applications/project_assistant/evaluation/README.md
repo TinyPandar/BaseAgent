@@ -397,6 +397,22 @@ the reference. The hash was unchanged. Every other stored `evidence_sha256`
 still matched. Gold ranges and answer summaries were not regenerated. Published
 hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-19, message types / command rules / background jobs)
+
+`corpus_version` moved from `2f611149d3befba7` to `95e0d8db1de7a2d4` when
+`feat/message-types`, `feat/command-rules` and `feat/background-jobs` were
+merged together with ROADMAP.md and the framework comparison doc. The rebind
+check found one line drift (`src/baseagent/main.py:346-347` to `347-348`, hash
+unchanged), applied by `--write`, and one changed citation that needed review:
+`src/baseagent/capabilities/assembly.py:24-41`, the whole
+`assemble_capabilities` function, gained five lines that add the opt-in job
+tools. The answers of concept-03 (assembly grants no permissions) and
+cross_file-05 (assembly invokes the package install callback and records the
+contract) still hold, so the reference was extended to `24-46` and its hash
+recomputed from the new slice. All 101 stored `evidence_sha256` values match.
+Gold summaries were not regenerated. Published hybrid MRR 0.845 was not
+recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in

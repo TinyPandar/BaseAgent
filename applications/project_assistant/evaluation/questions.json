@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "corpus_version": "2f611149d3befba7",
+  "corpus_version": "95e0d8db1de7a2d4",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
-  "corpus_version_note": "2026-11-17 Harbor integration on d9c3b22 (plan/harbor-integrate), with separate retained local Docker smoke and README/reference alignment. Rebound with scripts/rebind_corpus_version.py --write: 2a25ece0dca30250 -> bd4599782042a316. All 101 evidence hashes still match their cited lines; 0 references moved. Gold ranges and summaries were not regenerated. Published hybrid MRR was not recomputed.",
+  "corpus_version_note": "2026-11-19 merge of feat/message-types, feat/command-rules and feat/background-jobs plus ROADMAP/docs (86b2191). Rebound with scripts/rebind_corpus_version.py --write: 2f611149d3befba7 -> 95e0d8db1de7a2d4; 1 reference moved by line drift (main.py:346-347 -> 347-348, hash unchanged). Reviewed by hand: assembly.py:24-41 -> 24-46 because opt-in job tools were added inside assemble_capabilities; concept-03 and cross_file-05 answers still hold; hash recomputed for the new range. All 101 evidence hashes match. Gold summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",
@@ -16,7 +16,7 @@
     "applications/project_assistant/access.py:18-27": "cabc78d4ce97b2dd61a5761d081474b92b5d4243c183196f586ebeaee883a34d",
     "applications/project_assistant/access.py:11-15": "f9dffef5b8dc4978de2b983b666871b98bdf0b70fe1179a7004dc324845da561",
     "src/baseagent/capabilities/assembly.py:1-7": "40df81f4ffcb0b35b8b4044af12ed420771d630aefda35c5ffb7c0c3c45a716e",
-    "src/baseagent/capabilities/assembly.py:24-41": "0574b00f856298ed188ae41942e613ebf08e32f54b0fbd82f60b97e8fe099267",
+    "src/baseagent/capabilities/assembly.py:24-46": "70607d1e9eefa5a3c3ac7e6cf88d642335bc79269549c0f9d58839c6ff88e39a",
     "applications/project_assistant/tools.py:69-88": "d6bb1f45d8d1bbbaa061e1341981f45f397a9d9713c42594788ae27f0efe1321",
     "applications/project_assistant/rag/retrieval.py:88-134": "a88964fadd961f28320c3b78cdfab0f83c4e840a6d961a5536ca13852af19f49",
     "applications/project_assistant/rag/retrieval.py:141-147": "3e0b2d5e4b9073b988a0dc4d7b77785f91542a7b77487388f1ad96f569606057",
@@ -104,7 +104,7 @@
     "applications/project_assistant/rag/retrieval.py:88-101": "ab7f9431cae9073e55745dad74e056a05c3e3fc3252189cf5606c3c25fb97799",
     "DEVELOPMENT_HANDOFF.md:72-72": "3d443d21d661f56fc633cb9188b5d8a0b71d927d032526f5adbdf5a379959e63",
     "applications/project_assistant/config.py:95-97": "81acf6bdf2267e6aabc9a76418e524d711571cfb9f813090603920c424753e89",
-    "src/baseagent/main.py:346-347": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
+    "src/baseagent/main.py:347-348": "09c062bda6e2e3b042a37441650d8e9a5fec96e3c84e48162196e98a83ad51b4"
   },
   "questions": [
     {
@@ -208,7 +208,7 @@
       "answer_summary": "No; capability assembly composes tools without granting permissions.",
       "expected_evidence": [
         "src/baseagent/capabilities/assembly.py:1-7",
-        "src/baseagent/capabilities/assembly.py:24-41"
+        "src/baseagent/capabilities/assembly.py:24-46"
       ]
     },
     {
@@ -310,7 +310,7 @@
       "answer_summary": "knowledge_package returns ToolPackage with an install callback; assemble_capabilities invokes it and records the contract.",
       "expected_evidence": [
         "applications/project_assistant/tools.py:104-116",
-        "src/baseagent/capabilities/assembly.py:24-41"
+        "src/baseagent/capabilities/assembly.py:24-46"
       ]
     },
     {
@@ -414,7 +414,7 @@
       "answer_summary": "No. Built-ins remain coding, memory and shared-memory; knowledge is an application extension.",
       "expected_evidence": [
         "DEVELOPMENT_HANDOFF.md:40-40",
-        "src/baseagent/main.py:346-347",
+        "src/baseagent/main.py:347-348",
         "applications/project_assistant/tools.py:104-116"
       ]
     },
