@@ -25,7 +25,12 @@ def assemble_capabilities(workspace, *, packages=None, extensions=(), skills=Non
     selected = tuple(BUILTIN_PACKAGES if packages is None else packages)
     if len(set(selected)) != len(selected) or any(name not in BUILTIN_PACKAGES for name in selected):
         raise ValueError("unknown or duplicate built-in tool package")
-    registry = coding_tools(workspace).subset([tool for name in selected for tool in BUILTIN_PACKAGES[name]])
+    names = [tool for name in selected for tool in BUILTIN_PACKAGES[name]]
+    if getattr(workspace, "background_jobs", False):
+        # Opt-in job tools are not a package, so default package lists and contracts stay unchanged.
+        from baseagent.tools.jobs import JOB_TOOLS
+        names.extend(JOB_TOOLS)
+    registry = coding_tools(workspace).subset(names)
     contract = {**registry.capability_contract, "tool_packages": list(selected), "extensions": []}
     seen = set(selected)
     for package in extensions:

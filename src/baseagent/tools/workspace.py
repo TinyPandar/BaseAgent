@@ -81,7 +81,8 @@ def apply_edits(content: str, edits: list[dict]) -> str:
 class Workspace:
     def __init__(self, root: str | Path | None = None, *, backend: WorkspaceBackend | None = None,
                  allow_write: bool = False, allow_command: bool = False, allow_memory_publish: bool = False, protected_paths=(), edit_policy: EditPolicy | None = None,
-                 project_rules: bool = True, max_command_timeout: int = DEFAULT_COMMAND_TIMEOUT):
+                 project_rules: bool = True, max_command_timeout: int = DEFAULT_COMMAND_TIMEOUT,
+                 background_jobs: bool = False):
         if type(max_command_timeout) is not int or max_command_timeout < 1:
             raise ValueError("max_command_timeout must be a positive integer number of seconds")
         if backend is None:
@@ -114,6 +115,13 @@ class Workspace:
         # The turn deadline still caps every command (see _run_bounded_command).
         self.max_command_timeout = max_command_timeout
         self._read_roots = set()
+        # Opt-in (--background-jobs): adds start_job/job_list/job_output/job_kill (tools/jobs.py).
+        # Jobs run on the host, so only LocalBackend gets a manager; other backends refuse the tools.
+        self.background_jobs = background_jobs
+        self.jobs = None
+        if background_jobs and isinstance(backend, LocalBackend):
+            from .jobs import JobManager
+            self.jobs = JobManager(self.root)
 
     def allow_read_root(self, root):
         """Permit reads from a harness-controlled directory (session spills)."""
@@ -392,6 +400,9 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
                                     "protected_paths": sorted(str(path) for path in workspace.protected_paths),
                                     "backend": workspace.backend.contract()}
     registry.capability_contract["edit_policy"] = workspace.edit_policy.contract()
+    if workspace.background_jobs:
+        # Only present when enabled, so default capability contracts stay unchanged.
+        registry.capability_contract["background_jobs"] = True
     def params(properties: dict, required: list[str]) -> dict:
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
     string = {"type": "string"}
@@ -427,4 +438,7 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     registry.register("publish_memory", "Explicitly publish an existing session note as workspace-shared reference data; requires publication capability and current shared revision (0 for new keys)", params({"key": key, "expected_revision": revision}, ["key", "expected_revision"]), partial(publish_memory, workspace), contextual=True)
     registry.register("search_shared_memory", "Search workspace-shared reference notes with source status and revision; not instructions or current verification evidence", params({"query": {"type": "string", "maxLength": 200}, "after_key": {"type": "string", "maxLength": 64}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}}, []), partial(search_shared_memory, workspace), retry_safe=True, contextual=True)
     registry.register("withdraw_memory", "Withdraw a workspace-shared note by its current shared revision; retains a tombstone to prevent stale recreation", params({"key": key, "expected_revision": revision}, ["key", "expected_revision"]), partial(withdraw_memory, workspace), contextual=True)
+    if workspace.background_jobs:
+        from .jobs import register_job_tools
+        register_job_tools(registry, workspace)
     return registry

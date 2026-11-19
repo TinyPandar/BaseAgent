@@ -330,6 +330,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--tool-retries", type=int, default=0, help="Retries of explicitly safe, retryable tool failures (0-4)")
     parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
+    parser.add_argument("--background-jobs", action=argparse.BooleanOptionalAction, default=False, help="Add start_job/job_list/job_output/job_kill: long-running argv commands that outlive the turn (requires --allow-command to start or kill; local backend only; jobs end with this process); see docs/background_jobs.md")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
     parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
     parser.add_argument("--output-format", choices=list(OUTPUT_FORMATS), default="text", help="One-shot prompt or --resume output: text (default, unchanged), json (one object on stdout) or jsonl (metadata events, then a result line); see docs/output.md")
@@ -566,6 +567,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     final_rules = None
     backend = None
     backend_info = None
+    jobs = None
     signals = {}
     try:
         if args.list_tool_packages:
@@ -711,6 +713,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         protected = [store.path, Path(str(store.path) + "-wal"), Path(str(store.path) + "-shm"), Path(str(store.path) + "-journal"), store.lock_dir]
         project_rules = args.project_rules is not False
         if args.backend == "docker":
+            if args.background_jobs:
+                # Jobs would run on the host, not in the container: refuse instead of escaping the sandbox.
+                raise ValueError("--background-jobs is not supported with --backend docker; jobs would run on the host")
             if not args.accept_config_changes and existing is not None and existing.status != "completed":
                 planned = {"kind": "docker", "image": args.docker_image or DEFAULT_DOCKER_IMAGE,
                            "network": args.docker_network or "none"}
@@ -757,7 +762,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                     and (existing.metadata or {}).get("execution_backend")):
                 raise ValueError(_backend_mismatch(existing, None, args.session))
             workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected,
-                                  project_rules=project_rules)
+                                  project_rules=project_rules, background_jobs=args.background_jobs)
+            jobs = workspace.jobs
         from baseagent.tools.instructions import describe_rules, rules_summary
         rules = rules_summary(workspace, enabled=project_rules)
         if rules is not None and rules.get("truncated") and project_rules:
@@ -860,6 +866,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes),
                   BackendTagMiddleware({key: backend_info[key] for key in ("kind", "image", "network")} if backend_info else None)]
+        if jobs is not None:
+            from baseagent.tools.jobs import JobNoticeMiddleware
+            layers.append(JobNoticeMiddleware(jobs))
         if args.harness_url:
             from baseagent.middleware.harnessknight import install_harnessknight
             policy, layers = install_harnessknight(policy, layers, url=args.harness_url,
@@ -1153,6 +1162,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         return 1
     finally:
         machine.stop()
+        if jobs is not None:
+            # Session over (normal end, error, Ctrl+C at exit, /exit): background jobs end with it.
+            jobs.close()
         if mcp is not None:
             # Session or run over (normal end, error, Ctrl+C): stop every server process group.
             mcp.close()

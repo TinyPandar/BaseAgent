@@ -71,6 +71,9 @@ class ExecutionGuidanceMiddleware(AgentMiddleware):
                 disabled.add('apply_patch')
         if not self.workspace.allow_command:
             disabled.update(('run_command', 'verify_command'))
+            # Opt-in job tools: listed only when registered, so default prompts stay byte-identical.
+            disabled.update(name for name in ('start_job', 'job_kill')
+                            if any(tool['function']['name'] == name for tool in request.tools))
         if not self.workspace.allow_memory_publish:
             disabled.update(('publish_memory', 'withdraw_memory'))
         instructions = TASK_GUIDANCE + '\nDisabled tools: ' + ', '.join(sorted(disabled))
