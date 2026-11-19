@@ -1,0 +1,4 @@
+# Check out text files with LF everywhere, including Windows with core.autocrlf=true.
+# The retrieval corpus_version and the gold-evidence hashes are computed from file bytes,
+# and several tests compare exact bytes, so a CRLF checkout made them fail on Windows.
+* text=auto eol=lf
