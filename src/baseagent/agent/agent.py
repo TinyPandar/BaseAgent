@@ -837,6 +837,11 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         def parallel_readonly_enabled(self):
             return _parallel_config(state)["readonly"]
 
+        def tool_calls_superseded(self, call_ids):
+            # Persist the kernel's synthetic replies together with a metadata event.
+            checkpoint("tool_calls_superseded", call_ids=list(call_ids))
+            return AgentEvent("tool_calls_superseded", data={"call_ids": list(call_ids)})
+
         def turn_finished(self):
             checkpoint("turn_finished", status=state.status, model_calls=state.model_calls, tool_calls=state.tool_calls,
                        total_tokens=state.total_tokens)

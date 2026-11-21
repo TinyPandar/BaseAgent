@@ -9,6 +9,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from .messages import check_tool_pairing
+
 
 class ContextLimitExceeded(ValueError):
     pass
@@ -23,35 +25,18 @@ def input_bytes(messages: list[dict], tools: list[dict]) -> int:
 
 
 def _exchanges(messages: list[dict]) -> list[list[dict]]:
-    """Validate each assistant/tool exchange and keep it indivisible."""
+    """Validate each assistant/tool exchange and keep it indivisible.
+
+    Pairing rules are those of ``check_tool_pairing`` (ToolPairingError is a
+    ValueError); once valid, every tool reply directly follows its batch.
+    """
+    check_tool_pairing(messages, allow_pending=False)
     groups = []
-    pending = set()
-    used = set()
     for message in messages:
-        role = message.get("role")
-        if role == "tool":
-            identifier = message.get("tool_call_id")
-            if identifier not in pending:
-                raise ValueError("tool reply has no matching pending call")
-            pending.remove(identifier)
+        if message["role"] == "tool":
             groups[-1].append(message)
-            continue
-        if pending:
-            raise ValueError("assistant tool calls are missing replies")
-        if role == "assistant":
-            calls = message.get("tool_calls") or []
-            ids = [call["id"] for call in calls]
-            if len(set(ids)) != len(ids) or any(identifier in used for identifier in ids):
-                raise ValueError("duplicate tool call ID within a turn")
-            used.update(ids)
-            pending = set(ids)
-        elif role == "user":
-            used.clear()
-        elif role not in {"system", "developer"}:
-            raise ValueError(f"unsupported message role: {role}")
-        groups.append([message])
-    if pending:
-        raise ValueError("assistant tool calls are missing replies")
+        else:
+            groups.append([message])
     return groups
 
 

@@ -25,6 +25,34 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
+def checked_messages(state: State, where: str) -> State:
+    """Reject a stored transcript whose messages are not valid ``Message`` dicts.
+
+    Validation only: the stored dicts are kept as they are (no migration).
+    Tool call pairing is deliberately not required here, so a session with an
+    open or superseded batch still loads and the kernel can close or refuse it.
+    """
+    from baseagent.kernel.messages import Message
+    if not isinstance(state.messages, list):
+        raise ValueError(f"{where}: stored messages must be a list")
+    for index, message in enumerate(state.messages):
+        try:
+            Message.from_dict(message)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{where}: stored message {index} is malformed: {exc}") from exc
+    return state
+
+
+def checked_pairing(state: State, where: str) -> State:
+    """After recovery appends a tool reply, the transcript must still pair (an open batch may remain)."""
+    from baseagent.kernel.messages import check_tool_pairing
+    try:
+        check_tool_pairing(state.messages, allow_pending=True)
+    except ValueError as exc:
+        raise ValueError(f"{where}: recovered transcript breaks tool call pairing: {exc}") from exc
+    return state
+
+
 class SessionStore:
     durable = True
 
@@ -157,7 +185,7 @@ class SessionStore:
     def load(self, session_id: str) -> State | None:
         with self._connection() as connection:
             row = connection.execute("SELECT state_json FROM sessions WHERE id=?", (session_id,)).fetchone()
-        return State.from_dict(json.loads(row[0])) if row else None
+        return checked_messages(State.from_dict(json.loads(row[0])), f"session {session_id!r}") if row else None
 
     def create_task(self, root_state, *, parent_task_id="root", call_id, name, state, max_depth=4, max_nodes=32):
         from .tasks import create
@@ -451,6 +479,7 @@ class SessionStore:
             if record["status"] != "running":
                 raise ValueError("only unresolved running calls can be reconciled")
             state.messages.append({"role": "tool", "tool_call_id": call_id, "content": encoded})
+            checked_pairing(state, f"session {session_id!r}")
             state.blocked_tool_calls = [item for item in state.blocked_tool_calls if item != call_id]
             state.status = RunStatus.INTERRUPTED
             state.error = None

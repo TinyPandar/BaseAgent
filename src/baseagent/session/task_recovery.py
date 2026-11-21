@@ -9,7 +9,7 @@ from baseagent.agent.state import RunStatus
 from baseagent.llm.response import TokenUsage
 from baseagent.tools.policy import request_digest
 from baseagent.tools.result import ToolResult
-from .store import _json
+from .store import _json, checked_pairing
 
 
 @contextmanager
@@ -55,6 +55,7 @@ def resolve_call(store, session_id, task_id, call_id, result):
         if view.call(state, call_id)["status"] != "running":
             raise ValueError("only unresolved running node calls can be reconciled")
         state.messages.append({"role": "tool", "tool_call_id": call_id, "content": encoded})
+        checked_pairing(state, f"task {task_id!r}")
         state.blocked_tool_calls = [item for item in state.blocked_tool_calls if item != call_id]
         state.status, state.error = RunStatus.INTERRUPTED, None
         view.complete_call(state, call_id, result)

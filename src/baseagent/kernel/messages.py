@@ -392,7 +392,49 @@ def unanswered_tool_calls(messages: Iterable[Message | Mapping[str, Any]]) -> tu
     """Calls of the final assistant batch that still lack replies, in call order.
 
     Raises ToolPairingError if the conversation is otherwise malformed, e.g. a
-    call left unanswered before a later user message (which the kernel's
-    ``_pending_calls`` scan silently ignores).
+    call left unanswered before a later user message. The kernel repairs that
+    case explicitly (see ``open_tool_batches``) before it asks for pending calls.
     """
     return check_tool_pairing(messages, allow_pending=True)
+
+
+@dataclass(frozen=True)
+class OpenToolBatch:
+    """An assistant message some of whose tool calls have no reply.
+
+    ``superseded`` is True when a later ``user`` or ``assistant`` message
+    exists: those calls can no longer be answered in place. ``insert_at`` is
+    the index right after the batch's contiguous replies, i.e. where replies
+    for the missing calls belong (before any following non-tool message).
+    """
+
+    assistant_index: int
+    insert_at: int
+    call_ids: tuple[str, ...]
+    superseded: bool
+
+
+def open_tool_batches(messages: Iterable[Message | Mapping[str, Any]]) -> tuple[OpenToolBatch, ...]:
+    """Every assistant batch with unanswered calls, oldest first.
+
+    Replies are matched up to the next ``user``/``assistant`` message; system or
+    developer messages in between neither answer nor supersede a batch (their
+    placement is judged by ``check_tool_pairing`` before a model call). At most
+    the last batch is not superseded: it is the batch the kernel still executes.
+    """
+    views = [_message(value) for value in messages]
+    batches = []
+    for index, message in enumerate(views):
+        if message.role != "assistant" or not message.calls:
+            continue
+        end = next((later for later in range(index + 1, len(views)) if views[later].role in {"user", "assistant"}),
+                   len(views))
+        answered = {views[later].tool_call_id for later in range(index + 1, end) if views[later].role == "tool"}
+        missing = tuple(call.id for call in message.calls if call.id not in answered)
+        if not missing:
+            continue
+        insert_at = index + 1
+        while insert_at < end and views[insert_at].role == "tool":
+            insert_at += 1
+        batches.append(OpenToolBatch(index, insert_at, missing, end < len(views)))
+    return tuple(batches)
