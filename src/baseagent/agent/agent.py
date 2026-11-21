@@ -247,7 +247,7 @@ def run_agent(
         tools = subtasks.bind_tools(tools)
     from baseagent.tools.edit_policy import bind_edit_policy
     # Gateway policy: outermost, transparent unless MCP tools or hook restrictions are present.
-    policy = GatewayPolicy(bind_edit_policy(tool_policy or ToolPolicy(), tools), tools)
+    policy = GatewayPolicy(bind_edit_policy(tool_policy or ToolPolicy(), tools), tools, root=root)
     # Preserve legacy contracts for the default permissive policy.
     config = ({key: value for key, value in runtime_config.items() if key not in {"spill", "compaction", "guards", "stream", "parallel", "watchdog"}}
               if isinstance(runtime_config, dict) else runtime_config)
@@ -723,7 +723,9 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 prep = tool_prep.get(request.call_id) or {}
                 action = prep.get("action", getattr(self, "action", None))
                 if action == "deny":
-                    result = ToolResult.failure(ErrorCode.PERMISSION_DENIED, "tool request denied by policy")
+                    denial = getattr(policy, "denial_message", None)
+                    result = ToolResult.failure(ErrorCode.PERMISSION_DENIED, denial(request.name, request.arguments) if denial
+                                                else "tool request denied by policy")
                 else:
                     try:
                         args = json.loads(request.arguments or "{}")

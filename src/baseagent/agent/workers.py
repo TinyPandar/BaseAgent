@@ -452,6 +452,7 @@ class WorkerManager:
     def bind_tools(self, tools):
         if tools is not self.worker_tools:
             raise ValueError("worker manager must bind the entry registry it was created with")
+        from baseagent.tools.annotations import DELEGATION
         bound = ToolRegistry(max_result_bytes=tools.max_result_bytes)
         bound.register(DELEGATE_TOOL, "Start one execution worker in the background and return at once with its id "
                        "(status running). Its result is pushed into the conversation later: summary, citations, paths, "
@@ -461,13 +462,13 @@ class WorkerManager:
                                     "description": "Complete, self-contained task for the worker"},
                            "allow_writes": {"type": "boolean", "default": False,
                                             "description": "true only when the user explicitly asked to change files or run commands"}},
-                        "required": ["task"]}, self.delegate, contextual=True)
+                        "required": ["task"]}, self.delegate, contextual=True, annotations=DELEGATION)
         bound.register(MESSAGE_TOOL, "Add a requirement to a running worker; it is injected before the worker's next step. "
                        "Fails for finished workers.",
                        {"type": "object", "properties": {
                            "task_id": {"type": "string", "minLength": 1, "maxLength": 32},
                            "text": {"type": "string", "minLength": 1, "maxLength": 4000}},
-                        "required": ["task_id", "text"]}, self.message_tool)
+                        "required": ["task_id", "text"]}, self.message_tool, annotations=DELEGATION)
         return bound
 
     def managed(self, context, record):

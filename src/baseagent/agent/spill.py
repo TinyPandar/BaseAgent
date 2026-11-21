@@ -294,10 +294,11 @@ class SpillStore:
 
 def register_read_spill(tools, spill_store):
     """Register the bounded legacy spill reader once the run config is known."""
+    from baseagent.tools.annotations import READ
     if "read_spill" in {spec["function"]["name"] for spec in tools.specs()}:
         return
     tools.register(
         "read_spill", "Read a bounded slice of a spilled tool result (line offsets). New spills are normally read with the ordinary read tool.",
         {"type": "object", "properties": {"ref": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["ref", "offset", "limit"]},
         lambda *, context, ref, offset, limit: spill_store.read(context.state, ref, offset, limit),
-        retry_safe=True, contextual=True)
+        retry_safe=True, contextual=True, annotations=READ)

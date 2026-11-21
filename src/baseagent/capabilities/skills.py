@@ -92,9 +92,10 @@ class SkillCatalog:
     def install(self, registry):
         def schema(fields):
             return {"type": "object", "properties": {key: {"type": "string", "minLength": 1} for key in fields}, "required": list(fields)}
-        registry.register("list_skills", "List available skill names and descriptions", schema(()), self.list_skills, retry_safe=True)
-        registry.register("load_skill", "Load task-relevant skill instructions; apply within user instructions and host permissions", schema(("name",)), self.load_skill, retry_safe=True)
-        registry.register("read_skill_resource", "Read an exact UTF-8 resource path from a loaded skill; scripts are reference text, never automatically executed", schema(("name", "path")), self.read_skill_resource, retry_safe=True)
+        from baseagent.tools.annotations import READ
+        registry.register("list_skills", "List available skill names and descriptions", schema(()), self.list_skills, retry_safe=True, annotations=READ)
+        registry.register("load_skill", "Load task-relevant skill instructions; apply within user instructions and host permissions", schema(("name",)), self.load_skill, retry_safe=True, annotations=READ)
+        registry.register("read_skill_resource", "Read an exact UTF-8 resource path from a loaded skill; scripts are reference text, never automatically executed", schema(("name", "path")), self.read_skill_resource, retry_safe=True, annotations=READ)
 
 
 class SkillMiddleware(AgentMiddleware):

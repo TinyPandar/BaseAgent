@@ -1027,21 +1027,24 @@ def register_job_tools(registry, workspace) -> None:
 
     argv = {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}
     job_id = {"type": "string", "pattern": "^j[0-9a-f]{8}$"}
+    from .annotations import COMMAND, READ, ToolAnnotations
+    # Kills processes (destructive); a repeat has no further effect; stays in the workspace's jobs.
+    kill_annotations = ToolAnnotations(read_only=False, destructive=True, idempotent=True, open_world=False)
     registry.register("start_job", "Start a long-running argv command (no shell) as a background job in the workspace and "
                       "return its job_id at once; it keeps running across turns and cancellation until job_kill and "
                       "ends with the session unless keep_running is true (then it also survives the harness exiting). "
                       "Output goes to a size-capped log; requires command permission",
                       params({"argv": argv, "cwd": {"type": "string", "minLength": 1, "maxLength": 4000},
                               "keep_running": {"type": "boolean"}}, ["argv"]),
-                      start_job, contextual=True)
+                      start_job, contextual=True, annotations=COMMAND)
     registry.register("job_list", "List recent background jobs, including ones from earlier sessions, with status "
                       "(running/exited/failed/killed/lost/unknown), exit code and times",
-                      params({}, []), job_list, retry_safe=True)
+                      params({}, []), job_list, retry_safe=True, annotations=READ)
     registry.register("job_output", "Read a background job's combined stdout/stderr log by byte offset/limit, or the last "
                       "tail bytes; next_offset continues paging",
                       params({"job_id": job_id, "offset": {"type": "integer", "minimum": 0},
                               "limit": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT_CHUNK},
                               "tail": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT_CHUNK}}, ["job_id"]),
-                      job_output, retry_safe=True)
+                      job_output, retry_safe=True, annotations=READ)
     registry.register("job_kill", "Stop a background job and its whole process tree; requires command permission",
-                      params({"job_id": job_id}, ["job_id"]), job_kill)
+                      params({"job_id": job_id}, ["job_id"]), job_kill, annotations=kill_annotations)
