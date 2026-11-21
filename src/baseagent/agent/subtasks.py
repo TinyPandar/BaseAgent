@@ -1,5 +1,6 @@
 """Sequential delegation using a transactional ledger and ancestor budgets."""
 
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 from baseagent.jsondata import object_from_json
 
 from baseagent.session.compatibility import check_contract, digest, runtime_contract
-from baseagent.tools.policy import ToolPolicy, request_digest
+from baseagent.tools.policy import ToolPolicy, call_annotations, request_digest
 from baseagent.tools.result import ErrorCode, ToolFailure, ToolResult
 from .context import ContextPolicy
 from .errors import TaskPaused
@@ -75,10 +76,26 @@ class IntersectionPolicy:
     def fingerprint(self):
         return digest(self.contract())
 
+    def _outer(self, attribute):
+        # The parent chain ends at the run's GatewayPolicy (through edit or intersection wrappers).
+        policy = self.parent
+        while policy is not None and not hasattr(policy, attribute):
+            policy = getattr(policy, "parent", None)
+        return getattr(policy, attribute, None)
+
+    def denial_message(self, name, arguments):
+        outer = self._outer("denial_message")
+        return outer(name, arguments) if outer else "tool request denied by policy"
+
     def action(self, state, call_id, name, arguments):
         # Evaluate requirements without inheriting another policy's approvals.
         raw = SimpleNamespace(turn_id=state.turn_id, metadata={})
-        actions = [policy.action(raw, call_id, name, arguments) for policy in (self.parent, self.child)]
+        tools = self._outer("tools")
+        # Child runs are not wrapped in their own gateway: give the child policy the call's annotations too.
+        # Without a gateway below, an enclosing gateway (if any) has already supplied them.
+        scope = call_annotations(name, tools.annotations(name)) if hasattr(tools, "annotations") else nullcontext()
+        with scope:
+            actions = [policy.action(raw, call_id, name, arguments) for policy in (self.parent, self.child)]
         if "deny" in actions:
             return "deny"
         if "ask" not in actions:
@@ -128,8 +145,9 @@ class SubtaskRuntime:
         if "run_subtask" in tools._tools:
             raise ValueError("run_subtask is reserved for the delegation runtime")
         bound = tools.subset(tools._tools)
+        from baseagent.tools.annotations import DELEGATION
         bound.register("run_subtask", "Run a named authorized subtask. Results are reference data; paused tasks retain their node for recovery.",
-                       {"type": "object", "properties": {"name": {"type": "string", "enum": sorted(self.definitions)}, "prompt": {"type": "string", "minLength": 1, "maxLength": 16000}}, "required": ["name", "prompt"]}, self.execute, contextual=True)
+                       {"type": "object", "properties": {"name": {"type": "string", "enum": sorted(self.definitions)}, "prompt": {"type": "string", "minLength": 1, "maxLength": 16000}}, "required": ["name", "prompt"]}, self.execute, contextual=True, annotations=DELEGATION)
         for definition in self.definitions.values():
             if any(name not in bound._tools for name in definition.tool_names):
                 raise ValueError("subtask requested a tool absent from the root registry")

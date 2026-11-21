@@ -24,10 +24,13 @@ MCP client and the model adapters never dispatch a call themselves.
 
 from __future__ import annotations
 
+from functools import partial
 from hashlib import sha256
 import json
+from pathlib import Path
 
-from baseagent.tools.policy import request_digest
+from baseagent.tools.critical_paths import critical_path_violation
+from baseagent.tools.policy import call_annotations, request_digest
 
 RESTRICTIONS = "tool_restrictions"
 _RANK = {"allow": 0, "ask": 1, "deny": 2}
@@ -72,6 +75,30 @@ class _WithoutApprovals:
         return getattr(self._state, name)
 
 
+def _workspace_root(tools):
+    """Root of the workspace whose handlers the registry holds (bound methods or partials)."""
+    for entry in getattr(tools, "_tools", {}).values():
+        handler = entry[1]
+        owner = getattr(handler, "__self__", None)
+        if owner is None and isinstance(handler, partial) and handler.args:
+            owner = handler.args[0]
+        root = getattr(owner, "root", None)
+        if isinstance(root, (str, Path)) and str(root):
+            return str(root)
+    return None
+
+
+def critical_path_reason(arguments, root):
+    """Built-in guard for any call whose arguments carry an ``argv`` list (tools/critical_paths.py)."""
+    try:
+        values = json.loads(arguments or "{}")
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(values, dict) or "argv" not in values:
+        return None
+    return critical_path_violation(values["argv"], root=root, cwd=values.get("cwd"))
+
+
 class GatewayPolicy:
     """Outermost policy wrapper. It only tightens the wrapped policy's decision.
 
@@ -79,13 +106,20 @@ class GatewayPolicy:
       (fail closed). ``--tool-policy`` rules match the registered name and can
       deny it; they cannot turn the approval off.
     * A restriction recorded by a hook through ``restrict`` applies to that call.
+    * The built-in critical-path guard denies a recursive delete of a critical path
+      (workspace root, home, filesystem/drive roots, ``.git``, ``.baseagent``) in any
+      ``argv`` argument. It is code, not configuration, so it adds nothing to the contract.
+    * The wrapped policy sees the call's ``ToolAnnotations`` (``call_annotations``).
 
     Without MCP tools the contract and fingerprint are those of the wrapped
     policy, so sessions that do not use MCP keep their approvals and contracts.
     """
 
-    def __init__(self, parent, tools):
+    def __init__(self, parent, tools, *, root=None):
         self.parent = parent
+        self.tools = tools
+        # The registry's own workspace wins; the session root is the fallback.
+        self.root = _workspace_root(tools) or root
         servers = getattr(tools, "_mcp_servers", {})
         self.mcp_ask = {name: server for name, server in servers.items() if not tools.retry_safe(name)}
         # Digests of the configured servers: an approval does not carry over to a replaced server.
@@ -103,11 +137,22 @@ class GatewayPolicy:
             return self.parent.fingerprint
         return sha256(json.dumps(self.contract(), sort_keys=True).encode("utf-8")).hexdigest()
 
+    def denial_message(self, name, arguments):
+        reason = critical_path_reason(arguments, self.root)
+        if reason:
+            return "refused by the built-in critical-path guard: " + reason
+        return "tool request denied by policy"
+
     def action(self, state, call_id, name, arguments):
+        if critical_path_reason(arguments, self.root):
+            # Always on: before the policy, hooks and approvals; no approval can override it.
+            return "deny"
         digest = request_digest(name, arguments)
+        annotations = self.tools.annotations(name) if hasattr(self.tools, "annotations") else None
         # With MCP tools the fingerprint differs from the wrapped policy's, so approvals are checked
         # here and the wrapped policy decides without them. Without MCP tools it sees the state as is.
-        action = self.parent.action(_WithoutApprovals(state) if self.mcp_ask else state, call_id, name, arguments)
+        with call_annotations(name, annotations):
+            action = self.parent.action(_WithoutApprovals(state) if self.mcp_ask else state, call_id, name, arguments)
         floor = "ask" if name in self.mcp_ask else "allow"
         restriction = state.metadata.get(RESTRICTIONS, {}).get(call_id)
         if restriction and restriction.get("request_digest") == digest and _RANK.get(restriction.get("action"), 2) > _RANK[floor]:

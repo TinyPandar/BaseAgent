@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "95e0d8db1de7a2d4",
+  "corpus_version": "bb3d14edb6b10189",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
   "corpus_version_note": "2026-11-19 merge of feat/message-types, feat/command-rules and feat/background-jobs plus ROADMAP/docs (86b2191). Rebound with scripts/rebind_corpus_version.py --write: 2f611149d3befba7 -> 95e0d8db1de7a2d4; 1 reference moved by line drift (main.py:346-347 -> 347-348, hash unchanged). Reviewed by hand: assembly.py:24-41 -> 24-46 because opt-in job tools were added inside assemble_capabilities; concept-03 and cross_file-05 answers still hold; hash recomputed for the new range. All 101 evidence hashes match. Gold summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {

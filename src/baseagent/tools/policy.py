@@ -1,5 +1,7 @@
 """Exact-call authorization, independent of model and middleware decisions."""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -7,6 +9,8 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 import warnings
+
+from baseagent.kernel.tools import ANNOTATION_KEYS, ToolAnnotations
 
 from .result import ToolFailure
 
@@ -16,6 +20,28 @@ _RANK = {"allow": 0, "ask": 1, "deny": 2}
 _MATCH_KEYS = {"equals", "path_within", "argv_exact", "argv_prefix"}
 # Optional per-tool key; absent means the original first-match order (contract unchanged).
 _PRECEDENCE = {"first_match", "strictest"}
+# Optional top-level "annotations" section: annotation name -> floor action (ask or deny).
+_FLOOR_ACTIONS = {"ask", "deny"}
+# (tool name, ToolAnnotations) of the call being authorized, set by the gateway (agent/gateway.py).
+_CALL_ANNOTATIONS = ContextVar("baseagent_call_annotations", default=None)
+
+
+@contextmanager
+def call_annotations(name, annotations):
+    """Make ``annotations`` the record ToolPolicy sees for ``name`` while authorizing one call."""
+    token = _CALL_ANNOTATIONS.set((name, annotations))
+    try:
+        yield
+    finally:
+        _CALL_ANNOTATIONS.reset(token)
+
+
+def _annotations_for(name):
+    current = _CALL_ANNOTATIONS.get()
+    if current is not None and current[0] == name and isinstance(current[1], ToolAnnotations):
+        return current[1]
+    # Unknown to the caller: the conservative MCP defaults (fail closed).
+    return ToolAnnotations()
 
 # Programs that run another program or inline code taken from their arguments. An argv
 # prefix that only names one of them cannot constrain what finally runs.
@@ -84,9 +110,16 @@ def request_digest(name, arguments):
 
 
 class ToolPolicy:
-    def __init__(self, rules=None, *, default="allow", workspace=None):
+    def __init__(self, rules=None, *, default="allow", workspace=None, annotations=None):
         self.rules = deepcopy(dict(rules or {}))
         self.default = default
+        # None (absent) keeps contract() and fingerprint unchanged for existing policies.
+        self.annotations = deepcopy(annotations) if annotations is not None else None
+        if self.annotations is not None and (
+                not isinstance(self.annotations, dict) or not self.annotations
+                or any(key not in ANNOTATION_KEYS or not isinstance(value, str) or value not in _FLOOR_ACTIONS
+                       for key, value in self.annotations.items())):
+            raise ValueError("policy annotations map read_only/destructive/idempotent/open_world to ask or deny")
         self.workspace = workspace
         self._scoped = False
         # Human-readable notes about allow rules that cannot constrain a command (see COMMAND_WRAPPERS).
@@ -157,9 +190,10 @@ class ToolPolicy:
 
     @classmethod
     def from_dict(cls, value, *, workspace=None):
-        if not isinstance(value, dict) or set(value) != {"default", "tools"} or not isinstance(value["tools"], dict):
+        if (not isinstance(value, dict) or not {"default", "tools"} <= set(value) <= {"default", "tools", "annotations"}
+                or not isinstance(value["tools"], dict)):
             raise ValueError("policy JSON requires default and tools")
-        return cls(value["tools"], default=value["default"], workspace=workspace)
+        return cls(value["tools"], default=value["default"], workspace=workspace, annotations=value.get("annotations"))
 
     @classmethod
     def from_json(cls, value, *, workspace=None):
@@ -167,6 +201,8 @@ class ToolPolicy:
 
     def contract(self):
         value = {"default": self.default, "tools": deepcopy(self.rules)}
+        if self.annotations is not None:
+            value["annotations"] = dict(sorted(self.annotations.items()))
         if self._scoped:
             value["workspace_root"] = str(self.workspace.root)
         return value
@@ -208,6 +244,8 @@ class ToolPolicy:
 
     def action(self, state, call_id, name, arguments):
         action = self.rules.get(name, self.default)
+        # Explicit: a string action naming this tool, or a condition rule that matched.
+        explicit = name in self.rules and not isinstance(action, dict)
         if isinstance(action, dict):
             rule = action
             try:
@@ -217,9 +255,19 @@ class ToolPolicy:
                     matched = [condition["action"] for condition in rule["rules"] if self._matches(condition["match"], values)]
                     action = max(matched, key=_RANK.__getitem__) if matched else rule["default"]
                 else:
-                    action = next((condition["action"] for condition in rule["rules"] if self._matches(condition["match"], values)), rule["default"])
+                    first = next((condition["action"] for condition in rule["rules"] if self._matches(condition["match"], values)), None)
+                    matched = [] if first is None else [first]
+                    action = rule["default"] if first is None else first
+                explicit = bool(matched)
             except (ValueError, TypeError, RecursionError):
                 return "deny"
+        if self.annotations is not None:
+            flags = _annotations_for(name)
+            floors = [floor for key, floor in self.annotations.items() if getattr(flags, key)]
+            floor = max(floors, key=_RANK.__getitem__) if floors else "allow"
+            # An annotation deny is absolute; an annotation ask yields only to an explicit per-tool decision.
+            if floor == "deny" or (not explicit and _RANK[floor] > _RANK[action]):
+                action = floor
         # A deny is final: no approval below can turn it into allow.
         if action != "ask":
             return action

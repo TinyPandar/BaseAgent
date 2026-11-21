@@ -105,9 +105,28 @@ deny `["rm"]` 挡不住 `bash -c "rm -rf ."`、`env rm -rf .`、`git clean -fdx`
 
 列表见 `baseagent.tools.policy.COMMAND_WRAPPERS`,判断函数是 `command_wrapper(program)`。
 
+## 按注解的规则(annotations)
+
+策略可以加一个可选的顶层 `annotations` 段,按工具注解(`read_only`、`destructive`、`idempotent`、
+`open_world`,见 [tool_annotations.md](tool_annotations.md))给出下限,值只能是 `ask` 或 `deny`:
+
+```json
+{"default": "allow", "tools": {"write_file": "allow"}, "annotations": {"destructive": "ask", "open_world": "ask"}}
+```
+
+- 注解级 `deny` 绝对生效,逐工具 `allow` 和审批都不能放开。
+- 注解级 `ask` 只让位于显式的逐工具决定:字符串动作,或条件规则中**命中**的那一条;条件规则的
+  兜底 `default` 和顶层 `default` 都与注解下限取更严格者。上例中 `write_file` 直接放行,
+  `run_command`、MCP 工具等需要审批,只读工具不受影响。
+- MCP 服务端自报的注解不可信,不参与判定;生效注解只来自配置的 `readOnly`。
+- 不写 `annotations` 的策略契约与指纹不变。
+
+此外,删除关键路径(工作区根、`.git`、`.baseagent`、主目录、文件系统/盘符根)的命令由内置检查
+**始终拒绝**,不受本策略影响,范围见 [tool_annotations.md](tool_annotations.md#关键路径删除内置始终拦截)。
+
 ## 兼容性
 
-- 不使用 `argv_prefix` / `precedence` 的策略,`contract()` 输出与指纹逐字节不变,已有审批和会话恢复
+- 不使用 `argv_prefix` / `precedence` / `annotations` 的策略,`contract()` 输出与指纹逐字节不变,已有审批和会话恢复
   不受影响(有测试固定了旧实现下的指纹)。
 - 使用新键后指纹会变化;对已有会话 `--resume` 时需要 `--accept-config-changes`,旧审批失效,需重新审批。
-- 旧版本不认识 `argv_prefix` / `precedence`,加载这样的策略会报错(fail closed),不会静默放宽。
+- 旧版本不认识 `argv_prefix` / `precedence` / `annotations`,加载这样的策略会报错(fail closed),不会静默放宽。

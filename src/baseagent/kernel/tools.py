@@ -14,6 +14,46 @@ from jsonschema.exceptions import ValidationError
 from .result import ErrorCode, ToolFailure, ToolResult
 
 
+@dataclass(frozen=True)
+class ToolAnnotations:
+    """Host-side behaviour hints of a tool, following MCP ToolAnnotations semantics.
+
+    Never sent to the model and not part of ``ToolRegistry.contract()``. The defaults
+    are the conservative MCP defaults: not read-only, possibly destructive, not
+    idempotent, open world. ``destructive`` and ``idempotent`` only describe tools
+    that are not read-only; a read-only tool must not be destructive.
+    """
+
+    read_only: bool = False
+    destructive: bool = True
+    idempotent: bool = False
+    open_world: bool = True
+
+    def __post_init__(self):
+        if any(type(getattr(self, key)) is not bool for key in ANNOTATION_KEYS):
+            raise ValueError("tool annotations must be booleans")
+        if self.read_only and self.destructive:
+            raise ValueError("a read-only tool cannot be destructive")
+
+    def to_dict(self) -> dict[str, bool]:
+        return {key: getattr(self, key) for key in ANNOTATION_KEYS}
+
+
+ANNOTATION_KEYS = ("read_only", "destructive", "idempotent", "open_world")
+# Default record of a retry_safe tool registered without explicit annotations.
+# open_world stays True: retry_safe says nothing about what the tool reaches.
+RETRY_SAFE_ANNOTATIONS = ToolAnnotations(read_only=True, destructive=False, idempotent=True, open_world=True)
+_MCP_HINTS = {"readOnlyHint": "read_only", "destructiveHint": "destructive",
+              "idempotentHint": "idempotent", "openWorldHint": "open_world"}
+
+
+def mcp_annotation_hints(value: Any) -> dict[str, bool]:
+    """Boolean MCP ``annotations`` hints as ``{read_only: ...}``; anything else is ignored."""
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[hint] for hint, key in _MCP_HINTS.items() if type(value.get(hint)) is bool}
+
+
 @dataclass
 class ToolRegistry:
     max_result_bytes: int = 256_000
@@ -23,13 +63,25 @@ class ToolRegistry:
     # Tools executed by an MCP server: registered name -> server id. Absent means a local handler.
     _mcp_servers: dict[str, str] = field(default_factory=dict)
     capability_contract: dict[str, Any] | None = None
+    # Host-side metadata only: never in specs() or contract().
+    _annotations: dict[str, ToolAnnotations] = field(default_factory=dict)
+    _annotation_hints: dict[str, dict[str, bool]] = field(default_factory=dict)
 
     def register(self, name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Any], *, retry_safe: bool = False, contextual: bool = False,
-                 mcp_server_id: str | None = None) -> None:
+                 mcp_server_id: str | None = None, annotations: ToolAnnotations | None = None,
+                 annotation_hints: dict[str, bool] | None = None) -> None:
         if name in self._tools:
             raise ValueError(f"duplicate tool: {name}")
         if mcp_server_id is not None and (not isinstance(mcp_server_id, str) or not mcp_server_id):
             raise ValueError("mcp_server_id must be a nonempty string")
+        if annotations is not None and not isinstance(annotations, ToolAnnotations):
+            raise ValueError("annotations must be a ToolAnnotations record")
+        if retry_safe is True and annotations is not None and not (annotations.read_only and annotations.idempotent):
+            # retry_safe (parallel, retried, offered to read-only workers) implies read-only and idempotent.
+            raise ValueError("a retry_safe tool must be annotated read_only and idempotent")
+        if annotation_hints is not None and (not isinstance(annotation_hints, dict) or any(
+                key not in ANNOTATION_KEYS or type(value) is not bool for key, value in annotation_hints.items())):
+            raise ValueError("annotation hints must map annotation names to booleans")
         parameters = deepcopy(parameters)
         if type(contextual) is not bool or (contextual and "context" in parameters.get("properties", {})):
             raise ValueError("contextual tools reserve the context argument")
@@ -51,6 +103,11 @@ class ToolRegistry:
             self._contextual.add(name)
         if mcp_server_id is not None:
             self._mcp_servers[name] = mcp_server_id
+        if annotations is None:
+            annotations = RETRY_SAFE_ANNOTATIONS if retry_safe else ToolAnnotations()
+        self._annotations[name] = annotations
+        if annotation_hints:
+            self._annotation_hints[name] = dict(annotation_hints)
 
     def origin(self, name: str) -> tuple[str, str | None]:
         """(source, mcp_server_id): ("mcp", server) for MCP-backed tools, ("local", None) otherwise."""
@@ -59,6 +116,17 @@ class ToolRegistry:
 
     def retry_safe(self, name: str) -> bool:
         return name in self._retry_safe
+
+    def annotations(self, name: str) -> ToolAnnotations:
+        """Effective annotations; unknown names get the conservative defaults."""
+        return self._annotations.get(name, ToolAnnotations())
+
+    def annotation_hints(self, name: str) -> dict[str, bool]:
+        """Untrusted hints a server declared (MCP); informational, never used for authorization."""
+        return dict(self._annotation_hints.get(name, {}))
+
+    def annotation_table(self) -> dict[str, dict[str, bool]]:
+        return {name: self.annotations(name).to_dict() for name in sorted(self._tools)}
 
     def subset(self, names):
         """Reuse authorized handlers without replacing implementations/capabilities."""
@@ -71,7 +139,8 @@ class ToolRegistry:
             definition = spec["function"]
             result.register(name, definition["description"], definition["parameters"], handler,
                             retry_safe=self.retry_safe(name), contextual=name in self._contextual,
-                            mcp_server_id=self._mcp_servers.get(name))
+                            mcp_server_id=self._mcp_servers.get(name), annotations=self.annotations(name),
+                            annotation_hints=self._annotation_hints.get(name))
         return result
 
     def contract(self) -> dict:

@@ -14,6 +14,7 @@ import sys
 import threading
 
 from baseagent.kernel.result import ErrorCode, ToolFailure
+from baseagent.kernel.tools import RETRY_SAFE_ANNOTATIONS, ToolAnnotations, mcp_annotation_hints
 
 from .client import McpClient
 from .config import ServerConfig, find_config, load_config
@@ -177,12 +178,20 @@ class McpManager:
                     continue
                 schema = tool.get("inputSchema")
                 description = tool.get("description") if isinstance(tool.get("description"), str) else ""
+                # Server annotations are untrusted hints: kept for display/audit, never used to grant
+                # anything. Effective annotations come from the configuration alone (read_only_tools).
+                hints = mcp_annotation_hints(tool.get("annotations"))
+                if read_only and (hints.get("read_only") is False or hints.get("destructive") is True):
+                    self.warn(f"MCP warning: {registered} is configured readOnly but the server annotates it as "
+                              "not read-only or destructive; check read_only_tools")
                 try:
                     if not isinstance(schema, dict):
                         raise ValueError("inputSchema must be an object")
                     registry.register(registered, f"[MCP server {server}] {description}"[:DESCRIPTION_CHARS], schema,
                                       self._handler(client, name), retry_safe=read_only, contextual=True,
-                                      mcp_server_id=server)
+                                      mcp_server_id=server,
+                                      annotations=RETRY_SAFE_ANNOTATIONS if read_only else ToolAnnotations(),
+                                      annotation_hints=hints or None)
                 except Exception as exc:  # noqa: BLE001 -- Any invalid server schema skips just that tool.
                     self._problem(f"{registered} has an unusable input schema ({type(exc).__name__}); tool skipped")
                     continue

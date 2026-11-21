@@ -153,6 +153,7 @@ class WorkerRuntime(SubtaskRuntime):
     def bind_tools(self, tools):
         if tools is not self.worker_tools:
             raise ValueError("worker runtime must bind the entry registry it was created with")
+        from baseagent.tools.annotations import DELEGATION
         bound = ToolRegistry(max_result_bytes=tools.max_result_bytes)
         bound.register(DELEGATE_TOOL, "Start one execution worker for workspace work. It reports a summary, citations, "
                        "paths, call ids and spill refs; full tool output stays in its node.",
@@ -161,7 +162,7 @@ class WorkerRuntime(SubtaskRuntime):
                                     "description": "Complete, self-contained task for the worker"},
                            "allow_writes": {"type": "boolean", "default": False,
                                             "description": "true only when the user explicitly asked to change files or run commands"}},
-                        "required": ["task"]}, self.execute, contextual=True)
+                        "required": ["task"]}, self.execute, contextual=True, annotations=DELEGATION)
         return bound
 
     def execute(self, task, allow_writes=False, *, context):
