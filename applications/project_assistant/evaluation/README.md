@@ -413,6 +413,18 @@ recomputed from the new slice. All 101 stored `evidence_sha256` values match.
 Gold summaries were not regenerated. Published hybrid MRR 0.845 was not
 recomputed.
 
+## Corpus rebind (2026-11-21, message wiring / sandbox / jobs / tool annotations)
+
+`corpus_version` moved from `95e0d8db1de7a2d4` to `583ed2a818f703ea` when
+`feat/message-wiring`, `feat/os-sandbox`, `feat/jobs-complete` and
+`feat/tool-annotations` were merged with the watchdog hint fix and the
+ROADMAP/README update. The annotations branch had rebound to
+`bb3d14edb6b10189` on its own; the final rebind ran once on a clean checkout
+after every merge. `--write` found one line drift (`src/baseagent/main.py:347-348`
+to `354-355`, hash unchanged) and no changed cited text. All 101 stored
+`evidence_sha256` values match. Gold summaries were not regenerated. Published
+hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
