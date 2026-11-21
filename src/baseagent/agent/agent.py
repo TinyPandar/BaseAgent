@@ -95,16 +95,51 @@ def _parallel_config(state):
     return {"readonly": False, **state.metadata.get("parallel_config", {})}
 
 
+_DEFERRED_HINTS = "deferred_watchdog_hints"
+
+
+def _tool_batch_open(messages) -> bool:
+    """True while the last assistant tool batch still has calls without a tool reply."""
+    answered = set()
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "tool":
+            answered.add(message.get("tool_call_id"))
+            continue
+        if role == "assistant":
+            return any(_as_dict(call).get("id") not in answered for call in message.get("tool_calls") or [])
+        return False
+    return False
+
+
+def _flush_watchdog_hints(state) -> None:
+    """Append hints deferred during a tool batch once every call of it has its reply."""
+    pending = state.metadata.get(_DEFERRED_HINTS)
+    if pending and not _tool_batch_open(state.messages):
+        state.messages.extend({"role": "system", "content": text} for text in state.metadata.pop(_DEFERRED_HINTS))
+
+
 def _apply_watchdog(state, checkpoint, *, raise_stop=True, **kwargs):
     from .watchdog import observe
+    if kwargs.get("phase") == "before_model":
+        _flush_watchdog_hints(state)
     decision = observe(state, **kwargs)
     if not decision:
         return
     checkpoint("watchdog_decision", rule=decision["rule"], step=decision["step"], action=decision["action"],
                evidence=decision["evidence"])
     if decision["action"] != "stop":
-        if not any(message.get("role") == "system" and message.get("content") == decision["message"] for message in state.messages):
-            state.messages.append({"role": "system", "content": decision["message"]})
+        text = decision["message"]
+        pending = state.metadata.get(_DEFERRED_HINTS, [])
+        if text in pending or any(message.get("role") == "system" and message.get("content") == text
+                                  for message in state.messages):
+            return
+        if _tool_batch_open(state.messages):
+            # A system message between an assistant tool call and its reply breaks tool call pairing
+            # (the kernel would refuse the next request); deliver it after the batch instead.
+            state.metadata[_DEFERRED_HINTS] = [*pending, text]
+        else:
+            state.messages.append({"role": "system", "content": text})
         return
     if not raise_stop:
         return

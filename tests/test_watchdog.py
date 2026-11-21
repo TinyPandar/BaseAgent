@@ -89,6 +89,23 @@ class WatchdogTests(unittest.TestCase):
         self.assertTrue(any(message.get("content", "").startswith("watchdog stall") for message in state.messages))
         self.assertGreaterEqual(summary(state)["stall_count"], 1)
 
+    def test_hint_during_a_tool_batch_waits_for_the_batch_replies(self):
+        # Each model call reports 3 tokens; with max_tokens=10 the "nearly exhausted" hint first fires
+        # right after the third response, i.e. before the first call of its two-call batch runs.
+        tools = reader()
+        responses = [{"tool_calls": [call("read_file", {"path": "a"}, "r1")]},
+                     {"tool_calls": [call("read_file", {"path": "b"}, "r2")]},
+                     {"tool_calls": [call("read_file", {"path": "c"}, "r3"), call("read_file", {"path": "d"}, "r4")]},
+                     {"content": "done"}]
+        state = run_agent(Script(responses), "batch", tools=tools, max_steps=8,
+                          runtime_config=watchdog(max_tokens=10))
+        self.assertEqual(state.status, RunStatus.COMPLETED, state.error)
+        roles = [(message["role"], message.get("tool_call_id") or message.get("content")) for message in state.messages]
+        hint = next(index for index, (role, content) in enumerate(roles)
+                    if role == "system" and str(content).startswith("watchdog tokens budget"))
+        self.assertEqual([roles[hint - 2], roles[hint - 1]], [("tool", "r3"), ("tool", "r4")])
+        self.assertNotIn("deferred_watchdog_hints", state.metadata)
+
     def test_write_is_not_a_stall(self):
         tools = ToolRegistry()
         tools.register("edit_file", "edit", SCHEMA, lambda path: {"path": path, "ok": True})
