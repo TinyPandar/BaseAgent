@@ -1,19 +1,29 @@
-"""Host filesystem backend. This backend provides no OS sandboxing."""
+"""Host filesystem backend. Without ``sandbox`` it provides no OS sandboxing.
+
+``sandbox`` (a SandboxPolicy or Sandbox, docs/sandbox.md) confines command processes only; file tools
+run in-process and keep their own path checks.
+"""
 
 import os
 from pathlib import Path
 
+from baseagent.backends import sandbox as os_sandbox
 from baseagent.tools.editing import atomic_delete, atomic_write, file_hash, read_bytes
 from baseagent.tools.process import run_process
-from baseagent.tools.result import ErrorCode, ToolFailure
+from baseagent.tools.result import ErrorCode, ToolFailure, ToolResult
 
 
 class LocalBackend:
-    def __init__(self, root, *, protected_paths=()):
+    def __init__(self, root, *, protected_paths=(), sandbox=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("workspace root must be a directory")
         self.protected_paths = tuple(Path(path).resolve() for path in protected_paths)
+        # None (or a SandboxPolicy with mode off) keeps today's unconfined commands. A confined policy
+        # builds its Sandbox here and raises SandboxUnavailable when the host cannot enforce it.
+        if isinstance(sandbox, os_sandbox.SandboxPolicy):
+            sandbox = os_sandbox.create(sandbox, self.root, protected_paths=self.protected_paths)
+        self.sandbox = sandbox
         # Tool permission is enforced by Workspace, before backend invocation.
         self.allow_write = True
         self.read_roots = set()
@@ -32,7 +42,9 @@ class LocalBackend:
 
     def contract(self):
         return {"kind": "local", "version": 1, "root": str(self.root),
-                "isolation": "none", "protected_paths": sorted(str(path) for path in self.protected_paths)}
+                "isolation": "none", "protected_paths": sorted(str(path) for path in self.protected_paths),
+                # Only present when confined, so default contracts stay byte-identical.
+                **({"sandbox": self.sandbox.contract()} if self.sandbox is not None else {})}
 
     def resolve_path(self, relative):
         return self._path(relative)
@@ -54,7 +66,20 @@ class LocalBackend:
         return atomic_delete(self, path, expected_sha256, expected_instructions)
 
     def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
-        return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation)
+        if self.sandbox is None:
+            return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation)
+        try:
+            argv, env = os_sandbox.wrap(argv, self.root, None, self.sandbox)
+        except os_sandbox.SandboxUnavailable as exc:
+            # Fail closed: never run the command outside the sandbox.
+            return ToolResult.failure(ErrorCode.PERMISSION_DENIED, str(exc))
+        return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation,
+                           env=env)
+
+    def close(self):
+        """Remove the sandbox's per-run temp directory (no-op without a sandbox)."""
+        if self.sandbox is not None:
+            self.sandbox.close()
 
     def _path(self, relative: str) -> Path:
         path = (self.root / relative).resolve()

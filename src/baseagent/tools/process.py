@@ -34,8 +34,12 @@ def _kill_tree(process: subprocess.Popen) -> None:
         process.kill()
 
 
-def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int = 20_000, cancellation=None) -> ToolResult:
-    """Keep at most output_limit bytes per stream while continuously draining pipes."""
+def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int = 20_000, cancellation=None,
+                env=None) -> ToolResult:
+    """Keep at most output_limit bytes per stream while continuously draining pipes.
+
+    ``env`` None inherits the harness environment (unchanged default); a sandbox passes its own.
+    """
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be a positive finite number")
     if type(output_limit) is not int or output_limit < 1:
@@ -48,7 +52,7 @@ def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int
         job = WindowsJob()
     kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     try:
-        process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, shell=False, **kwargs)
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, shell=False, **kwargs)
     except BaseException:
         if job:
             job.close()

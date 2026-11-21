@@ -21,6 +21,8 @@ from baseagent.agent.workers import SessionTagMiddleware, SharedBudgetMiddleware
 from baseagent.backends import LocalBackend
 from baseagent.backends.docker import DEFAULT_IMAGE as DEFAULT_DOCKER_IMAGE
 from baseagent.backends.docker import DockerError, DockerUnavailable
+from baseagent.backends.sandbox import MODES as SANDBOX_MODES
+from baseagent.backends.sandbox import SandboxPolicy, SandboxUnavailable
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
@@ -112,7 +114,10 @@ FULL_MODE_WARNING = ("Warning: --mode full runs commands directly on this machin
                      "For isolation use --backend docker (docs/docker_backend.md).")
 DOCKER_FULL_MODE_NOTE = ("Note: --mode full runs commands inside the Docker container ({network}). /undo restores files "
                          "written by write_file/edit_file/apply_patch, not changes made by commands.")
-# Exit code when --backend docker cannot start (Docker missing, daemon down, image missing); see docs/output.md.
+SANDBOX_FULL_MODE_NOTE = ("Note: --mode full runs commands on this machine inside the OS sandbox ({summary}). "
+                          "File tools, MCP servers and hooks run outside it; /undo restores files written by "
+                          "write_file/edit_file/apply_patch, not changes made by commands. See docs/sandbox.md.")
+# Exit code when --backend docker (or a confined --sandbox) cannot start (Docker missing, daemon down, image missing); see docs/output.md.
 BACKEND_UNAVAILABLE_EXIT = 3
 CHAT_MAX_STEPS = 16
 CHAT_WRAPUP_HINT_STEPS = 2
@@ -337,6 +342,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--backend", choices=["local", "docker"], default=None, help="Where commands and file tools run: local (default; the host, not a sandbox) or docker (one container per run, no network by default); see docs/docker_backend.md")
     parser.add_argument("--docker-image", help=f"--backend docker: image to run (default {DEFAULT_DOCKER_IMAGE}); it must already be pulled")
     parser.add_argument("--docker-network", choices=["none", "bridge"], help="--backend docker: none (default, no network access) or bridge (explicitly allow network access)")
+    parser.add_argument("--sandbox", choices=list(SANDBOX_MODES), default=None, help="--backend local: OS sandbox for command processes: off (default, unconfined), read-only (writes only to a per-run temp dir) or workspace-write (also the workspace, except .git/.venv/.baseagent); no network unless --sandbox-network; exits with code 3 when this host cannot enforce it (native Windows); see docs/sandbox.md")
+    parser.add_argument("--sandbox-network", action=argparse.BooleanOptionalAction, default=None, help="--sandbox read-only/workspace-write: allow network access for commands (default: denied)")
     parser.add_argument("--harness-url", help="Enable optional HarnessKnight security evaluation")
     parser.add_argument("--harness-fail-mode", choices=["closed", "open"], default="closed")
     parser.add_argument("--harness-timeout", type=float, default=3.0)
@@ -505,6 +512,13 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     if args.backend == "docker" and operation and not args.resume:
         parser.error("--backend docker applies to one-shot prompts, --resume and interactive chat; "
                      "--checkpoints and --rewind restore docker sessions on the host without a container")
+    sandbox_mode = args.sandbox or "off"
+    if args.sandbox_network is not None and sandbox_mode == "off":
+        parser.error("--sandbox-network applies to --sandbox read-only or workspace-write")
+    if args.backend == "docker" and sandbox_mode != "off":
+        # Redundant and misleading: the container already confines commands (and runs the file tools).
+        parser.error(f"--sandbox {sandbox_mode} applies to --backend local; --backend docker already isolates "
+                     "commands in a container (use --docker-network for network access)")
     if args.ui != "web" and (args.host is not None or args.port is not None or args.token is not None):
         parser.error("--host, --port and --token apply to --ui web")
     if args.ui == "web":
@@ -567,6 +581,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     final_rules = None
     backend = None
     backend_info = None
+    sandboxed = None
     jobs = None
     signals = {}
     try:
@@ -761,7 +776,29 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             if (not args.accept_config_changes and existing is not None and existing.status != "completed"
                     and (existing.metadata or {}).get("execution_backend")):
                 raise ValueError(_backend_mismatch(existing, None, args.session))
-            workspace = Workspace(root, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected,
+            local = None
+            if sandbox_mode != "off":
+                if args.background_jobs:
+                    # The job spawner does not go through the sandbox yet: refuse instead of running jobs unconfined.
+                    raise ValueError(f"--background-jobs is not supported with --sandbox {sandbox_mode} yet; "
+                                     "jobs would run outside the sandbox")
+                sandbox_policy = SandboxPolicy(sandbox_mode, network=bool(args.sandbox_network))
+                try:
+                    # Detects and probes the OS sandbox before any model call; fail closed (cost 0).
+                    local = LocalBackend(root, protected_paths=protected, sandbox=sandbox_policy)
+                except SandboxUnavailable as exc:
+                    backend_info = {"kind": "local", "sandbox": sandbox_mode,
+                                    "network": "enabled" if sandbox_policy.network else "none", "unavailable": exc.code}
+                    print(f"Sandbox error: {exc}", file=sys.stderr)
+                    if machine.enabled:
+                        machine.finish(machine_result(session_id=args.session, status="error", code=BACKEND_UNAVAILABLE_EXIT,
+                                                      error=f"Sandbox error: {exc}", backend=backend_info))
+                    return BACKEND_UNAVAILABLE_EXIT
+                sandboxed = local
+                backend_info = local.sandbox.describe()
+                print(f"Backend: {local.sandbox.summary()}", file=sys.stderr)
+                machine.backend(backend_info)
+            workspace = Workspace(root if local is None else None, backend=local, allow_write=args.allow_write, allow_command=args.allow_command, allow_memory_publish=args.allow_memory_publish, protected_paths=protected,
                                   project_rules=project_rules, background_jobs=args.background_jobs)
             jobs = workspace.jobs
         from baseagent.tools.instructions import describe_rules, rules_summary
@@ -769,7 +806,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if rules is not None and rules.get("truncated") and project_rules:
             print(describe_rules(rules), file=sys.stderr)
         if args.mode == "full" and isinstance(workspace.backend, LocalBackend):
-            print(FULL_MODE_WARNING, file=sys.stderr)
+            if sandboxed is not None:
+                print(SANDBOX_FULL_MODE_NOTE.format(summary=sandboxed.sandbox.summary()), file=sys.stderr)
+            else:
+                print(FULL_MODE_WARNING, file=sys.stderr)
         policy = ToolPolicy()
         if args.tool_policy:
             policy = ToolPolicy.from_dict(read_json_object(args.tool_policy, max_bytes=20_000, label="tool policy"), workspace=workspace)
@@ -865,7 +905,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if estimator:
             config["token_estimate"] = {**estimator.contract(), "max_completion_tokens": args.max_completion_tokens, "tokenizers_version": version("tokenizers")}
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes),
-                  BackendTagMiddleware({key: backend_info[key] for key in ("kind", "image", "network")} if backend_info else None)]
+                  BackendTagMiddleware({key: backend_info[key] for key in ("kind", "image", "network")}
+                                       if backend_info and backend_info.get("kind") == "docker" else None)]
         if jobs is not None:
             from baseagent.tools.jobs import JobNoticeMiddleware
             layers.append(JobNoticeMiddleware(jobs))
@@ -1168,6 +1209,9 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if mcp is not None:
             # Session or run over (normal end, error, Ctrl+C): stop every server process group.
             mcp.close()
+        if sandboxed is not None:
+            # Remove the sandbox's per-run temp directory.
+            sandboxed.close()
         if backend is not None:
             # Normal end, Ctrl+C, uncaught exception, /exit, TUI/Web closed: remove this run's container.
             try:

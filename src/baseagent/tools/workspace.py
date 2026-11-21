@@ -119,6 +119,9 @@ class Workspace:
         # Jobs run on the host, so only LocalBackend gets a manager; other backends refuse the tools.
         self.background_jobs = background_jobs
         self.jobs = None
+        if background_jobs and getattr(backend, "sandbox", None) is not None:
+            # Fail closed until the job spawner goes through backends.sandbox.wrap (docs/sandbox.md).
+            raise ValueError("background jobs are not supported with a command sandbox yet; they would run unconfined")
         if background_jobs and isinstance(backend, LocalBackend):
             from .jobs import JobManager
             self.jobs = JobManager(self.root)
