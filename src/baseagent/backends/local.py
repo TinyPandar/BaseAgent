@@ -65,16 +65,19 @@ class LocalBackend:
     def delete_file(self, path, expected_sha256, expected_instructions):
         return atomic_delete(self, path, expected_sha256, expected_instructions)
 
-    def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
+    def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None, on_timeout=None):
+        # on_timeout: optional, LocalBackend only (background jobs take over a timed-out run_command).
+        # A sandboxed process can be taken over too: it keeps running inside its sandbox wrapper.
         if self.sandbox is None:
-            return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation)
+            return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation,
+                               on_timeout=on_timeout)
         try:
             argv, env = os_sandbox.wrap(argv, self.root, None, self.sandbox)
         except os_sandbox.SandboxUnavailable as exc:
             # Fail closed: never run the command outside the sandbox.
             return ToolResult.failure(ErrorCode.PERMISSION_DENIED, str(exc))
         return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation,
-                           env=env)
+                           env=env, on_timeout=on_timeout)
 
     def close(self):
         """Remove the sandbox's per-run temp directory (no-op without a sandbox)."""

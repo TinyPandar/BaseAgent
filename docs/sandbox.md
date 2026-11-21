@@ -77,7 +77,7 @@ bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
 ## 与其它选项的组合
 
 - `--backend docker` + 受限 `--sandbox`：参数错误（退出码 2）。容器已经隔离了命令（和文件工具），再叠一层是多余的，也容易误解；容器的网络用 `--docker-network` 控制。`--sandbox off` 可以与 docker 同用（等于没给）。
-- `--background-jobs` + 受限 `--sandbox`：暂时拒绝（会话错误，退出码 1）。后台任务由 `tools/jobs.py` 自己 `Popen`，还没有经过沙箱，放行就等于在沙箱外执行。库层 `Workspace(backend=<带沙箱的 LocalBackend>, background_jobs=True)` 同样抛 `ValueError`。
+- `--background-jobs` + 受限 `--sandbox`：可以同用。后台任务的进程经 `tools/jobs.py` 的 `spawn_job_process` 用同一个沙箱启动；`run_command` 超时转后台的进程本来就由 `LocalBackend.execute` 在沙箱里启动，接管后仍在沙箱里。`start_job(keep_running=true)` 在沙箱下被拒绝（`permission_denied`）：它的 runner 要写 `.baseagent/jobs/`（沙箱里只读），而且要比本次运行的沙箱临时目录活得久。沙箱已关闭或不可用时任务被拒绝，绝不在沙箱外运行。
 - `--mode full` + 受限沙箱：不再打印“LocalBackend is not a sandbox”警告，改为打印沙箱摘要说明。
 
 ## 输出与运行契约
@@ -88,13 +88,12 @@ bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
 
 ## 什么在沙箱里，什么不在
 
-在沙箱里：`LocalBackend.execute` 启动的命令进程及其子进程（`run_command`、`verify_command`、`git_status`、`git_diff`、completion policy / test-fix 经同一路径运行的命令）。
+在沙箱里：`LocalBackend.execute` 启动的命令进程及其子进程（`run_command`、`verify_command`、`git_status`、`git_diff`、completion policy / test-fix 经同一路径运行的命令），以及后台任务（`start_job` 和超时转后台的 `run_command`，`keep_running` 除外，见上）。
 
 不在沙箱里：
 
 - 进程内的文件工具（`read_file`、`write_file`、`edit_file`、`apply_patch`、`grep` 等）——它们靠 `Workspace` / `LocalBackend` 自己的路径检查和 `--mode` 权限；
-- MCP 服务器进程、hooks、harness 自身；
-- 后台任务（见上，目前直接拒绝组合）。
+- MCP 服务器进程、hooks、harness 自身。
 
 命令继承 harness 的环境变量（只改写 `TMPDIR`/`TMP`/`TEMP`），包括其中的密钥；沙箱只限制写和网络，不限制读。
 
@@ -107,13 +106,13 @@ argv, env = sandbox.wrap(argv, cwd, env, backend.sandbox)   # backend.sandbox �
 subprocess.Popen(argv, cwd=cwd, env=env, ...)
 ```
 
-后台任务接入方式：`JobManager._launch` 在 `Popen` 前调用 `sandbox.wrap(job.argv, job.cwd, None, workspace.backend.sandbox)`，用返回的 argv/env 启动；接好后去掉 `main.py` 和 `Workspace` 里对 `--background-jobs` + `--sandbox` 的拒绝。注意 bwrap 用 `--chdir` 设定工作目录，`cwd` 要传任务实际的目录；`--die-with-parent` 会让任务随 harness 退出（与现在“任务随进程结束”的语义一致）。
+后台任务已按这个接口接入：`JobManager` 持有后端的沙箱，`spawn_job_process(argv, cwd, sandbox=...)` 在 `Popen` 前调用 `sandbox.wrap(argv, cwd, None, sandbox)`；任务记录里保存的是未包装的原始 argv（显示和策略匹配都用它）。bwrap 用 `--chdir` 设定工作目录，`cwd` 传任务实际的目录；`--die-with-parent` 会让任务随 harness 退出，与默认的“任务随会话结束”一致。
 
 ## 后续工作
 
 - 原生 Windows：需要 AppContainer / 受限令牌 / Job 对象等原生实现，目前只报不可用（WSL2 可用 bubblewrap）。
 - 网络白名单：现在只能全开或全关；可参照 Claude Code 用本地代理做域名白名单。
-- 后台任务接入 `sandbox.wrap`（见上）。
+- 沙箱下的 `keep_running` 任务：需要让 runner 在沙箱外、只把命令放进沙箱，并给它一个不随本次运行删除的临时目录。
 - MCP stdio 服务器进程也可以经 `sandbox.wrap` 启动。
 - macOS / Linux 在真机上的端到端验证（含受保护目录、网络拒绝、工作区位于 `/tmp` 下等情况）。
 - `workspace-write` 下受保护路径若在运行开始时不存在（例如还没创建的 `-wal` 文件），bwrap 的 `--ro-bind-try` 会跳过它；常见布局里它们都在 `.baseagent/` 下，已被整体只读覆盖。

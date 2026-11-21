@@ -96,6 +96,13 @@ class JobsCase(unittest.TestCase):
 
     def cleanup(self):
         for manager in self.managers:
+            # keep_running jobs outlive close() by design: stop them so the temp directory can go.
+            for item in manager.list(limit=1000)["jobs"]:
+                if item["status"] == "running":
+                    try:
+                        manager.kill(item["job_id"])
+                    except Exception:  # noqa: BLE001 -- best effort cleanup
+                        pass
             manager.close()
         self.temp.cleanup()
 
@@ -373,6 +380,230 @@ class LifecycleTests(JobsCase):
         self.assertIn("exited", state.messages[0]["content"])
         middleware.before_model(state)
         self.assertEqual(len(state.messages), 1)
+
+
+# Appends one line per start to <argv[1]> (proves the process is not restarted), writes its pid to
+# <argv[1]>.pid, prints to stdout and stderr, then keeps running for argv[2] seconds.
+SLOW = """
+import os, sys, time
+with open(sys.argv[1], "a") as handle:
+    handle.write("start\\n")
+with open(sys.argv[1] + ".pid.tmp", "w") as handle:
+    handle.write(str(os.getpid()))
+os.replace(sys.argv[1] + ".pid.tmp", sys.argv[1] + ".pid")
+print("before-timeout", flush=True)
+print("stderr-before", file=sys.stderr, flush=True)
+time.sleep(float(sys.argv[2]))
+print("after-timeout", flush=True)
+"""
+
+
+class TimeoutToBackgroundTests(JobsCase):
+    def setUp(self):
+        super().setUp()
+        (self.root / "slow.py").write_text(SLOW, encoding="utf-8")
+        self.marker = self.root / "starts.txt"
+
+    def pid(self):
+        path = Path(str(self.marker) + ".pid")
+        self.assertTrue(wait_until(path.exists))
+        return int(path.read_text())
+
+    def test_timeout_moves_the_same_process_to_a_job(self):
+        workspace = self.workspace()
+        tools = coding_tools(workspace)
+        result = tools.execute("run_command", {"argv": [PY, "slow.py", str(self.marker), "3"], "timeout": 1})
+        self.assertTrue(result.ok, result)
+        data = result.data
+        self.assertTrue(data["moved_to_background"])
+        self.assertIsNone(data["exit_code"])
+        self.assertIn("before-timeout", data["stdout"])
+        self.assertIn("stderr-before", data["stderr"])
+        self.assertIn(data["job_id"], data["message"])
+        child = self.pid()
+        self.assertTrue(alive(child))
+        info = workspace.jobs.describe(data["job_id"])
+        self.assertEqual((info["status"], info["kind"]), ("running", "run_command"))
+        final = workspace.jobs.wait(data["job_id"], timeout=30)
+        self.assertEqual((final["status"], final["exit_code"]), ("exited", 0))
+        log = workspace.jobs.output(data["job_id"])["content"]
+        # Output so far is preserved at the start of the log and continues with later output.
+        self.assertLess(log.index("before-timeout"), log.index("after-timeout"))
+        self.assertIn("stderr-before", log)
+        self.assertEqual(self.marker.read_text().splitlines(), ["start"], "process was restarted")
+        record = json.loads((self.root / ".baseagent" / "jobs" / f"{data['job_id']}.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["status"], record["kind"]), ("exited", "run_command"))
+
+    def test_cancellation_still_kills(self):
+        from baseagent.tools.jobs import TimeoutHandover
+        workspace = self.workspace()
+        token = CancellationToken()
+        threading.Timer(1.0, token.cancel).start()
+        handover = TimeoutHandover.for_command(workspace.jobs, [PY, "slow.py", str(self.marker), "30"], self.root)
+        result = workspace.backend.execute([PY, "slow.py", str(self.marker), "30"], timeout=20, cancellation=token,
+                                           on_timeout=handover)
+        self.assertEqual(result.error.code, "cancelled")
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+        self.assertEqual(workspace.jobs.list()["jobs"], [])
+
+    def test_flag_off_keeps_kill_on_timeout(self):
+        tools = coding_tools(Workspace(self.root, allow_command=True))
+        result = tools.execute("run_command", {"argv": [PY, "slow.py", str(self.marker), "30"], "timeout": 1})
+        self.assertEqual(result.error.code, "timeout")
+        self.assertNotIn("moved_to_background", result.data)
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+        self.assertFalse((self.root / ".baseagent" / "jobs").exists())
+
+    def test_verify_command_and_direct_calls_keep_kill_on_timeout(self):
+        workspace = self.workspace()
+        result = workspace.run_command([PY, "slow.py", str(self.marker), "30"], 1)
+        self.assertEqual(result.error.code, "timeout")
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+        self.assertEqual(workspace.jobs.list()["jobs"], [])
+
+    def test_sleep_is_exempt_and_limits_fall_back_to_kill(self):
+        from baseagent.tools.jobs import TimeoutHandover
+        workspace = self.workspace()
+        self.assertIsNone(TimeoutHandover.for_command(workspace.jobs, ["sleep", "100"], self.root))
+        self.assertIsNone(TimeoutHandover.for_command(workspace.jobs, ["/usr/bin/sleep", "100"], self.root))
+        workspace.jobs.max_running = 0
+        result = coding_tools(workspace).execute("run_command", {"argv": [PY, "slow.py", str(self.marker), "30"],
+                                                                 "timeout": 1})
+        self.assertEqual(result.error.code, "timeout")
+        self.assertIn("not moved to background", result.error.message)
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+
+
+class PersistenceTests(JobsCase):
+    def write_record(self, job_id, **fields):
+        directory = self.root / ".baseagent" / "jobs"
+        directory.mkdir(parents=True, exist_ok=True)
+        record = {"version": 1, "job_id": job_id, "status": "running", "argv": ["x"], "cwd": ".", "pid": None,
+                  "exit_code": None, "started_at": time.time(), "ended_at": None,
+                  "log_path": f".baseagent/jobs/{job_id}.log", "log_bytes": 0, "output_bytes": 0, "kind": "job",
+                  "keep_running": False, "owner_session": None, "leader_pid": None, "leader_identity": None,
+                  "notified": False, "kill_requested": False, "error": None, **fields}
+        (directory / f"{job_id}.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_records_are_persisted_and_reloaded(self):
+        first = self.manager()
+        job = first.start([PY, "-c", "print('persisted output'); raise SystemExit(4)"])
+        first.wait(job["job_id"], timeout=30)
+        record = json.loads((self.root / ".baseagent" / "jobs" / f"{job['job_id']}.json").read_text(encoding="utf-8"))
+        for key in ("job_id", "argv", "cwd", "pid", "started_at", "status", "log_path", "owner_session"):
+            self.assertIn(key, record)
+        fresh = self.manager()
+        listed = fresh.list()["jobs"]
+        self.assertEqual([item["job_id"] for item in listed], [job["job_id"]])
+        self.assertEqual((listed[0]["status"], listed[0]["exit_code"]), ("failed", 4))
+        self.assertTrue(listed[0]["from_earlier_process"])
+        self.assertIn("persisted output", fresh.output(job["job_id"])["content"])
+        self.assertFalse(fresh.kill(job["job_id"])["killed"])
+
+    def test_dead_pid_is_lost(self):
+        done = __import__("subprocess").Popen([PY, "-c", "pass"])
+        done.wait()
+        self.write_record("j00000001", pid=done.pid, leader_pid=done.pid, leader_identity="win:1")
+        info = self.manager().describe("j00000001")
+        self.assertEqual(info["status"], "lost")
+        self.assertIsNone(info["exit_code"])
+
+    def test_pid_reuse_guard(self):
+        # A live pid with a different creation time is another process: the job is lost, never killed.
+        self.write_record("j00000002", pid=os.getpid(), leader_pid=os.getpid(), leader_identity="not-this-process")
+        # A live pid whose identity was never recorded cannot be verified: unknown, and job_kill refuses.
+        self.write_record("j00000003", pid=os.getpid(), leader_pid=os.getpid(), leader_identity=None)
+        manager = self.manager()
+        self.assertEqual(manager.describe("j00000002")["status"], "lost")
+        self.assertEqual(manager.describe("j00000003")["status"], "unknown")
+        tools = coding_tools(self.workspace())
+        refused = tools.execute("job_kill", {"job_id": "j00000003"})
+        self.assertEqual(refused.error.code, "permission_denied")
+        self.assertIn("pid reuse", refused.error.message)
+        self.assertTrue(alive(os.getpid()))
+
+    def test_keep_running_job_survives_close_and_is_killed_after_reload(self):
+        first = self.manager()
+        job = first.start([PY, "sleeper.py", "60"], keep_running=True)
+        self.assertTrue(job["keep_running"])
+        self.assertTrue(wait_until(lambda: "started" in first.output(job["job_id"])["content"]))
+        first.close()
+        self.assertEqual(first.describe(job["job_id"])["status"], "running")
+        self.assertTrue(alive(job["pid"]))
+        fresh = self.manager()
+        self.assertEqual(fresh.describe(job["job_id"])["status"], "running")
+        killed = coding_tools(self.workspace()).execute("job_kill", {"job_id": job["job_id"]})
+        self.assertTrue(killed.ok, killed)
+        self.assertTrue(killed.data["killed"])
+        self.assertEqual(killed.data["status"], "killed")
+        self.assertTrue(wait_until(lambda: not alive(job["pid"])))
+
+    def test_keep_running_job_records_exit_code_and_output(self):
+        manager = self.manager()
+        job = manager.start([PY, "-c", "print('detached output'); raise SystemExit(5)"], keep_running=True)
+        final = manager.wait(job["job_id"], timeout=30)
+        self.assertEqual((final["status"], final["exit_code"]), ("failed", 5))
+        self.assertIn("detached output", manager.output(job["job_id"])["content"])
+        self.assertEqual(self.manager().describe(job["job_id"])["exit_code"], 5)
+        self.assertIn(manager.start([PY, "-c", "pass"], keep_running=True)["status"], ("running", "exited"))
+        with self.assertRaises(Exception) as caught:
+            manager.start(["definitely-not-a-program-xyz"], keep_running=True)
+        self.assertEqual(caught.exception.code, "not_found")
+
+    def test_keep_running_job_survives_harness_process_exit(self):
+        pid_file = self.root / "detached.json"
+        script = ("import json, sys\nfrom baseagent.tools.jobs import JobManager\n"
+                  f"job = JobManager({str(self.root)!r}).start([sys.executable, 'sleeper.py', '60'], keep_running=True)\n"
+                  f"open({str(pid_file)!r}, 'w').write(json.dumps(job))\n")
+        harness = __import__("subprocess").run([PY, "-c", script], cwd=self.root, timeout=60,
+                                               env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)})
+        self.assertEqual(harness.returncode, 0)
+        job = json.loads(pid_file.read_text())
+        self.assertTrue(alive(job["pid"]), "keep_running job ended with the harness process")
+        manager = self.manager()
+        self.assertEqual(manager.describe(job["job_id"])["status"], "running")
+        self.assertTrue(manager.kill(job["job_id"])["killed"])
+        self.assertTrue(wait_until(lambda: not alive(job["pid"])))
+
+    def test_retention_and_list_limit(self):
+        for index in range(5):
+            self.write_record(f"j0000001{index}", status="exited", exit_code=0, started_at=1000.0 + index,
+                              ended_at=1001.0 + index)
+            (self.root / ".baseagent" / "jobs" / f"j0000001{index}.log").write_text("x", encoding="utf-8")
+        manager = self.manager(keep_finished=3)
+        listed = manager.list()
+        self.assertEqual([item["job_id"] for item in listed["jobs"]], ["j00000012", "j00000013", "j00000014"])
+        self.assertFalse((self.root / ".baseagent" / "jobs" / "j00000010.log").exists())
+        self.assertFalse((self.root / ".baseagent" / "jobs" / "j00000011.json").exists())
+        short = manager.list(limit=2)
+        self.assertEqual(len(short["jobs"]), 2)
+        self.assertEqual(short["omitted"], 1)
+
+
+class NoticeTests(JobsCase):
+    def test_notice_has_exit_code_and_tail_and_is_delivered_once_across_managers(self):
+        first = self.manager(owner="s1")
+        job = first.start([PY, "-c", "print('alpha'); print('omega'); raise SystemExit(2)"])
+        first.wait(job["job_id"], timeout=30)
+        state = type("S", (), {"messages": []})()
+        JobNoticeMiddleware(first).before_model(state)
+        self.assertEqual(len(state.messages), 1)
+        content = state.messages[0]["content"]
+        self.assertIn("exit code 2", content)
+        self.assertIn("omega", content)
+        JobNoticeMiddleware(first).before_model(state)
+        JobNoticeMiddleware(self.manager(owner="s1")).before_model(state)
+        self.assertEqual(len(state.messages), 1)
+
+    def test_undelivered_notice_reaches_the_owning_session_after_restart(self):
+        first = self.manager(owner="s1")
+        job = first.start([PY, "-c", "print('done')"])
+        first.wait(job["job_id"], timeout=30)
+        self.assertEqual(self.manager(owner="other").take_notices(), [])
+        resumed = self.manager(owner="s1").take_notices()
+        self.assertEqual([item["job_id"] for item in resumed], [job["job_id"]])
+        self.assertEqual(first.take_notices(), [])  # in-memory copy is stale but the job was already
+        self.assertEqual(self.manager(owner="s1").take_notices(), [])
 
 
 if __name__ == "__main__":

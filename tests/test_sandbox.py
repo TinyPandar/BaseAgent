@@ -197,11 +197,52 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(boxed.contract(), {**expected, "sandbox": {"version": 1, "mode": "read-only", "network": False,
                                                                     "protected_parts": [".git", ".venv", ".baseagent"]}})
 
-    def test_background_jobs_refused_with_sandbox(self):
-        boxed = LocalBackend(self.root, sandbox=sb.Sandbox(sb.SandboxPolicy("read-only"), self.root, **linux()))
+    def test_background_jobs_spawn_through_the_sandbox(self):
+        from baseagent.tools import jobs
+        box = sb.Sandbox(sb.SandboxPolicy("workspace-write"), self.root, **linux())
+        boxed = LocalBackend(self.root, sandbox=box)
         self.addCleanup(boxed.close)
-        with self.assertRaises(ValueError):
-            Workspace(backend=boxed, background_jobs=True)
+        workspace = Workspace(backend=boxed, background_jobs=True)
+        self.addCleanup(workspace.jobs.close)
+        self.assertIs(workspace.jobs.sandbox, box)
+        seen = []
+
+        class Spawned(Exception):
+            pass
+
+        def popen(argv, **kw):
+            seen.append((argv, kw))
+            raise Spawned()
+
+        with patch.object(jobs.subprocess, "Popen", popen), self.assertRaises(Spawned):
+            jobs.spawn_job_process(["python", "train.py"], self.root, sandbox=box)
+        argv, kw = seen[0]
+        self.assertEqual((argv[0], argv[-2:]), ("/usr/bin/bwrap", ["python", "train.py"]))
+        self.assertEqual(kw["env"]["TMPDIR"], str(box.temp_dir))
+        # The same command without a sandbox is unchanged and inherits the environment.
+        with patch.object(jobs.subprocess, "Popen", popen), self.assertRaises(Spawned):
+            jobs.spawn_job_process(["python", "train.py"], self.root)
+        self.assertEqual((seen[1][0], seen[1][1]["env"]), (["python", "train.py"], None))
+
+    def test_background_jobs_never_run_unconfined(self):
+        from baseagent.tools import jobs
+        from baseagent.tools.result import ToolFailure
+        box = sb.Sandbox(sb.SandboxPolicy("read-only"), self.root, **linux())
+        boxed = LocalBackend(self.root, sandbox=box)
+        workspace = Workspace(backend=boxed, background_jobs=True)
+        self.addCleanup(workspace.jobs.close)
+        spawned = []
+        with patch.object(jobs.subprocess, "Popen", lambda *a, **kw: spawned.append(a) or 1 / 0):
+            # keep_running: the runner writes into .baseagent (read-only) and outlives the sandbox temp dir.
+            with self.assertRaises(ToolFailure) as caught:
+                workspace.jobs.start(["python", "train.py"], keep_running=True)
+            self.assertEqual(caught.exception.code, ErrorCode.PERMISSION_DENIED)
+            self.assertEqual(workspace.jobs.list()["jobs"], [])
+            boxed.close()  # a closed sandbox refuses instead of falling back to the host
+            with self.assertRaises(ToolFailure) as caught:
+                workspace.jobs.start(["python", "train.py"])
+            self.assertIn("SANDBOX_UNAVAILABLE", str(caught.exception))
+        self.assertEqual(spawned, [])
 
 
 class ConfigTests(unittest.TestCase):
@@ -266,13 +307,12 @@ class CliTests(unittest.TestCase):
                 code, _, _ = self.run_cli(argv, Script([]))
                 self.assertEqual(code, 2)
 
-    def test_background_jobs_refused(self):
+    def test_background_jobs_allowed_with_sandbox(self):
         with patch.object(sb, "detect", lambda mode, **kw: (sb.BUBBLEWRAP, "bwrap")), \
                 patch.object(sb, "_probe", lambda argv, env: (0, "")):
             code, _, err = self.run_cli(["--sandbox", "read-only", "--background-jobs", "--allow-command",
-                                         "--session", "j", "hi"], Script([AssertionError("no model")]))
-        self.assertEqual(code, 1)
-        self.assertIn("--background-jobs is not supported with --sandbox", err)
+                                         "--session", "j", "hi"], Script([{"content": "done"}]))
+        self.assertEqual(code, 0, err)
 
     def test_commands_run_wrapped(self):
         calls = []
