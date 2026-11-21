@@ -3,6 +3,7 @@
 import math
 from pathlib import Path
 
+from baseagent.backends.sandbox import MODES as SANDBOX_MODES
 from baseagent.capabilities.assembly import BUILTIN_PACKAGES
 from baseagent.jsondata import read_json_object
 
@@ -21,10 +22,14 @@ SECTIONS = {
             "tool_retries", "trace", "estimate_model", "preauthorize_model", "max_completion_tokens",
             "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile",
             "project_rules", "background_jobs"},
+    # Command sandbox (docs/sandbox.md): mode -> --sandbox, network -> --sandbox-network.
+    "sandbox": {"mode", "network"},
     "policies": {"tool_policy", "completion_policy", "subtasks_config", "test_command", "test_fix_max_iterations", "test_fix_output_max_chars"},
 }
 PATH_FIELDS = {"root", "db", "tokenizer_file", "tool_policy", "completion_policy", "subtasks_config"}
-BOOL_FIELDS = SECTIONS["permissions"] | {"trace", "estimate_model", "preauthorize_model", "repeat_call_guard", "dedupe_reads", "spill_enabled", "project_rules", "background_jobs"}
+# Section fields whose argparse destination differs from the field name.
+RENAMED = {("sandbox", "mode"): "sandbox", ("sandbox", "network"): "sandbox_network"}
+BOOL_FIELDS = SECTIONS["permissions"] | {"sandbox_network", "trace", "estimate_model", "preauthorize_model", "repeat_call_guard", "dedupe_reads", "spill_enabled", "project_rules", "background_jobs"}
 INT_MIN = {"compaction_max_chars": 0, "compaction_keep_turns": 1,
            "compaction_window_tokens": 0, "compaction_reserve_tokens": 0, "compaction_safety_tokens": 0,
            "compaction_tail_chars": 0, "compaction_min_tail_items": 1, "compaction_max_tail_items": 1,
@@ -52,7 +57,7 @@ def load_harness_config(path):
         settings = data.get(section, {})
         if not isinstance(settings, dict) or set(settings) - fields:
             raise ValueError(f"invalid or unknown fields in configuration section {section}")
-        values.update(settings)
+        values.update({RENAMED.get((section, key), key): value for key, value in settings.items()})
     for key, value in values.items():
         if key in BOOL_FIELDS:
             if type(value) is not bool:
@@ -79,6 +84,8 @@ def load_harness_config(path):
                 raise ValueError("unknown tool package in configuration")
         elif not isinstance(value, str) or not value.strip():
             raise ValueError(f"{key} must be a nonempty string")
+        if key == "sandbox" and value not in SANDBOX_MODES:
+            raise ValueError("sandbox mode must be one of " + ", ".join(SANDBOX_MODES))
         if key == "request_bound_profile" and value != "deepseek-context-v1":
             raise ValueError("unknown request_bound_profile")
     for key in PATH_FIELDS & values.keys():

@@ -7,7 +7,7 @@ baseagent --root . --mode edit --output-format json "把 README 的标题改成�
 baseagent --session S --resume --output-format jsonl
 ```
 
-退出码三种格式都一样：`0` 本轮完成，`1` 未完成或会话错误，`130` 被中断（Ctrl+C），`3` 是 `--backend docker` 起不来（没装 Docker、daemon 没起、镜像不在本地；在调用模型之前，费用 0，见下面「Docker 后端」）。参数错误（`argparse`）仍是 `2`，只在 stderr 打印用法，不输出 JSON；`--backend docker` 时会话库放在工作区里、又不在 `.baseagent/` 下也是 `2`。
+退出码三种格式都一样：`0` 本轮完成，`1` 未完成或会话错误，`130` 被中断（Ctrl+C），`3` 是 `--backend docker` 起不来（没装 Docker、daemon 没起、镜像不在本地；在调用模型之前，费用 0，见下面「Docker 后端」），或 `--sandbox read-only`/`workspace-write` 在本机没有可用的 OS 沙箱（如原生 Windows，见 [sandbox.md](sandbox.md)）。参数错误（`argparse`）仍是 `2`，只在 stderr 打印用法，不输出 JSON；`--backend docker` 时会话库放在工作区里、又不在 `.baseagent/` 下也是 `2`。
 
 **stdout 只有 JSON。** `json` / `jsonl` 下，给人看的内容全部走 stderr：`Session: …`、`Reported tokens: …`、`--trace` 行、`--stream` 的增量文本、警告（例如 `--mode full`）、`Agent error:` / `Agent stopped:`、主 Agent 会话 `--resume` 时 Worker 的推送。
 
