@@ -53,8 +53,10 @@ class LocalBackend:
     def delete_file(self, path, expected_sha256, expected_instructions):
         return atomic_delete(self, path, expected_sha256, expected_instructions)
 
-    def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None):
-        return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation)
+    def execute(self, argv, *, timeout, output_limit=20_000, cancellation=None, on_timeout=None):
+        # on_timeout: optional, LocalBackend only (background jobs take over a timed-out run_command).
+        return run_process(argv, self.root, timeout=timeout, output_limit=output_limit, cancellation=cancellation,
+                           on_timeout=on_timeout)
 
     def _path(self, relative: str) -> Path:
         path = (self.root / relative).resolve()

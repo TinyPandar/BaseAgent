@@ -338,9 +338,20 @@ class Workspace:
         if len(json.dumps(argv, ensure_ascii=False).encode("utf-8")) > 8_000:
             raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "command arguments exceed 8 KB")
 
-    def run_command(self, argv: list[str], timeout: int = 20, *, context=None) -> ToolResult:
+    def run_command_tool(self, argv: list[str], timeout: int = 20, *, context=None) -> ToolResult:
+        """The model's run_command: with background jobs on, a timeout moves the process to a job."""
+        return self.run_command(argv, timeout, context=context, background_on_timeout=True)
+
+    def run_command(self, argv: list[str], timeout: int = 20, *, context=None,
+                    background_on_timeout: bool = False) -> ToolResult:
         self.validate_command(argv, timeout)
-        result = self._run_bounded_command(argv, timeout, context=context)
+        handover = None
+        if background_on_timeout and self.jobs is not None:
+            from .jobs import TimeoutHandover
+            handover = TimeoutHandover.for_command(self.jobs, argv, self.root)
+        result = self._run_bounded_command(argv, timeout, context=context, on_timeout=handover)
+        if handover is not None:
+            result = handover.annotate(result)
         if context is not None:
             changed = self.refresh_observed(context.state)
             from .workflow import invalidate_verifications
@@ -370,7 +381,7 @@ class Workspace:
         return ToolResult(data=parse_git_status(str(data.get("stdout") or ""),
                                                 truncated=bool(data.get("stdout_truncated"))))
 
-    def _run_bounded_command(self, argv, timeout, *, output_limit=20_000, context=None):
+    def _run_bounded_command(self, argv, timeout, *, output_limit=20_000, context=None, on_timeout=None):
         effective = timeout
         if context is not None and context.remaining_seconds is not None:
             remaining = context.remaining_seconds()
@@ -378,8 +389,10 @@ class Workspace:
                 if remaining <= 0:
                     return ToolResult.failure(ErrorCode.TIMEOUT, "turn deadline expired before command launch")
                 effective = min(timeout, remaining)
+        # on_timeout is only passed when set (background jobs exist only with LocalBackend).
         return self.backend.execute(argv, timeout=effective, output_limit=output_limit,
-                           cancellation=context.cancellation if context else None)
+                           cancellation=context.cancellation if context else None,
+                           **({"on_timeout": on_timeout} if on_timeout is not None else {}))
 
 
 def coding_tools(workspace: Workspace) -> ToolRegistry:
@@ -421,7 +434,7 @@ def coding_tools(workspace: Workspace) -> ToolRegistry:
     from .patch import schema as patch_schema
     registry.register("apply_patch", PATCH_DESCRIPTION, patch_schema(), workspace.apply_patch, contextual=True)
     command_fields = {"argv": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}, "timeout": {"type": "integer", "minimum": 1, "maximum": workspace.max_command_timeout}}
-    registry.register("run_command", "Run an argv command in the workspace", params(command_fields, ["argv"]), workspace.run_command, contextual=True)
+    registry.register("run_command", "Run an argv command in the workspace", params(command_fields, ["argv"]), workspace.run_command_tool, contextual=True)
     steps = {"type": "array", "maxItems": 50, "items": params({"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}, "title": {"type": "string", "minLength": 1, "maxLength": 300}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "blocked"]}}, ["id", "title", "status"])}
     registry.register("update_plan", "Replace the session plan using its current revision; planning status is intent, not verification evidence", params({"steps": steps, "expected_revision": {"type": "integer", "minimum": 0}}, ["steps", "expected_revision"]), update_plan, contextual=True)
     registry.register("get_task_state", "Get plan revision and recent verification summaries", params({"recent_checks": {"type": "integer", "minimum": 0, "maximum": 100}}, []), get_task_state, retry_safe=True, contextual=True)

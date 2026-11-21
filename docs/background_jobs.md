@@ -18,7 +18,7 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 {"version": 1, "permissions": {"allow_command": true}, "run": {"background_jobs": true}}
 ```
 
-库用法：`Workspace(root, allow_command=True, background_jobs=True)`，`coding_tools()` / `assemble_capabilities()` 会多出下面四个工具，能力契约里多一项 `"background_jobs": true`。这四个工具不属于任何 `--tool-package`，开关打开就会加上。
+库用法：`Workspace(root, allow_command=True, background_jobs=True)`，`coding_tools()` / `assemble_capabilities()` 会多出下面四个工具，能力契约里多一项 `"background_jobs": true`。这四个工具不属于任何 `--tool-package`，开关打开就会加上。开关打开时 `run_command` 的 schema 不变，但超时语义变了（见“run_command 超时转后台”）。
 
 打开或关闭开关会改变工具契约；未完成的回合换了开关，恢复时需要 `--accept-config-changes`，与其他工具变化一致。
 
@@ -26,8 +26,8 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 
 | 工具 | 参数 | 说明 |
 | --- | --- | --- |
-| `start_job` | `argv`（必填，与 `run_command` 同样的字符串数组，不经 shell），`cwd`（可选，工作区内的相对目录，默认根目录） | 立即返回 `job_id`（形如 `j1a2b3c4d`）、`pid`、`log_path` 等，不等命令结束。需要 `--allow-command` |
-| `job_list` | 无 | 所有任务的状态、退出码、开始/结束时间、日志大小。`retry_safe` |
+| `start_job` | `argv`（必填，与 `run_command` 同样的字符串数组，不经 shell），`cwd`（可选，工作区内的相对目录，默认根目录），`keep_running`（可选，默认 `false`；`true` 时任务在 baseagent 退出后继续运行，见“生命周期”） | 立即返回 `job_id`（形如 `j1a2b3c4d`）、`pid`、`log_path` 等，不等命令结束。需要 `--allow-command` |
+| `job_list` | 无 | 最近 30 个任务（运行中 / `unknown` 的总会列出，包括以前进程启动的）的状态、退出码、开始/结束时间、日志大小；更早的记录数在 `omitted`。`retry_safe` |
 | `job_output` | `job_id`，`offset`（字节，默认 0），`limit`（1–20000，默认 8000），或 `tail`（读最后 N 字节） | 返回 `content`、`next_offset`、`more`（日志里还有没读的）、`complete`（任务已结束且已读到末尾）。`retry_safe` |
 | `job_kill` | `job_id` | 停止任务及其整棵进程树，返回最终状态；对已结束的任务返回 `killed: false`。需要 `--allow-command` |
 
@@ -39,8 +39,28 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 | `exited` | 主进程自己退出，退出码 0 |
 | `failed` | 主进程退出码非 0，或监控线程出错（见 `error`） |
 | `killed` | 被 `job_kill` 或会话关闭停止 |
+| `lost` | 以前进程的任务：进程已经不在（或 PID 已被别的进程复用），没有留下退出状态，退出码未知 |
+| `unknown` | 以前进程的任务：PID 还活着，但无法核对它就是原来的进程（读不到进程创建时间或记录里没有）；`job_kill` 拒绝停止它 |
+
+结果里 `kind` 为 `run_command`（超时转来的）或 `detached`（`keep_running`）时会标出；以前进程的任务带 `from_earlier_process: true`。
 
 启动失败（程序不存在、`cwd` 不存在）直接返回 `not_found`，不会留下任务记录。
+
+## run_command 超时转后台
+
+开关打开时，模型调用的 `run_command` 到了超时（包括被回合截止时间截短的超时）而命令还在运行，**不再杀掉它**，而是把这个正在运行的进程交给任务管理器（这正是“训练跑了一半被超时杀掉”的情形）：
+
+- 还是同一个进程，不会重新启动；PID 不变，进程组 / Job object 不变。
+- 已经读到的输出（每个流最多 `run_command` 的 20 KB）写在任务日志开头：先 stdout、再 stderr；之后的输出按到达顺序（两个流合并）追加到同一个日志。超过 20 KB 被丢掉的早期输出找不回来。
+- `run_command` 本身以**确定的成功结果**结束：`ok: true`，`data` 里 `moved_to_background: true`、`job_id`、`pid`、`log_path`、`exit_code: null`、到目前为止的 `stdout` / `stderr`，以及说明文字。账本里这次调用是一个普通的已完成调用，恢复语义不变。
+- 之后它就是一个普通任务（`kind: "run_command"`）：完成通知、`job_output`、`job_kill` 都适用。它的管道连着 baseagent，所以**随会话结束而停止**（不能 `keep_running`）。要跨退出保留，用 `start_job(keep_running=true)` 启动。
+- **取消仍然杀进程**：Ctrl+C、`/cancel`、`--cancel-session` 发生在命令运行期间时，与以前一样杀掉整棵进程树，不转后台。只有超时才转。
+- **`sleep` 例外**：`argv[0]` 是 `sleep`（或 `sleep.exe`，忽略路径）的命令超时仍然被杀。模型用 `sleep` 是在等待，超时意味着它不需要等更久（Claude Code 同样把 `sleep` 排除在外）。
+- `verify_command`、`git_diff` 等其他命令路径、以及库里直接调用 `Workspace.run_command()` 都保持超时即杀；只有注册给模型的 `run_command` 工具（`Workspace.run_command_tool`）会转后台。
+- 同时运行的任务已达上限时不转，照旧杀掉，错误信息里附上 `not moved to background: ...` 原因。
+- 开关关闭时行为与以前完全相同。
+
+实现：`run_process(on_timeout=...)` 在超时且进程仍在运行时调用回调，交出 `ProcessHandover`（进程、Job object、读取线程、已捕获输出）；回调返回结果即表示接管，`run_process` 不再清理进程。`LocalBackend.execute` 只是把可选的 `on_timeout` 透传下去；其他后端不受影响（只有本地后端才有任务管理器）。
 
 ## 输出
 
@@ -48,15 +68,17 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 
 ## 生命周期：什么会停止一个任务
 
-| 事件 | 任务 |
-| --- | --- |
-| 回合结束、回合取消（Ctrl+C 取消回合、`/cancel`、`--cancel-session`）、`run_command` 超时 | **不受影响**，继续运行 |
-| `job_kill` | 停止整棵进程树 |
-| 主进程自己退出 | 它留下的子孙进程一并停止（与 `run_command` 结束时的行为一致），避免孤儿进程 |
-| 会话结束：一次性 prompt 跑完、聊天 `/exit`、TUI/Web 关闭、出错退出 | `main()` 的 `finally` 调用 `JobManager.close()`，停止所有仍在运行的任务 |
-| baseagent 进程退出 | Windows：任务在 Job object 里（`KILL_ON_JOB_CLOSE`），进程退出（包括崩溃）时句柄关闭，整棵树被系统终止。POSIX：正常退出时 `atexit` 停止所有任务；`SIGKILL` 或崩溃时任务可能留下 |
+规则：**默认任务随会话结束；`start_job(keep_running=true)` 的任务在 baseagent 退出后继续运行**（训练这类工作应当这样启动）。默认不保留，是为了不在用户不知情时留下孤儿进程。
 
-也就是说，任务的寿命以**会话进程**为界：在交互式聊天里可以跨多个回合；一次性 prompt 在回答结束时就会停掉它启动的任务。要跨重启保留任务，见“后续工作”。
+| 事件 | 普通任务 / 超时转来的任务 | `keep_running` 任务 |
+| --- | --- | --- |
+| 回合结束、回合取消（Ctrl+C 取消回合、`/cancel`、`--cancel-session`） | **不受影响**，继续运行 | 同左 |
+| `job_kill` | 停止整棵进程树 | 停止整棵进程树（重启后也可以，需通过身份核对） |
+| 主进程自己退出 | 它留下的子孙进程一并停止（与 `run_command` 结束时的行为一致） | 同左（由 runner 停止） |
+| 会话结束：一次性 prompt 跑完、聊天 `/exit`、TUI/Web 关闭、出错退出 | `main()` 的 `finally` 调用 `JobManager.close()` 停止它们 | **继续运行** |
+| baseagent 进程退出 | Windows：在 harness 的 Job object 里（`KILL_ON_JOB_CLOSE`），进程退出（包括崩溃）时整棵树被系统终止。POSIX：正常退出时 `atexit` 停止；`SIGKILL` 或崩溃时可能留下（重启后显示为 `running`，可 `job_kill`） | **继续运行** |
+
+`keep_running` 的做法：baseagent 启动一个小的 runner 进程（`python -c`，代码在 `tools/jobs.py` 的 `_RUNNER`），runner 不在 harness 的进程组 / Job object 里（POSIX 新会话；Windows 用 `CREATE_BREAKAWAY_FROM_JOB`，若 harness 所在的 Job 不允许脱离，则退回普通创建，此时 runner 仍会随那个外层 Job 结束）。runner 再启动命令，把命令放进自己的进程组（POSIX）或自己持有的 `KILL_ON_JOB_CLOSE` Job object（Windows），自己负责写有上限的日志，命令结束后把退出码原子写入 `<id>.exit.json`。停止 runner 就停止整棵树。因此 baseagent 不在时结束的 `keep_running` 任务，重启后仍能看到真实退出码和完整日志。
 
 进程隔离：
 
@@ -65,7 +87,13 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 
 ## 完成通知
 
-开关打开时，`main()` 会加一个 `JobNoticeMiddleware`：在下一次模型调用之前，把自上次通知以来结束的任务（id、状态、退出码、日志大小、命令）作为一条 user 消息追加到对话，每个任务只通知一次，做法与 worker 的 `InboxMiddleware` 相同。回合之间结束的任务在下一个回合的第一次模型调用时通知。主 Agent 聊天里，通知由下一个发出模型调用的 agent（主 Agent 或某个 worker）收到。不打开开关时没有这一层。
+开关打开时，`main()` 会加一个 `JobNoticeMiddleware`：在下一次模型调用之前，把自上次通知以来结束的任务（id、状态、退出码、日志大小、命令，以及日志最后几行，最多 5 行、约 600 字节）作为一条 user 消息追加到对话，做法与 worker 的 `InboxMiddleware` 相同。回合之间结束的任务在下一个回合的第一次模型调用时通知。主 Agent 聊天里，通知由下一个发出模型调用的 agent（主 Agent 或某个 worker）收到。不打开开关时没有这一层。
+
+只通知一次，并且跨重启：
+
+- 通知取出时，任务记录里的 `notified` 立即写盘；另一个管理器（例如恢复会话的新进程）发通知前会先看记录，已通知的不再发。通知消息随下一次模型调用前的检查点（`model_started`）存进会话，恢复时在历史里。
+- 只通知**启动该任务的会话**（`main()` 把 `--session` 设为管理器的 `owner`）：会话结束时还没通知的任务（包括 baseagent 不在时结束的 `keep_running` 任务、被判为 `lost` 的任务），在用 `--resume` / 同一个 `--session` 再次运行时通知；别的会话只能在 `job_list` 里看到它们。
+- 已知窗口：取出通知后、写入会话检查点前进程崩溃，这条通知会丢失（任务状态仍可用 `job_list` 查看）。
 
 ## 权限与安全
 
@@ -74,19 +102,42 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 - `--tool-policy` 按工具名匹配，`argv_exact` 等条件同样适用于 `start_job`（参数名也是 `argv`）。**注意：限制 `run_command` 的规则不会自动作用于 `start_job`**；用策略约束命令时，要给 `start_job` 写同样的规则，或把它设为 `deny` / `ask`。
 - HarnessKnight 把 `start_job` 当作命令执行（`execute` 影响），与 `run_command` 相同。
 - **LocalBackend 不是沙箱。** 后台任务以运行 baseagent 的用户身份直接在宿主机上运行，能读写该用户能访问的一切，能访问网络。进程组 / Job object 只管理寿命，不限制文件或网络访问。
-- `--backend docker` 不支持后台任务：`--background-jobs` 与 `--backend docker` 同时给出时，启动前直接报错退出（不会启动容器）；库里给 `Workspace` 注入非本地后端时，四个工具都返回 `permission_denied` 和说明，绝不会悄悄在宿主机上运行。
-- 同时运行的任务最多 8 个，每个会话最多 100 个任务记录，超出返回 `limit_exceeded`。
+- `--backend docker` 不支持后台任务：`--background-jobs` 与 `--backend docker` 同时给出时，启动前直接报错退出（不会启动容器），错误信息说明两种做法：去掉 `--background-jobs`（长命令在容器里用 `run_command`，受超时限制），或去掉 `--backend docker`（任务在宿主机上运行，没有沙箱）。库里给 `Workspace` 注入非本地后端时，四个工具都返回 `permission_denied` 和同样的说明，绝不会悄悄在宿主机上运行；`run_command` 超时照旧杀掉。
+- 同时运行的任务最多 8 个（包括以前进程留下、仍在运行或状态 `unknown` 的任务），每个会话最多启动 100 个任务，超出返回 `limit_exceeded`。
 - 任务继承 baseagent 进程的环境变量（与 `run_command` 相同），包括其中的凭证。
+
+## 持久化与重启
+
+每个任务在 `<工作区>/.baseagent/jobs/` 下有一组文件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `<id>.json` | 任务记录（`version: 1`）：`job_id`、`kind`（`job` / `detached` / `run_command`）、`argv`、`cwd`、`pid`（命令进程）、`leader_pid` 与 `leader_identity`（整棵树的领头进程及其创建时间标识，`job_kill` 杀它）、`started_at` / `ended_at`、`status`、`exit_code`、`log_path`、`log_bytes` / `output_bytes`、`owner_session`、`keep_running`、`notified`、`kill_requested`、`error`。每次变化都先写临时文件再原子替换 |
+| `<id>.log` | 合并的 stdout/stderr 日志 |
+| `<id>.run.json` / `<id>.exit.json` | 仅 `keep_running`：runner 记录命令 PID / 退出码 |
+
+新的 `JobManager`（新会话、新进程）会读入以前的记录，`job_list` / `job_output` / `job_kill` 都能用。以前记录为 `running` 的任务按下面的规则判断：
+
+1. 有 `<id>.exit.json`：按其中的退出码记为 `exited` / `failed`（或已请求停止时 `killed`）。
+2. 领头进程已不存在：`lost`（退出码未知）。
+3. 领头进程的 PID 还在，且其创建时间与记录一致：`running`，可以 `job_kill`（杀之前再核对一次）。
+4. PID 还在但创建时间不同：说明 PID 被别的进程复用了，原任务已结束：`lost`，绝不会去杀那个进程。
+5. PID 还在但读不到创建时间（无权限、平台不支持）或记录里没有：`unknown`，`job_kill` 拒绝（`permission_denied`），需要用户自己处理。
+
+进程创建时间：Windows 用 `GetProcessTimes`，Linux 读 `/proc/<pid>/stat` 的 starttime，其他 POSIX 用 `ps -o lstart=`。
+
+保留与清理：启动时只保留最近 50 个已结束任务的记录和日志（`JobManager(keep_finished=...)`），更早的 `<id>.*` 文件被删除；运行中 / `unknown` 的任务不删。`job_list` 默认只显示最近 30 个。没有新增清理工具。旧版本留下的、没有 `.json` 记录的日志不会被列出，也不会被删除。
 
 ## 已知限制
 
 - Windows 上进程先创建、再加入 Job object；在这极短的窗口内派生并立即脱离的子进程可能漏掉（`run_command` 有同样的限制）。POSIX 上自己调用 `setsid` 的子孙进程会离开进程组，`job_kill` 管不到它。
-- 任务记录只在内存里，`job_list` 看不到以前进程启动的任务；旧日志文件留在 `.baseagent/jobs/`，不会自动清理。
+- 超时转来的任务只保留超时前每个流的前 20 KB 输出，且超时前的 stdout 与 stderr 在日志里是先后排列、不是交错的。
+- 两个 baseagent 进程同时使用同一工作区时，各自看到对方的任务（显示为 `from_earlier_process`），状态判断与写盘之间有很小的竞争窗口。
+- `keep_running` 任务在 Windows 上依赖能脱离外层 Job object；某些终端 / 服务管理器禁止脱离，此时它会随外层一起结束。
 - 日志只保留开头 10 MB；长时间训练如果输出很多，后面的进度会丢，建议让训练脚本自己写日志文件或减少输出。
 
 ## 后续工作
 
-- **跨重启持久化**：把任务记录写进会话库，重启后能看到并接管仍在运行的任务（需要真正脱离父进程，并处理 PID 复用）。
-- **Docker 后端**：在容器里用 `docker exec -d` 启动并把日志写在容器内，`job_kill` 杀容器内进程组。
-- **超时转后台**：开关打开时，`run_command` 超时不杀进程，而是把它转成一个后台任务（Claude Code 的做法）。这需要把 `run_process` 已读到内存的输出和读取线程交接给任务管理器，并改变 `run_command` 超时结果的语义，本次没有做。
+- **Docker 后端**：在容器里用 `docker exec -d` 启动 runner 并把日志与记录写在容器内（或挂载目录），`job_kill` 杀容器内进程组；容器随 run 删除，所以 `keep_running` 还需要保留容器的策略。在此之前继续拒绝。
+- **沙箱**：所有进程创建都经过 `tools/jobs.py` 的 `spawn_job_process`（`keep_running` 时被包装的是 runner），超时转来的进程由后端的 `execute` 创建；接入 OS 沙箱时从这两处包装命令。
 - 日志滚动（保留最新部分而不是开头）、按任务的输出上限参数、`/jobs` 之类的聊天命令。
