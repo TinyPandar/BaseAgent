@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from baseagent.agent.events import event
 from baseagent.agent.state import RunStatus, State
-from .store import SessionStore, _json
+from .store import SessionStore, _json, checked_messages
 
 
 def _locked(store, root):
@@ -102,7 +102,7 @@ class TaskNodeStore(SessionStore):
     def __init__(self, store, root, record, parent):
         self.owner, self.root_state, self.parent = store, root, parent
         self.task_id, self.parent_task_id = record["task_id"], record["parent_task_id"]
-        self.state = State.from_dict(record["state"])
+        self.state = checked_messages(State.from_dict(record["state"]), f"task {self.task_id!r}")
         self._committed_json = _json(record["state"])
         self._pending = None
         self.path, self.lock_dir = store.path, store.lock_dir
@@ -149,7 +149,7 @@ class TaskNodeStore(SessionStore):
             raise ValueError("node belongs to another session")
         with self._connection() as connection:
             row = connection.execute("SELECT state_json FROM task_nodes WHERE session_id=? AND root_turn_id=? AND task_id=?", (session_id, self.root_state.turn_id, self.task_id)).fetchone()
-        return State.from_dict(json.loads(row[0])) if row else None
+        return checked_messages(State.from_dict(json.loads(row[0])), f"task {self.task_id!r}") if row else None
 
     def cancellation(self, session_id, turn_id):
         if session_id != self.state.session_id or turn_id != self.state.turn_id:

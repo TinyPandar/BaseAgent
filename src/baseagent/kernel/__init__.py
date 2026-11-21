@@ -3,8 +3,8 @@
 from .agent import iter_agent
 from .cancellation import CancellationToken, Cancelled
 from .events import AgentEvent
-from .messages import (Message, TextPart, ToolCall, ToolPairingError, ToolReply,
-                       check_tool_pairing, unanswered_tool_calls)
+from .messages import (Message, OpenToolBatch, TextPart, ToolCall, ToolPairingError, ToolReply,
+                       check_tool_pairing, open_tool_batches, unanswered_tool_calls)
 from .hooks import AgentMiddleware, LoopHooks, MiddlewarePipeline, ModelRequest, ToolCallRequest
 from .state import KernelState, RunStatus
 from .tools import ToolRegistry
@@ -18,5 +18,5 @@ __all__ = [
     "ModelError", "RateLimitError", "TransientError", "ModelTimeoutError",
     "AuthError", "BadRequestError", "ContextLengthError", "ResponseParseError",
     "Message", "TextPart", "ToolCall", "ToolReply", "ToolPairingError",
-    "check_tool_pairing", "unanswered_tool_calls",
+    "OpenToolBatch", "check_tool_pairing", "open_tool_batches", "unanswered_tool_calls",
 ]

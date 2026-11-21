@@ -12,6 +12,7 @@ from .cancellation import CancellationToken, Cancelled
 from .context import ContextLimitExceeded, ContextPolicy
 from .events import AgentEvent
 from .hooks import AgentMiddleware, LoopHooks, MiddlewarePipeline, ModelRequest, TaskStopped, ToolCallRequest
+from .messages import ToolPairingError, check_tool_pairing, open_tool_batches
 from .model import Model
 from .result import ErrorCode, ToolResult
 from .state import KernelState, RunStatus
@@ -54,15 +55,66 @@ def _tool_request(state, call, cancellation, tools) -> ToolCallRequest:
 
 
 def _pending_calls(state: KernelState) -> list[dict[str, Any]]:
-    replies = set()
-    for message in reversed(state.messages[state.turn_start:]):
-        if message["role"] == "tool":
-            replies.add(message["tool_call_id"])
-        elif message["role"] == "assistant":
-            return [call for call in _tool_calls(message) if call["id"] not in replies]
-        elif message["role"] == "user":
-            break
+    """Unanswered calls of the trailing assistant batch, which the loop executes next.
+
+    A batch followed by a later user/assistant message is superseded, never
+    pending: it is closed by ``_close_superseded_calls`` or refused before the
+    next model call, and never executed.
+    """
+    for batch in open_tool_batches(state.messages):
+        if not batch.superseded:
+            missing = set(batch.call_ids)
+            return [call for call in _tool_calls(state.messages[batch.assistant_index]) if call["id"] in missing]
     return []
+
+
+INVALID_CONVERSATION = "invalid tool call pairing; the conversation was not sent to the model"
+SUPERSEDED_CALL_MESSAGE = ("tool call was not run: the turn stopped before this call executed and a later message "
+                           "superseded it; do not assume its effects")
+_STARTED_EVENTS = frozenset({"tool_started", "tool_call_started", "tool_attempt"})
+_FINISHED_EVENTS = frozenset({"tool_completed", "tool_call_finished"})
+
+
+def _close_superseded_calls(state: KernelState) -> tuple[str, ...]:
+    """Answer calls orphaned by a later user/assistant message with an explicit error result.
+
+    Each synthetic reply is inserted right after its assistant batch's existing
+    replies, before the superseding message, so the conversation becomes valid
+    for every provider. A call with recorded start evidence but no recorded
+    completion has an unknown outcome: nothing is changed and ToolPairingError
+    is raised, so the run stops for explicit reconciliation instead.
+    """
+    orphans = [batch for batch in open_tool_batches(state.messages) if batch.superseded]
+    if not orphans:
+        return ()
+    started, finished = set(), set()
+    for value in state.events:
+        kind = value.get("type") if isinstance(value, dict) else None
+        call_id = (value.get("data") or {}).get("call_id") if isinstance(value, dict) else None
+        if kind in _STARTED_EVENTS:
+            started.add(call_id)
+        elif kind in _FINISHED_EVENTS:
+            finished.add(call_id)
+    uncertain = [call_id for batch in orphans for call_id in batch.call_ids
+                 if call_id in started and call_id not in finished]
+    if uncertain:
+        raise ToolPairingError("tool call(s) started without a recorded result before a later message: "
+                               + ", ".join(uncertain) + "; reconcile their outcome explicitly",
+                               index=orphans[0].insert_at, call_ids=uncertain)
+    content = json.dumps(ToolResult.failure(ErrorCode.CANCELLED, SUPERSEDED_CALL_MESSAGE).to_dict(),
+                         ensure_ascii=False, allow_nan=False)
+    messages = list(state.messages)
+    turn_start = state.turn_start
+    for batch in reversed(orphans):
+        replies = [{"role": "tool", "tool_call_id": call_id, "content": content} for call_id in batch.call_ids]
+        messages[batch.insert_at:batch.insert_at] = replies
+        if batch.insert_at <= turn_start:
+            turn_start += len(replies)
+    # Anything still malformed (unknown or duplicate replies, reused IDs) is refused unchanged.
+    check_tool_pairing(messages, allow_pending=True)
+    state.messages[:] = messages
+    state.turn_start = turn_start
+    return tuple(call_id for batch in orphans for call_id in batch.call_ids)
 
 
 class _LimitExceeded(Exception):
@@ -277,6 +329,9 @@ class _SingleTaskHooks(LoopHooks):
         metadata = getattr(self.state, "metadata", None) or {}
         return bool((metadata.get("parallel_config") or {}).get("readonly"))
 
+    def tool_calls_superseded(self, call_ids):
+        return self.checkpoint("tool_calls_superseded", call_ids=list(call_ids))
+
     def stopped(self):
         return self.checkpoint("run_stopped", status=self.state.status,
                                model_calls=self.state.model_calls, tool_calls=self.state.tool_calls)
@@ -309,6 +364,13 @@ def iter_agent(
         yield driver.started()
         driver.check_start()
         driver.before_agent(state)
+        # Turn start / resume: calls orphaned by a later message are closed, never run.
+        superseded = _close_superseded_calls(state)
+        if superseded:
+            notice = getattr(driver, "tool_calls_superseded", None)
+            value = notice(superseded) if callable(notice) else None
+            if value is not None:
+                yield value
         while True:
             driver.check()
             pending = _pending_calls(state)
@@ -393,10 +455,13 @@ def iter_agent(
                 state.status = RunStatus.MAX_STEPS_EXCEEDED
                 break
             driver.before_model(state)
+            outgoing = driver.messages()
+            # Invariant: no request with an unpaired tool call or reply ever reaches a provider.
+            check_tool_pairing(outgoing, allow_pending=False)
             yield driver.model_started()
             started = time.monotonic()
             try:
-                response = driver.model_result(ModelRequest(state, driver.messages(), tools.specs(), cancellation))
+                response = driver.model_result(ModelRequest(state, outgoing, tools.specs(), cancellation))
             except BaseException as exc:
                 failed = driver.model_failed(exc, time.monotonic() - started)
                 if failed is not None:
@@ -426,6 +491,11 @@ def iter_agent(
             yield driver.step_completed(calls)
     except TaskStopped:
         pass
+    except ToolPairingError as exc:
+        # Stable for every driver: the conversation needs explicit repair, so
+        # resuming without one refuses again before any model dispatch.
+        state.status = RunStatus.NEEDS_RECOVERY
+        state.error = f"{INVALID_CONVERSATION}: {exc}"
     except BaseException as exc:
         if not driver.handle_exception(exc):
             raise
