@@ -7,12 +7,14 @@ from urllib import error, request
 
 from baseagent.kernel.errors import (
     BadRequestError,
+    ContextLengthError,
     ModelTimeoutError,
     ResponseParseError,
     TransientError,
 )
 
 from ._common import (
+    ANTHROPIC_CONTENT_KEY,
     endpoint,
     environment_key,
     generation_params,
@@ -46,6 +48,77 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
+THINKING_BLOCKS = frozenset({"thinking", "redacted_thinking"})
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _check_thinking(params, cap):
+    """Validate Anthropic thinking/output_config generation parameters locally."""
+    thinking = params.get("thinking")
+    if thinking is not None:
+        kind = thinking.get("type") if isinstance(thinking, dict) else None
+        allowed = {"adaptive": {"type", "display"}, "disabled": {"type"}, "enabled": {"type", "budget_tokens", "display"}}
+        if kind not in allowed or set(thinking) - allowed[kind]:
+            raise ValueError("thinking must be {type: adaptive|disabled} or {type: enabled, budget_tokens: N}")
+        if "display" in thinking and thinking["display"] not in {"summarized", "omitted"}:
+            raise ValueError("thinking display must be summarized or omitted")
+        if kind == "enabled":
+            budget = thinking.get("budget_tokens")
+            if type(budget) is not int or budget < 1024 or budget >= cap:
+                raise ValueError("thinking budget_tokens must be an integer >= 1024 and below the completion token cap")
+    output = params.get("output_config")
+    if output is not None and (not isinstance(output, dict) or set(output) != {"effort"} or output["effort"] not in EFFORTS):
+        raise ValueError("output_config must be {effort: " + "|".join(EFFORTS) + "}")
+
+
+def _core(blocks):
+    texts = [block["text"] for block in blocks if block["type"] == "text"]
+    calls = [(block["id"], block["name"], block["input"]) for block in blocks if block["type"] == "tool_use"]
+    return "\n".join(texts), calls
+
+
+def _replayed_blocks(original, blocks):
+    """Original response blocks (thinking first-class) for one stored assistant message.
+
+    Unchanged messages are sent back exactly as the API returned them. If the stored
+    text/tool calls no longer match (the message was edited), thinking blocks still
+    go first, unchanged and in order, followed by the current text/tool_use blocks.
+    """
+    if not isinstance(original, list) or not all(isinstance(block, dict) and isinstance(block.get("type"), str) for block in original):
+        raise ValueError()
+    original = json.loads(json.dumps(original, allow_nan=False))
+    try:
+        if _core(original) == _core(blocks):
+            return original
+    except (KeyError, TypeError):
+        pass
+    return [block for block in original if block["type"] in THINKING_BLOCKS] + blocks
+
+
+def _usage(raw):
+    """TokenUsage (cached input counted as prompt) and reported thinking tokens, if any."""
+    if not isinstance(raw, dict):
+        return None, 0
+    try:
+        counts = [raw["input_tokens"], raw["output_tokens"], raw.get("cache_creation_input_tokens", 0), raw.get("cache_read_input_tokens", 0)]
+        if any(type(n) is not int or n < 0 for n in counts):
+            raise ValueError()
+        prompt = counts[0] + counts[2] + counts[3]
+        usage = TokenUsage(prompt, counts[1], prompt + counts[1])
+    except (KeyError, TypeError, ValueError):
+        return None, 0
+    # Thinking is billed inside output_tokens; count it separately only when reported.
+    details = raw.get("output_tokens_details")
+    reasoning = 0
+    if isinstance(details, dict):
+        for name in ("thinking_tokens", "reasoning_tokens"):
+            value = details.get(name)
+            if type(value) is int and 0 <= value <= counts[1]:
+                reasoning = value
+                break
+    return usage, reasoning
+
+
 class AnthropicModel:
     def __init__(self, model, *, api_key_env="ANTHROPIC_API_KEY", base_url="https://api.anthropic.com",
                  timeout=30.0, max_completion_tokens=512, generation=None):
@@ -56,7 +129,9 @@ class AnthropicModel:
         if type(max_completion_tokens) is not int or max_completion_tokens < 1:
             raise ValueError("completion token cap must be a positive integer")
         self.max_completion_tokens = max_completion_tokens
-        self.generation_params = generation_params(generation, {"temperature", "top_p", "top_k", "stop_sequences"})
+        self.generation_params = generation_params(generation, {"temperature", "top_p", "top_k", "stop_sequences",
+                                                                "thinking", "output_config"})
+        _check_thinking(self.generation_params, max_completion_tokens)
         self._opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
         self._closed = False
 
@@ -89,6 +164,11 @@ class AnthropicModel:
                         if not isinstance(args, dict):
                             raise ValueError()  # noqa: TRY004 -- parsed as a response error
                         blocks.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": args})
+                    if role == "assistant" and message.get(ANTHROPIC_CONTENT_KEY) is not None:
+                        blocks = _replayed_blocks(message[ANTHROPIC_CONTENT_KEY], blocks)
+                    elif role == "assistant" and not blocks:
+                        # An empty end_turn reply has nothing to replay; Anthropic rejects empty turns.
+                        continue
                 else:
                     raise ValueError()
                 if not blocks:
@@ -112,35 +192,50 @@ class AnthropicModel:
     @staticmethod
     def _response(value):
         try:
-            texts, calls = [], []
-            for block in value["content"]:
-                if block["type"] == "text" and isinstance(block["text"], str):
+            content = value["content"]
+            if not isinstance(content, list):
+                raise ValueError()  # noqa: TRY004 -- parsed as a response error
+            stop = value.get("stop_reason")
+            texts, calls, thinking = [], [], False
+            for block in content:
+                kind = block["type"]
+                if kind == "text" and isinstance(block["text"], str):
                     texts.append(block["text"])
-                elif block["type"] == "tool_use" and isinstance(block["input"], dict) and isinstance(block["id"], str) and isinstance(block["name"], str):
+                elif kind == "tool_use" and isinstance(block["input"], dict) and isinstance(block["id"], str) and isinstance(block["name"], str):
                     calls.append({"id": block["id"], "type": "function", "function": {
                         "name": block["name"], "arguments": json.dumps(block["input"], ensure_ascii=False, allow_nan=False)}})
+                elif (kind == "thinking" and isinstance(block["thinking"], str) and isinstance(block["signature"], str)) or (
+                        kind == "redacted_thinking" and isinstance(block["data"], str)):
+                    thinking = True
                 else:
                     raise ValueError()
-            if not texts and not calls:
-                raise ValueError()
-            message = {"role": "assistant", "content": "\n".join(texts) if texts else None}
-            if calls:
-                message["tool_calls"] = calls
-            usage = None
-            raw = value.get("usage")
-            if isinstance(raw, dict):
-                # Cached input is billed/reported separately by Anthropic.
-                try:
-                    counts = [raw["input_tokens"], raw["output_tokens"], raw.get("cache_creation_input_tokens", 0), raw.get("cache_read_input_tokens", 0)]
-                    if any(type(n) is not int or n < 0 for n in counts):
-                        raise ValueError()
-                    prompt = counts[0] + counts[2] + counts[3]
-                    usage = TokenUsage(prompt, counts[1], prompt + counts[1])
-                except (KeyError, TypeError, ValueError):
-                    pass
-            return ModelResponse(message, usage)
+            usage, reasoning = _usage(value.get("usage"))
         except (KeyError, TypeError, ValueError, RecursionError):
             raise ResponseParseError("invalid Anthropic text/tool response") from None
+        if stop == "refusal":
+            details = value.get("stop_details")
+            category = details.get("category") if isinstance(details, dict) else None
+            label = f" (category {category})" if isinstance(category, str) and category.replace("_", "").isalnum() and len(category) <= 40 else ""
+            raise BadRequestError("Anthropic model declined the request: stop_reason refusal" + label)
+        if stop == "pause_turn":
+            raise ResponseParseError("Anthropic stop_reason pause_turn is not supported: it only occurs with server tools, which this adapter does not send")
+        if stop in {"max_tokens", "model_context_window_exceeded"}:
+            if calls:
+                raise ResponseParseError(f"Anthropic response stopped ({stop}) during a tool call; raise --max-completion-tokens")
+            if not texts:
+                cls = ContextLengthError if stop == "model_context_window_exceeded" else ResponseParseError
+                raise cls(f"Anthropic response stopped ({stop}) before any text, e.g. thinking used the whole output cap; "
+                          "raise --max-completion-tokens")
+        if not texts and not calls and stop != "end_turn":
+            raise ResponseParseError("invalid Anthropic text/tool response")
+        # end_turn with only thinking (or nothing) is a legitimate empty reply.
+        message = {"role": "assistant", "content": "\n".join(texts) if texts else (None if calls else "")}
+        if calls:
+            message["tool_calls"] = calls
+        if thinking:
+            # Exact blocks, in order and with signatures; _payload sends them back unchanged.
+            message[ANTHROPIC_CONTENT_KEY] = json.loads(json.dumps(content, allow_nan=False))
+        return ModelResponse(message, usage, reasoning)
 
     def complete(self, messages, tools=None):
         return self.complete_with_timeout(messages, tools)

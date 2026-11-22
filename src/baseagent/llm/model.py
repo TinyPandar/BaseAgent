@@ -16,7 +16,7 @@ from baseagent.kernel.errors import (
     TransientError,
 )
 
-from ._common import generation_params, http_error, positive_seconds
+from ._common import generation_params, http_error, positive_seconds, without_provider_blocks
 from .reservation import ReservationUnavailable, TokenReservation, request_digest
 from .response import ModelResponse, TokenUsage
 
@@ -87,7 +87,7 @@ class Model:
         return self.complete_with_timeout(messages, tools, timeout=timeout, max_completion_tokens=reservation.max_completion_tokens)
 
     def complete_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
-        kwargs = {"model": self.model_name, "messages": messages}
+        kwargs = {"model": self.model_name, "messages": without_provider_blocks(messages)}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -142,7 +142,7 @@ class Model:
         """Yield StreamDelta values; return ModelResponse via StopIteration.value."""
         from .streaming import StreamAssembler
 
-        kwargs = {"model": self.model_name, "messages": messages, "stream": True,
+        kwargs = {"model": self.model_name, "messages": without_provider_blocks(messages), "stream": True,
                   "stream_options": {"include_usage": True}}
         if tools:
             kwargs["tools"] = tools

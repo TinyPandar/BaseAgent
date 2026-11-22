@@ -46,7 +46,8 @@ json.dumps(Message.from_dict(d).to_dict(), ensure_ascii=False) == json.dumps(d, 
 
 已知形态：`system`/`user`/`developer` 的 `{role, content}`；内核写入的
 `{role, tool_call_id, content}`；Anthropic 适配器与流式组装的
-`{role, content: None, tool_calls}`；OpenAI `model_dump(exclude_none=True)` 产生的无
+`{role, content: None, tool_calls}`；Anthropic 带思考块时多一个 `anthropic_content`
+（响应原始块数组，见 [providers.md](providers.md)）；OpenAI `model_dump(exclude_none=True)` 产生的无
 `content` 形态；DeepSeek cassette 中带 `reasoning_content`、tool call 带 `index`、键排序的形态。
 
 ## 不变量
