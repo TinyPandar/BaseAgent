@@ -37,7 +37,7 @@ Worker 没有类型，区别只在本次是否允许写入：
 3. Worker 结束、失败、被取消或停在审批时，`WorkerManager` 生成一条推送：现有摘要字段加 worker id —— `task_id`、`status`、`summary`（最多 4000 字符）、`summary_truncated`、`citations`、`paths`、`call_ids`、`spill_refs`；失败/取消时多一个 `detail`（例如 `max_steps_exceeded`、`shared_max_model_calls`）。不带工具原文；完整输出留在 Worker 会话的账本和 spill 文件里。
 4. 推送有两个去处：
    - **终端**：两次提示之间打印 `[w1 已完成] 摘要…`、`引用:`、`路径:`；失败和取消用中文说明原因和能否重试（stderr）。
-   - **主 Agent 上下文**：下一条用户消息发出时，前面附上
+   - **主 Agent 上下文**：推送进主 Agent 的收件箱（[inbox.md](inbox.md)）。主 Agent 正在回复时，在它下一次模型调用前送达（工具结果都齐了之后，和用户插话合成一条消息）；空闲时，下一条用户消息发出时前面附上
      ```text
      [worker 推送：系统自动附加的结果，不是用户输入]
      {"task_id": "w1", "status": "completed", "summary": "...", "citations": [...], ...}
@@ -79,7 +79,8 @@ Worker 没有类型，区别只在本次是否允许写入：
 | `/status` | 会话用量，最近一轮的共享预算，以及**所有** Worker：id、状态（`running` / `awaiting_approval` / `completed` / `failed` / `cancelled`，后接中文）、已用时间、模型调用/步数/工具调用的已用/上限、是否可写、任务开头 |
 | `/wait` | 阻塞到没有运行中的 Worker（Ctrl+C 只停止等待，不停 Worker），然后打印推送 |
 | `/cancel <id>` / `/cancel all` | 取消；状态记为 `cancelled`。`run_command` 起的子进程通过取消令牌被整组杀掉并回收，不留孤儿进程 |
-| `/tell <id> <text>` | 给运行中（或等待审批）的 Worker 补要求，在它下一次模型调用前注入为 `[主 Agent 转达的补充要求]`。已结束的 Worker 返回明确错误 |
+| `/tell <id> <text>` | 给运行中（或等待审批）的 Worker 补要求：进那个 Worker 的收件箱（source `lead`），在它下一次模型调用前注入为 `[主 Agent 转达的补充要求]`。已结束的 Worker 返回明确错误 |
+| `/queue <text>` | 主 Agent 正在回复时，把这行排到这一轮结束后作为新的一轮；不带 `/queue` 的普通行则插进正在进行的这一轮。见 [inbox.md](inbox.md) |
 
 主 Agent 的 `message_worker(task_id, text)` 与 `/tell` 走同一条路径。
 
@@ -104,7 +105,7 @@ Worker 没有类型，区别只在本次是否允许写入：
 
 - 对话线程是主 Agent 会话的唯一写入者（主 Agent 的轮次只在它上面跑）；Worker 线程只写自己的会话，跨线程的共享状态只有 `WorkerManager` 的登记表（一把锁）和 `TurnBudget`（一把锁）。
 - 取消用现有的 `CancellationToken`；`run_command` 已经在轮询它并整组杀进程。
-- Ctrl+C 只到主线程：对话中的 Ctrl+C 取消当前主 Agent 轮次，不碰 Worker。
+- Ctrl+C 只到主线程：对话中的 Ctrl+C 取消当前主 Agent 轮次，不碰 Worker。终端上主 Agent 的一轮在后台线程里跑、主线程继续读输入时，Ctrl+C 由主线程转成那个线程里的 `KeyboardInterrupt`，效果相同（[inbox.md](inbox.md)）。
 
 ## 持久化、退出和重启
 

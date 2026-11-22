@@ -908,9 +908,6 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         layers = [ExecutionGuidanceMiddleware(workspace), RepositoryMiddleware(workspace, accept_changes=args.accept_workspace_changes),
                   BackendTagMiddleware({key: backend_info[key] for key in ("kind", "image", "network")}
                                        if backend_info and backend_info.get("kind") == "docker" else None)]
-        if jobs is not None:
-            from baseagent.tools.jobs import JobNoticeMiddleware
-            layers.append(JobNoticeMiddleware(jobs))
         if args.harness_url:
             from baseagent.middleware.harnessknight import install_harnessknight
             policy, layers = install_harnessknight(policy, layers, url=args.harness_url,
@@ -943,6 +940,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 mcp.start()
                 mcp.register(tools, allow_write=workspace.allow_write)
         base_layers = list(layers)
+        # One inbox for the main (or single) agent: mid-turn user lines, worker results, job notices (docs/inbox.md).
+        from baseagent.agent.inbox import Inbox, InboxMiddleware
+        inbox = Inbox()
+        layers.append(InboxMiddleware(inbox, jobs=jobs))
         chat_events = None
         from baseagent.chat.middleware import PatchDisplayMiddleware
         if interactive:
@@ -997,7 +998,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 )
 
             workers = WorkerManager(tools, system_prompt=system_prompt, store=store, runner=run_worker,
-                                    max_workers=args.max_workers or CHAT_MAX_WORKERS)
+                                    max_workers=args.max_workers or CHAT_MAX_WORKERS, inbox=inbox, jobs=jobs)
             subtasks = workers
             prompt = MAIN_AGENT_PROMPT
 
@@ -1157,7 +1158,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if interactive:
             from baseagent.chat import ChatSession
             chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
-                               workers=workers, main_agent=main_agent, events=chat_events,
+                               workers=workers, main_agent=main_agent, events=chat_events, inbox=inbox,
                                continue_steps=args.max_steps or CHAT_MAX_STEPS,
                                continue_tool_calls=args.max_tool_calls or 32)
             if args.ui == "tui":

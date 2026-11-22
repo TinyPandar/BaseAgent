@@ -30,13 +30,14 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 
 - **规则只在 `ChatSession`。** 前端只做三件事：调用命令、显示事件、问 y/N（CLI 用 `input()`，TUI 用弹窗，Web 用卡片按钮）。审批的 call_id / digest 校验、Worker 上限、单写者、共享预算、持久化都在 `ChatSession` 和它下面的 `WorkerManager` / `SessionStore` 里，界面层没有自己的规则。
 - **CLI 也跑在这层上。** `cli_chat.run_chat` 现在只读行、打印、问 y/N；回合执行、续跑、审批、`/status /wait /cancel /tell /exit` 都调用 `ChatSession`。CLI 要打印的每一行由 `ChatSession._say` 产出：同时发一个事件，并交给 CLI 的 `printer` 打到 stdout/stderr，所以文字、顺序和流向不变（`tests/test_cli_chat.py`、`tests/test_main_agent.py` 原样通过）。停止原因、审批预览、`/status` 的文字从 `cli_chat` 原样搬到 `chat/text.py`，`cli_chat` 继续导出这些名字。
-- **同步与异步。** CLI 直接调用 `turn(text, ask)`，阻塞到这一轮结束。TUI 和 Web 调 `send(text)`：在一个后台线程里跑同一个 `turn`，立即返回；主 Agent 自己的待审批调用用 `approve/deny` 回答后，再在后台线程里 `continue_turn`。同一时间只有一个主 Agent 回合；回合进行中再发消息会被拒绝（`error` 事件，Web 返回 409，输入框保留原文），不排队，理由和 Worker 上限「拒绝不排队」一样。
+- **同步与异步。** CLI 直接调用 `turn(text, ask)`，阻塞到这一轮结束。TUI 和 Web 调 `send(text)`：在一个后台线程里跑同一个 `turn`，立即返回；主 Agent 自己的待审批调用用 `approve/deny` 回答后，再在后台线程里 `continue_turn`。同一时间只有一个主 Agent 回合；回合进行中再发的消息不再被拒绝，而是进收件箱：普通一行插进这一轮（下一次模型调用前送达），`/queue <text>` 排到这一轮之后，`send` 返回 `"queued"`。规则、事件和 CLI 的线程化输入见 [inbox.md](inbox.md)。
 
 ## 命令
 
 | `ChatSession` | CLI | TUI | Web |
 | --- | --- | --- | --- |
-| `send(text)` / `turn(text, ask)` | 输入一行 | 输入框回车 | `POST /messages {"text"}` |
+| `send(text)` / `turn(text, ask)` | 输入一行（终端上回复中也能输入：插进本轮） | 输入框回车（回复中：插进本轮） | `POST /messages {"text"}` |
+| `send("/queue <text>")` | `/queue <text>` | 同一输入框 | `POST /messages {"text": "/queue …"}` |
 | `approve` / `deny(call_id, digest, worker=…)` | `Allow …? [y/N]` | 审批弹窗：批准 (y) / 拒绝 (n) | `POST /approvals {"call_id","digest","decision","worker"?}` |
 | `checkpoint_command` / `checkpoints()` / `undo(target, force=)` | `/checkpoints`、`/undo [--force]`、`/rewind N [--force]` | 同一输入框 | `POST /messages {"text": "/undo"}` |
 | `continue_command(rest)` | `/continue [N]`：撞上限后提高本轮上限并继续（README「在对话里继续」） | 同一输入框，在轮次线程里跑 | `POST /messages {"text": "/continue"}` |
@@ -53,7 +54,8 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 
 | 类型 | 字段（data） | 何时发出 |
 | --- | --- | --- |
-| `user_message` | text | 一行对话被接受，开始主 Agent 的一轮 |
+| `user_message` | text, mode, queued, id | 一行对话被接受：mode `turn` 立即开始一轮，`steer` 插进正在进行的一轮，`queue` 排到下一轮；queued 为 true 表示还在收件箱里，id 是收件箱消息 id |
+| `inbox_delivered` | ids, sources, how | 收件箱消息送到了 Agent：how 为 `model_call`（本轮下一次模型调用）或 `new_turn`（作为/随下一轮） |
 | `assistant_message` | text, status | 一轮结束，主 Agent（或单 Agent）给出回复 |
 | `tool_call` | worker, call_id, name, arguments（预览） | 派发一个工具调用；worker 为 null 表示主 Agent |
 | `tool_result` | worker, call_id, name, ok, preview | 该调用返回；只有预览（300 字符），没有原文 |
