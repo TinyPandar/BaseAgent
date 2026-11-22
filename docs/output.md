@@ -41,6 +41,7 @@ baseagent --session S --resume --output-format jsonl
 | `mcp` | 可选，只在工作区 `.mcp.json` 因未信任没有启动时出现：`{"skipped": "untrusted" \| "store_in_workspace", "config": ".mcp.json", "servers": [名字]}`（[mcp.md](mcp.md)「首次信任」） |
 | `backend` | 可选，只在 `--backend docker` 时出现：`{"kind": "docker", "image", "network", "container", "cpus", "memory", "pids"}`（`network` 是 `none` 或 `bridge`；不含凭据）。**没有这个键就是 local 后端**，所以不传 `--backend`（或 `--backend local`）时输出与以前逐字一致。Docker 起不来时见下面「Docker 后端」 |
 | `pending_approval` | `status == "awaiting_approval"` 时为 `{"call_id", "digest", "name"}`（具名子任务节点的审批再加 `task_id`）；否则为 `null`。用 `--approve-tool CALL_ID --approval-digest DIGEST`（节点加 `--task-id`）审批后 `--resume` |
+| `approval_hint` | 可选:只在 `--mode full`(不带 `--auto-approve`)因命令类工具(destructive 且 open_world)停在审批时出现,是一句可直接照做的说明(审批命令、`--resume`、或改用 `--auto-approve`);同样的文字也写到 stderr |
 
 ## `jsonl`：事件流 + 结果
 

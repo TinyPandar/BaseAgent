@@ -251,7 +251,7 @@ uv run baseagent --config examples/harness.coding.json --tool-package memory --n
 Configuration is strict JSON, limited to 32 KB, with required `version: 1`.
 Supported sections are `workspace` (`root`, `db`), `capabilities`
 (`tool_packages`, `skills_dirs`), `permissions` (`allow_write`, `allow_command`,
-`allow_memory_publish`), `run` (model name, limits, retries, token reservation/
+`allow_memory_publish`, `auto_approve`（仅 `--mode full` 生效，见下文）), `run` (model name, limits, retries, token reservation/
 estimation settings, and trace), and `policies` (`tool_policy`, `completion_policy`,
 `subtasks_config`). Config paths resolve against the configuration file's directory;
 explicit CLI paths retain their usual current-directory semantics. CLI options
@@ -666,6 +666,16 @@ Only enable the capabilities required by your task. A decision does not execute 
 Core authorization runs before wrappers and again at actual terminal dispatch. Middleware redirects cannot inherit another request's approval; an unauthorized redirect receives a denial rather than creating a new approval during a running call. Middleware is trusted application code, not an adversarial sandbox. Approvals authorize a specific invocation, not unlimited tool access. They do not override file/command capabilities, content hashes, budgets, or recovery of uncertain prior side effects. Retry-safe calls may still retry within their authorized invocation under the existing bounded retry policy. Library callers pass `tool_policy=ToolPolicy(...)` to `run_agent`; use a `SessionStore` for resumable approval workflows.
 
 Coding registries now include write/command capabilities and protected paths in their runtime contract. Enabling capabilities on an unfinished session requires `--accept-config-changes`; this is separate from approving the call. After this upgrade, old unfinished coding sessions also require that explicit compatibility acknowledgment.
+
+### `--mode full` 默认先问再跑命令（`--auto-approve`）
+
+`--mode read-only|edit|full` 是权限预设：`edit` = `--allow-write`；`full` = `--allow-write --allow-command`，并且**默认在每次运行命令前请求审批**。具体是：同时带 destructive 和 open_world 注解的工具要审批——`run_command`、`verify_command`、`start_job`（`--background-jobs`）和未配置 `readOnly` 的 MCP 工具；文件工具（`write_file` / `edit_file` / `apply_patch`，可用 `/undo` 撤回）、`job_kill`、记忆和计划工具仍然自动执行。启动时 stderr 打印一行说明（`Note: --mode full asks before each run_command, ...`）。实现是加在策略上的注解级下限 `{"annotations": {"destructive+open_world": "ask"}}`，与 `--tool-policy` 的组合规则见 [tool_annotations.md](tool_annotations.md#--mode-full-的默认命令审批)：
+
+- `--tool-policy` 里对某个命令工具的显式 `allow`（如 `"run_command": "allow"`，或命中的 `argv_prefix` allow 规则）会放开这条下限；`deny` 始终生效；全部 ask 的策略不受影响。
+- `--auto-approve`（配置文件 `permissions.auto_approve: true`）恢复以前的行为：命令直接执行，`--tool-policy` 照常生效。它只对 `--mode full` 有意义：命令行在其它模式（或不带 `--mode`）下给出会报参数错误；配置文件里的值在其它模式下忽略。直接用 `--allow-write --allow-command` 不经过预设，也不加这条下限（Chainlit UI 就是这样启动的，它自带全部 ask 的策略）。
+- 交互对话（CLI / TUI / Web）里命令照常弹出 `Allow ...? [y/N]`；主 Agent 派出的写入 Worker 继承同一策略，它的命令审批在主对话里逐条询问。
+- 一次性任务 `baseagent "task" --mode full` 第一次需要跑命令时就停在 `awaiting_approval`（退出码 1，`json` 输出的 `pending_approval` 写明调用，另加可选字段 `approval_hint`）。stderr 给出照做即可的命令：`baseagent --session S --approve-tool CALL_ID --approval-digest DIGEST`，再用同样的选项 `--resume`；无人值守的脚本请加 `--auto-approve`。仓库内的自动化入口（`applications/project_assistant/evaluation/local_docker_fixture.py`、`scripts/demo_docker.py`）已显式加上 `--auto-approve`；Harbor / Terminal-Bench 运行器、`evaluation.py`、编码评测直接调用 `run_agent`，不经过 `--mode`，行为不变。
+- 契约：下限只在生效时进入策略契约，所以 `read-only` / `edit` / `--auto-approve` 的契约和指纹与以前逐字节相同。在这次改动之前用 `--mode full` 开始、尚未结束的回合，`--mode full --resume` 会报告运行配置变化并提示：加 `--auto-approve` 按原样继续，或加 `--accept-config-changes` 接受变化（之后命令要审批）。
 
 ## Cancellation
 

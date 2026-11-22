@@ -324,7 +324,7 @@ class CliTests(unittest.TestCase):
                       lambda argv, cwd, **kw: calls.append(argv) or ToolResult(data={"exit_code": 0, "stdout": "hi\n",
                                                                                      "stderr": ""})):
             code, out, err = self.run_cli(["--sandbox", "workspace-write", "--sandbox-network", "--mode", "full",
-                                           "--output-format", "json", "--session", "ok", "hi"], model)
+                                           "--auto-approve", "--output-format", "json", "--session", "ok", "hi"], model)
         self.assertEqual(code, 0, err)
         self.assertEqual(calls[0][0], "bwrap")
         self.assertNotIn("--unshare-net", calls[0])

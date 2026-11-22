@@ -51,7 +51,7 @@ def docker_executor(*, real=False, image=FIXTURE_IMAGE):
             stdout, stderr = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = main(["--root", str(task), "--db", str(task / ".baseagent" / "tb.sqlite3"), "--backend", "docker",
-                             "--docker-image", image, "--mode", "full", "--output-format", "json",
+                             "--docker-image", image, "--mode", "full", "--auto-approve", "--output-format", "json",
                              "--session", "terminal-bench-local-echo", instruction],
                             model_factory=lambda args: ScriptedModel(), backend_factory=backend_factory)
             mode = "real" if real else "fake"
@@ -98,5 +98,5 @@ def planned_local_docker(budget_cny="15"):
     """Legacy --live is print-only; this is not the official Harbor entry point."""
     return {"executed": False, "provider_calls": 0, "cost_cny": 0, "status": "authorization_required",
             "budget_cny": str(budget_cny), "backend": "docker", "harbor_integration": "unverified",
-            "agent_command": 'baseagent --root <task workspace> --backend docker --docker-image <task image> --mode full --output-format json "$(cat instruction.md)"',
+            "agent_command": 'baseagent --root <task workspace> --backend docker --docker-image <task image> --mode full --auto-approve --output-format json "$(cat instruction.md)"',
             "note": "Legacy local Docker command only, not a verified Harbor invocation; use --plan for Harbor. CNY is a soft limit."}

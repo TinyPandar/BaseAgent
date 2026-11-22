@@ -73,7 +73,8 @@
 - **EditToolPolicy**(`max_changed_lines` 超限转 ask):父策略 deny 直接返回。
 - **HarnessKnight**:父策略 deny 直接返回;`REVIEW` 只能把 allow 变成 ask;`fail_mode=open`
   在没有决策缓存时也不会放行父策略已 deny 的调用。
-- **`--mode full`**:只打开工作区的写/命令能力,策略仍在每次调用前和实际派发时各判定一次,
+- **`--mode full`**:打开工作区的写/命令能力,并(不带 `--auto-approve` 时)给策略加注解下限
+  `"destructive+open_world": "ask"`;策略仍在每次调用前和实际派发时各判定一次,
   deny 的调用不进入处理函数,结果是 `permission_denied`。
 - **后台 worker**(`WorkerManager`):worker 用同一个 `tool_policy` 调 `run_agent`,外层同样包
   `GatewayPolicy`。
@@ -119,6 +120,8 @@ deny `["rm"]` 挡不住 `bash -c "rm -rf ."`、`env rm -rf .`、`git clean -fdx`
   兜底 `default` 和顶层 `default` 都与注解下限取更严格者。上例中 `write_file` 直接放行,
   `run_command`、MCP 工具等需要审批,只读工具不受影响。
 - MCP 服务端自报的注解不可信,不参与判定;生效注解只来自配置的 `readOnly`。
+- 键可以用 `+` 连接多个注解名,表示同时满足(AND),如 `"destructive+open_world": "ask"`;`--mode full`
+  默认就是加这一条(见 [tool_annotations.md](tool_annotations.md#--mode-full-的默认命令审批))。
 - 不写 `annotations` 的策略契约与指纹不变。
 
 此外,删除关键路径(工作区根、`.git`、`.baseagent`、主目录、文件系统/盘符根)的命令由内置检查

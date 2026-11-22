@@ -99,7 +99,7 @@ class CliOptionTests(DockerCliCase):
             for fmt in ("text", "json"):
                 (self.root / "out.txt").unlink(missing_ok=True)
                 session = f"s{len(outputs)}"
-                code, out, err = self.run_cli([*argv, "--mode", "full", "--session", session, "--output-format", fmt,
+                code, out, err = self.run_cli([*argv, "--mode", "full", "--auto-approve", "--session", session, "--output-format", fmt,
                                                "make it"], run_and_write(self.root, argv=["echo", "hi"]))
                 self.assertEqual(code, 0, err)
                 outputs.append((fmt, out.replace(session, "S"), err.replace(session, "S")))
@@ -110,7 +110,8 @@ class CliOptionTests(DockerCliCase):
         self.assertEqual(self.containers(), [])
 
     def test_one_shot_runs_commands_and_writes_in_the_container(self):
-        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--session", "s", "make it"], run_and_write(self.root))
+        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--auto-approve", "--session", "s", "make it"],
+                                      run_and_write(self.root))
         self.assertEqual(code, 0, err)
         self.assertEqual((self.root / "out.txt").read_text(), "x\n")
         state = self.store().load("s")
@@ -140,8 +141,9 @@ class CliOptionTests(DockerCliCase):
         for mode, write, command in (("read-only", False, False), ("edit", True, False), ("full", True, True)):
             with self.subTest(mode=mode):
                 (self.root / "out.txt").unlink(missing_ok=True)
-                code, _, err = self.run_cli([*DOCKER, "--mode", mode, "--session", mode, "make it"],
-                                            run_and_write(self.root))
+                # --auto-approve: modes map to the same capabilities (the full-mode approval: test_full_mode_default.py).
+                code, _, err = self.run_cli([*DOCKER, "--mode", mode, *(["--auto-approve"] if mode == "full" else []),
+                                             "--session", mode, "make it"], run_and_write(self.root))
                 self.assertEqual(code, 0, err)
                 wrote, ran = (result["ok"] for result in self.tool_results(self.store().load(mode)))
                 self.assertEqual((wrote, ran), (write, command))
@@ -209,7 +211,7 @@ class CliOptionTests(DockerCliCase):
             gate.release()
             return "/wait"
 
-        code, out, err = self.invoke([*DOCKER, "--session", "demo", "--mode", "full"], model,
+        code, out, err = self.invoke([*DOCKER, "--session", "demo", "--mode", "full", "--auto-approve"], model,
                                      ["改 a.txt", release, "/status", "/exit"])
         self.assertEqual(code, 0, err)
         self.assertEqual((self.root / "a.txt").read_text(), "by w1\n")
@@ -546,7 +548,7 @@ class FailureTests(DockerCliCase):
             self.fake.kill(self.backends[-1].name, oom=True)
             return {"tool_calls": [tool_call("c1", "run_command", {"argv": ["echo", "hi"]})]}
 
-        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--session", "dead", "go"],
+        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--auto-approve", "--session", "dead", "go"],
                                       Script([kill_then_command, {"content": "never"}]))
         self.assertEqual(code, 1)
         state = self.store().load("dead")
@@ -556,7 +558,7 @@ class FailureTests(DockerCliCase):
         self.assertIn("--resume", state.error)
         self.assertIn("Agent error: DockerError", out)
         # Docker fixed: --resume starts a new container and finishes the turn.
-        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--session", "dead", "--resume"],
+        code, out, err = self.run_cli([*DOCKER, "--mode", "full", "--auto-approve", "--session", "dead", "--resume"],
                                       Script([{"content": "recovered"}]))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), "recovered")
