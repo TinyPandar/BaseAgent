@@ -425,6 +425,16 @@ to `354-355`, hash unchanged) and no changed cited text. All 101 stored
 `evidence_sha256` values match. Gold summaries were not regenerated. Published
 hybrid MRR 0.845 was not recomputed.
 
+## Corpus rebind (2026-11-22, inbox / Anthropic CLI / full-mode default)
+
+`corpus_version` moved from `583ed2a818f703ea` to `28eb15be88556bea` when
+`feat/inbox-interjection`, `feat/anthropic-cli` and `feat/full-mode-ask` were
+merged with the README/ROADMAP/docs update. The rebind ran once on a clean
+checkout after every merge. `--write` found one line drift
+(`src/baseagent/main.py:354-355` to `438-439`, hash unchanged) and no changed
+cited text. All 101 stored `evidence_sha256` values match. Gold summaries were
+not regenerated. Published hybrid MRR 0.845 was not recomputed.
+
 ## Generated-answer scoring (offline)
 
 `python scripts/evaluate_answers.py --synthetic` scores the 80-question set in
