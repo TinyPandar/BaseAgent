@@ -94,7 +94,10 @@ class CapabilityMatrixTests(ModeTestCase):
                     with self.subTest(entry=entry, mode=mode, flags=flags):
                         conflict, write, command = expected(mode, flags)
                         session = f"s{self.count + 1}"
-                        argv = [*(["--mode", mode] if mode else []), *flags, "--session", session]
+                        # --auto-approve: this matrix is about capabilities, not the full-mode command approval
+                        # (tests/test_full_mode_default.py).
+                        argv = [*(["--mode", mode] if mode else []), *(["--auto-approve"] if mode == "full" else []),
+                                *flags, "--session", session]
                         model = self.model()
                         if entry == "one-shot":
                             code, _, stderr = self.run_cli([*argv, "make it"], model)
@@ -162,7 +165,7 @@ class ModeRuleTests(ModeTestCase):
         self.assertEqual(self.outcome("p2")[:2], (False, False))   # a policy cannot grant what the mode withholds
 
     def test_full_mode_warning_is_one_stderr_line(self):
-        code, stdout, stderr = self.run_cli(["--mode", "full", "--session", "f", "make"], self.model())
+        code, stdout, stderr = self.run_cli(["--mode", "full", "--auto-approve", "--session", "f", "make"], self.model())
         self.assertEqual(code, 0)
         self.assertEqual(stderr.count(FULL_MODE_WARNING), 1)
         self.assertNotIn("Warning", stdout)

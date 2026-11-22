@@ -39,7 +39,7 @@ from baseagent.middleware.retry import RetryMiddleware
 from baseagent.output import MachineOutput, result as machine_result
 from baseagent.session import SessionBusy, SessionStore
 from baseagent.session.compatibility import digest
-from baseagent.tools.policy import ToolPolicy
+from baseagent.tools.policy import COMMAND_FLOOR, ToolPolicy, with_command_floor
 from baseagent.tools.result import ToolResult
 from baseagent.tools.workspace import Workspace
 
@@ -175,6 +175,28 @@ DOCKER_FULL_MODE_NOTE = ("Note: --mode full runs commands inside the Docker cont
 SANDBOX_FULL_MODE_NOTE = ("Note: --mode full runs commands on this machine inside the OS sandbox ({summary}). "
                           "File tools, MCP servers and hooks run outside it; /undo restores files written by "
                           "write_file/edit_file/apply_patch, not changes made by commands. See docs/sandbox.md.")
+# --mode full without --auto-approve: tools that are both destructive and open-world ask (tools/policy.py COMMAND_FLOOR).
+FULL_MODE_ASK_NOTE = ("Note: --mode full asks before each run_command, verify_command, start_job and non-read-only MCP tool "
+                      "call (tools that are both destructive and open-world); file edits run without asking (/undo restores "
+                      "them). Use --auto-approve (config: permissions.auto_approve) to run them without asking.")
+FLOOR_RESUME_HINT = ("If this turn started before --mode full asked before commands (or with a different --auto-approve), "
+                     "continue it as it started with --auto-approve, or accept the change with --accept-config-changes "
+                     "(commands then ask)")
+
+
+def floor_approval_hint(tools, session_id, pending):
+    """Actionable text when a run without a human stops at a --mode full command approval, else None."""
+    if not pending or not hasattr(tools, "annotations"):
+        return None
+    flags = tools.annotations(pending["name"])
+    if not all(getattr(flags, key) for key in COMMAND_FLOOR.split("+")):
+        return None
+    task = f" --task-id {pending['task_id']}" if pending.get("task_id") else ""
+    return (f"{pending['name']} needs approval: --mode full asks before commands and other destructive open-world tools. "
+            f"Review and approve this call: baseagent --session {session_id}{task} --approve-tool {pending['call_id']} "
+            f"--approval-digest {pending['digest']}; then continue with the same options and --resume "
+            f"(baseagent --session {session_id} --mode full --resume). "
+            "To run commands without asking, start with --auto-approve.")
 # Exit code when --backend docker (or a confined --sandbox) cannot start (Docker missing, daemon down, image missing); see docs/output.md.
 BACKEND_UNAVAILABLE_EXIT = 3
 CHAT_MAX_STEPS = 16
@@ -399,6 +421,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--background-jobs", action=argparse.BooleanOptionalAction, default=False, help="Add start_job/job_list/job_output/job_kill: long-running argv commands that outlive the turn (requires --allow-command to start or kill; local backend only; a timed-out run_command moves to a job; jobs end with this process unless started with keep_running); see docs/background_jobs.md")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
     parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
+    parser.add_argument("--auto-approve", action=argparse.BooleanOptionalAction, default=False, help="--mode full: run commands (run_command, verify_command, start_job) and non-read-only MCP tools without asking, as before; by default --mode full asks before each of them. --tool-policy still applies. Only valid with --mode full (ignored when it comes from --config)")
     parser.add_argument("--output-format", choices=list(OUTPUT_FORMATS), default="text", help="One-shot prompt or --resume output: text (default, unchanged), json (one object on stdout) or jsonl (metadata events, then a result line); see docs/output.md")
     parser.add_argument("--backend", choices=["local", "docker"], default=None, help="Where commands and file tools run: local (default; the host, not a sandbox) or docker (one container per run, no network by default); see docs/docker_backend.md")
     parser.add_argument("--docker-image", help=f"--backend docker: image to run (default {DEFAULT_DOCKER_IMAGE}); it must already be pulled")
@@ -433,6 +456,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     # Only explicit command-line permission flags count for --mode conflicts (not --config defaults).
     bootstrap.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=None)
     bootstrap.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=None)
+    bootstrap.add_argument("--auto-approve", action=argparse.BooleanOptionalAction, default=None)
     initial, _ = bootstrap.parse_known_args(argv)
     defaults = {}
     if initial.config is not None:
@@ -573,6 +597,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                              f"{'--' if wanted else '--no-'}{flag}; drop one of them")
         # The preset replaces permission settings that came from --config.
         args.allow_write, args.allow_command = allow_write, allow_command
+    if initial.auto_approve and args.mode != "full":
+        # Nothing asks by default outside --mode full; a configured auto_approve is simply unused there.
+        parser.error("--auto-approve applies to --mode full (read-only and edit modes run no commands; "
+                     "--allow-command alone never asks by default)")
+    # --mode full asks before destructive open-world tools unless --auto-approve (docs/tool_annotations.md).
+    command_floor = args.mode == "full" and not args.auto_approve
     if (args.mcp_config is not None or args.mcp_strict) and operation and not args.resume:
         parser.error("--mcp-config and --mcp-strict apply to one-shot prompts, --resume and interactive chat")
     if args.output_format != "text":
@@ -895,6 +925,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         policy = ToolPolicy()
         if args.tool_policy:
             policy = ToolPolicy.from_dict(read_json_object(args.tool_policy, max_bytes=20_000, label="tool policy"), workspace=workspace)
+        if command_floor:
+            # Part of the policy contract only while active: other modes and --auto-approve stay byte-identical.
+            with_command_floor(policy)
+            print(FULL_MODE_ASK_NOTE, file=sys.stderr)
         completion = None
         subtasks = None
         # Existing sessions keep the mode they started with; new chats default to the main agent.
@@ -1216,7 +1250,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                                    zip(values, (current.max_steps, current.max_model_calls, current.max_tool_calls)))
             return values
 
-        def run_turn(user_input, limits=None):
+        def _run_turn(user_input, limits=None):
             extra = []
             max_steps, max_model_calls, max_tool_calls = turn_limits(user_input, limits)
             # One pool per main-agent turn; workers started in it draw from the same pool. A resumed turn
@@ -1251,6 +1285,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
             )
             session["id"] = state.session_id or session["id"]
             return state
+
+        def run_turn(*args_, **kwargs):
+            try:
+                return _run_turn(*args_, **kwargs)
+            except ValueError as exc:
+                if args.mode == "full" and str(exc).startswith("session runtime configuration changed"):
+                    # An unfinished turn that started before the --mode full default (or with --auto-approve).
+                    raise ValueError(f"{exc}. {FLOOR_RESUME_HINT}") from exc
+                raise
 
         if interactive:
             from baseagent.chat import ChatSession
@@ -1325,6 +1368,10 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     human = sys.stderr if machine.enabled else sys.stdout
     if state.final_answer and not machine.enabled:
         print(state.final_answer)
+    approval_hint = None
+    if command_floor and state.status == "awaiting_approval":
+        from baseagent.output import pending_approval
+        approval_hint = floor_approval_hint(tools, state.session_id, pending_approval(state, store))
     # A --budget-cny stop is explained below; the kernel's generic token-budget text would name the wrong limit.
     shared = state.status != "completed" and state.metadata.get("shared_budget_exhausted")
     if state.error and not shared:
@@ -1344,12 +1391,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 print(text, file=sys.stderr)
                 print(f"Approve with --approve-tool {request.get('call_id')} --approval-digest "
                       f"{request.get('request_digest')} --session {state.session_id}", file=sys.stderr)
+        if approval_hint:
+            print(approval_hint, file=sys.stderr)
     if machine.enabled:
         value = machine_result(state, model_name=config["model"], store=store, include_patches=machine.format == "json",
                                backend=backend_info)
         if final_rules is not None and final_rules.get("path"):
             # Optional, metadata only (never the rules text); absent without a root AGENTS.md.
             value["project_rules"] = final_rules
+        if approval_hint:
+            # Optional: only when the --mode full command approval stopped the run (docs/output.md).
+            value["approval_hint"] = approval_hint
         if mcp_skipped is not None:
             # Optional: the project's .mcp.json was not trusted, so no server started (names only).
             value["mcp"] = mcp_skipped

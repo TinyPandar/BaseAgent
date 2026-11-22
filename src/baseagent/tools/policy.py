@@ -21,7 +21,11 @@ _MATCH_KEYS = {"equals", "path_within", "argv_exact", "argv_prefix"}
 # Optional per-tool key; absent means the original first-match order (contract unchanged).
 _PRECEDENCE = {"first_match", "strictest"}
 # Optional top-level "annotations" section: annotation name -> floor action (ask or deny).
+# A key may join several names with "+": the floor applies when all of them are true.
 _FLOOR_ACTIONS = {"ask", "deny"}
+# The --mode full default (docs/tool_annotations.md): ask before tools that are both destructive and
+# open-world (run_command, verify_command, start_job, non-read-only MCP tools). --auto-approve leaves it out.
+COMMAND_FLOOR = "destructive+open_world"
 # (tool name, ToolAnnotations) of the call being authorized, set by the gateway (agent/gateway.py).
 _CALL_ANNOTATIONS = ContextVar("baseagent_call_annotations", default=None)
 
@@ -34,6 +38,29 @@ def call_annotations(name, annotations):
         yield
     finally:
         _CALL_ANNOTATIONS.reset(token)
+
+
+def _annotation_key(key):
+    """The annotation names of one "annotations" key ("destructive" or "destructive+open_world"), else None."""
+    if not isinstance(key, str):
+        return None
+    parts = key.split("+")
+    if any(part not in ANNOTATION_KEYS for part in parts) or len(set(parts)) != len(parts):
+        return None
+    return parts
+
+
+def with_command_floor(policy):
+    """Add the --mode full floor (COMMAND_FLOOR: ask) to ``policy`` in place and return it.
+
+    A stricter user entry for the same key (deny) is kept. Only an active floor changes the
+    policy contract; without it contract() and fingerprint stay byte-identical.
+    """
+    current = dict(policy.annotations or {})
+    if current.get(COMMAND_FLOOR) != "deny":
+        current[COMMAND_FLOOR] = "ask"
+    policy.annotations = current
+    return policy
 
 
 def _annotations_for(name):
@@ -117,9 +144,10 @@ class ToolPolicy:
         self.annotations = deepcopy(annotations) if annotations is not None else None
         if self.annotations is not None and (
                 not isinstance(self.annotations, dict) or not self.annotations
-                or any(key not in ANNOTATION_KEYS or not isinstance(value, str) or value not in _FLOOR_ACTIONS
+                or any(_annotation_key(key) is None or not isinstance(value, str) or value not in _FLOOR_ACTIONS
                        for key, value in self.annotations.items())):
-            raise ValueError("policy annotations map read_only/destructive/idempotent/open_world to ask or deny")
+            raise ValueError("policy annotations map read_only/destructive/idempotent/open_world "
+                             "(or several joined by '+', all required) to ask or deny")
         self.workspace = workspace
         self._scoped = False
         # Human-readable notes about allow rules that cannot constrain a command (see COMMAND_WRAPPERS).
@@ -263,7 +291,8 @@ class ToolPolicy:
                 return "deny"
         if self.annotations is not None:
             flags = _annotations_for(name)
-            floors = [floor for key, floor in self.annotations.items() if getattr(flags, key)]
+            floors = [floor for key, floor in self.annotations.items()
+                      if all(getattr(flags, part) for part in _annotation_key(key))]
             floor = max(floors, key=_RANK.__getitem__) if floors else "allow"
             # An annotation deny is absolute; an annotation ask yields only to an explicit per-tool decision.
             if floor == "deny" or (not explicit and _RANK[floor] > _RANK[action]):

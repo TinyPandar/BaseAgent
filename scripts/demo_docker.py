@@ -1,6 +1,7 @@
 """Offline ``--backend docker`` demo. Scripted fake model, no provider call, cost 0.
 
-Drives the real chat entry (``baseagent --backend docker --mode full --no-main-agent``):
+Drives the real chat entry (``baseagent --backend docker --mode full --auto-approve --no-main-agent``;
+the scripted chat answers no approval prompts, so commands run without asking as before):
 
 1. the agent writes ``hello.txt`` (inside the container);
 2. runs a command that reads it back;
@@ -87,7 +88,7 @@ def run(directory, *, fake=False, image="python:3.12-slim"):
     errors = io.StringIO()
     with patch("builtins.input", side_effect=typed), contextlib.redirect_stderr(errors):
         code = main(["--root", str(root), "--db", str(db), "--session", "demo", "--backend", "docker",
-                     "--docker-image", image, "--mode", "full", "--no-main-agent"],
+                     "--docker-image", image, "--mode", "full", "--auto-approve", "--no-main-agent"],
                     model_factory=lambda args: model, backend_factory=factory)
     stderr = errors.getvalue()
     if code == 3:

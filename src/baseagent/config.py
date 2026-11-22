@@ -10,7 +10,8 @@ from baseagent.jsondata import read_json_object
 SECTIONS = {
     "workspace": {"root", "db"},
     "capabilities": {"tool_packages", "skills_dirs"},
-    "permissions": {"allow_write", "allow_command", "allow_memory_publish"},
+    # auto_approve: --mode full runs commands without asking (--auto-approve); unused in other modes.
+    "permissions": {"allow_write", "allow_command", "allow_memory_publish", "auto_approve"},
     "run": {"compaction_max_chars", "compaction_keep_turns", "compaction_window_tokens",
             "compaction_reserve_tokens", "compaction_safety_tokens", "compaction_tail_chars",
             "compaction_min_tail_items", "compaction_max_tail_items", "compaction_min_prefix_chars",

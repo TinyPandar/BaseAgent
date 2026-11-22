@@ -108,7 +108,7 @@ docker pull python:3.12-slim          # 只需一次
 python -B scripts/demo_docker.py
 ```
 
-假模型，费用 0。脚本用真实的对话入口 `baseagent --backend docker --mode full --no-main-agent` 加脚本化输入，最后一行是 JSON 摘要（`file_written`、`network_blocked`、`undo_restored`、`container_removed` 都是 `true`）。讲的时候按这个顺序：
+假模型，费用 0。脚本用真实的对话入口 `baseagent --backend docker --mode full --auto-approve --no-main-agent` 加脚本化输入（脚本不回答审批，所以用 `--auto-approve` 让命令照旧直接执行），最后一行是 JSON 摘要（`file_written`、`network_blocked`、`undo_restored`、`container_removed` 都是 `true`）。讲的时候按这个顺序：
 
 1. stderr 先打印 `Backend: docker, image python:3.12-slim, no network access, container baseagent-…` 和 `--mode full` 的容器说明（没有「LocalBackend 不是沙箱」的警告）。
 2. `> 写一个 hello.txt，读回来，再试试能不能访问外网` —— 假模型一次发三个调用：`write_file hello.txt`（在容器里写）、`run_command sh -c "cat hello.txt && uname -s"`（输出 `Linux`：命令在容器里）、`run_command python3 -c "urllib…example.com"`（失败：容器没有网络）。

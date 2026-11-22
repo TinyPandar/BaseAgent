@@ -97,7 +97,7 @@ class DockerSmokeTests(unittest.TestCase):
             *[tool_call(f"c{index}", "run_command", {"argv": argv}) for index, argv in enumerate(commands)],
             tool_call("r1", "read_file", {"path": "link"}),
             tool_call("r2", "read_file", {"path": "../secret.txt"})]}, {"content": "done"}])
-        code, out, err = self.cli(["--mode", "full", "--session", "smoke", "go"], model)
+        code, out, err = self.cli(["--mode", "full", "--auto-approve", "--session", "smoke", "go"], model)
         self.assertEqual(code, 0, err)
         write, outside, network, created, harness, hardened, link, escape = self.command_results("smoke")
         # Root in the container may still edit host-owned workspace files, with only CHOWN, DAC_OVERRIDE, FOWNER.

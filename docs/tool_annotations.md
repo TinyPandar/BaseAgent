@@ -79,6 +79,8 @@ ask)。规则:
 ```
 
 - 键为四个注解名之一,值只能是 `ask` 或 `deny`;注解为 True 的工具受这条"下限"约束。
+- 键也可以用 `+` 连接几个注解名(如 `"destructive+open_world": "ask"`),表示"同时为 True 才生效"(AND);
+  每个名字必须是四个注解名之一且不能重复。单个名字的写法和含义不变。
 - 组合规则:
   - 注解级 `deny` 是**绝对的**,任何逐工具规则和审批都不能放开。
   - 注解级 `ask` 只让位于**显式的逐工具决定**:该工具的字符串动作(如 `"write_file": "allow"`),
@@ -89,6 +91,39 @@ ask)。规则:
   直接调用 `ToolPolicy.action` 而不经网关时,一律按保守默认注解判定(失败关闭)。
 - 不写 `annotations` 的策略 `contract()` 与指纹逐字节不变;写了以后指纹变化,已有会话恢复需要
   `--accept-config-changes`。
+
+## `--mode full` 的默认命令审批
+
+`--mode full` 不带 `--auto-approve` 时,宿主在用户策略(没有 `--tool-policy` 时是空策略)上加一条注解级下限:
+
+```json
+{"annotations": {"destructive+open_world": "ask"}}
+```
+
+即**同时**是 destructive 和 open_world 的工具每次调用都要审批。按上面的注解表,目前就是 `run_command`、
+`verify_command`、`start_job`(`--background-jobs`)和未配置 `readOnly` 的 MCP 工具(它们在网关本来就默认 ask)。
+`write_file` / `edit_file` / `apply_patch`(open_world 为假,`/undo` 能撤回)、`job_kill`(不是 open_world)、
+记忆和计划工具、`knowledge_search` 这类只读工具都不受影响,照旧自动执行。
+
+为什么用注解下限而不是在 `--mode full` 里另写一套判断:它复用已有的组合规则,和用户策略的关系不用另外定义——
+
+- 用户策略对该工具的**显式** `allow`(字符串动作,或条件规则里命中的 `allow`,如 `argv_prefix: ["git", "status"]`)
+  能放开这条下限,与其它注解级 `ask` 一致;条件规则的兜底 `default` 不算显式,没命中的命令仍然要审批。
+- 用户策略的 `deny`(逐工具或注解级)仍然绝对生效;用户自己写了 `"destructive+open_world": "deny"` 时保留 deny。
+- 全部 ask 的策略(如 Chainlit UI 生成的策略)行为不变。
+- 审批与其它 ask 完全相同:绑定 call id、轮次、工具名和参数、策略指纹;Worker 继承同一策略,Worker 的命令在主对话里
+  逐条询问,与 `--tool-policy` 的 ask 走同一条路径。
+
+**契约**:只有下限生效时它才进入策略 `contract()`(`annotations` 段多出这一键);`--mode read-only` / `edit`、
+`--auto-approve`、以及直接使用 `--allow-write --allow-command` 的运行,策略契约和指纹与以前逐字节相同。因此在这次
+改动之前用 `--mode full` 开始、尚未结束的回合,用 `--mode full --resume` 继续时会报告运行配置变化
+(`session runtime configuration changed`,并提示后续做法):加 `--auto-approve` 按原样继续,或加
+`--accept-config-changes` 接受变化(此后命令要审批,旧审批失效)。已完成的会话开新一轮不受影响。
+
+**关闭**:`--auto-approve`(或配置文件 `permissions.auto_approve: true`)恢复以前的行为:命令直接执行,
+`--tool-policy` 仍然生效。只有 `--mode full` 接受命令行上的 `--auto-approve`,其它模式下给出会报参数错误
+(配置文件里的 `auto_approve` 在其它模式下不起作用,不报错)。宿主侧的 `test_fix` 检查命令由宿主直接执行,不经过
+模型工具调用,不受这条下限影响。
 
 ## 关键路径删除:内置、始终拦截
 
