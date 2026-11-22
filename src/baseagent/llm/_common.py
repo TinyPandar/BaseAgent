@@ -11,6 +11,24 @@ from baseagent.kernel.errors import (AuthError, BadRequestError, ContextLengthEr
                                     RateLimitError, TransientError, ModelTimeoutError)
 
 
+# Assistant-message key holding the exact Anthropic content blocks (thinking with
+# signatures, text, tool_use) of a response; only AnthropicModel reads it.
+ANTHROPIC_CONTENT_KEY = "anthropic_content"
+
+
+def without_provider_blocks(messages):
+    """Drop Anthropic-only blocks before an OpenAI-compatible request.
+
+    Returns the very same list when no message carries them, so existing
+    requests (and cassettes) stay byte-identical.
+    """
+    if not isinstance(messages, list) or not any(isinstance(message, dict) and ANTHROPIC_CONTENT_KEY in message
+                                                 for message in messages):
+        return messages
+    return [{key: value for key, value in message.items() if key != ANTHROPIC_CONTENT_KEY}
+            if isinstance(message, dict) else message for message in messages]
+
+
 def positive_seconds(value):
     if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
         raise ValueError("timeout must be finite and positive")

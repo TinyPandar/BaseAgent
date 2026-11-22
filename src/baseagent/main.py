@@ -26,7 +26,7 @@ from baseagent.backends.sandbox import SandboxPolicy, SandboxUnavailable
 from baseagent.capabilities import SkillCatalog, SkillMiddleware, assemble_capabilities
 from baseagent.config import load_harness_config
 from baseagent.jsondata import read_json_object
-from baseagent.llm import Model
+from baseagent.llm import AnthropicModel, Model
 from baseagent.llm.bounds import request_bound_profile
 from baseagent.llm.estimation import TokenizerEstimator
 from baseagent.llm.reservation import ReservationUnavailable
@@ -70,10 +70,41 @@ read_spill remains available for bounded line slices.
 """
 
 
-def model_configuration(model_name=None, *, generic_only=False):
-    """Resolve a complete provider configuration without mixing credentials."""
-    generic = generic_only or any(os.getenv("BASEAGENT_LLM_" + name) for name in
-                                  ("BASE_URL", "API_KEY", "MODEL", "PROVIDER", "EXTRA_BODY"))
+PROVIDERS = ("openai-compatible", "deepseek", "anthropic")
+ANTHROPIC_DEFAULT_MODEL = "claude-opus-5-5"
+ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+# Thinking models answer slowly; the harness deadline still bounds every request.
+ANTHROPIC_TIMEOUT_SECONDS = 600.0
+
+
+def anthropic_target(model_name=None):
+    """Anthropic model ID and endpoint; reads only ANTHROPIC_* and never a credential."""
+    return (model_name or os.getenv("ANTHROPIC_MODEL") or ANTHROPIC_DEFAULT_MODEL,
+            os.getenv("ANTHROPIC_BASE_URL") or ANTHROPIC_DEFAULT_BASE_URL)
+
+
+def anthropic_configuration(model_name=None):
+    """AnthropicModel arguments; the key stays in ANTHROPIC_API_KEY and is read by the adapter."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise ValueError("--provider anthropic requires ANTHROPIC_API_KEY (environment or .env); "
+                         "BASEAGENT_LLM_* and DEEPSEEK_* credentials are never sent to Anthropic")
+    name, url = anthropic_target(model_name)
+    return {"provider": "anthropic", "model_name": name, "api_key_env": "ANTHROPIC_API_KEY", "base_url": url}
+
+
+def model_configuration(model_name=None, *, generic_only=False, provider=None):
+    """Resolve a complete provider configuration without mixing credentials.
+
+    provider None keeps the original selection: BASEAGENT_LLM_* when any of them is
+    set, otherwise DEEPSEEK_*. "openai-compatible" / "deepseek" force one namespace;
+    "anthropic" reads only ANTHROPIC_*.
+    """
+    if provider == "anthropic":
+        return anthropic_configuration(model_name)
+    if provider not in (None, "openai-compatible", "deepseek"):
+        raise ValueError("provider must be one of " + ", ".join(PROVIDERS))
+    generic = generic_only or provider == "openai-compatible" or (provider is None and any(
+        os.getenv("BASEAGENT_LLM_" + name) for name in ("BASE_URL", "API_KEY", "MODEL", "PROVIDER", "EXTRA_BODY")))
     prefix = "BASEAGENT_LLM_" if generic else "DEEPSEEK_"
     key, url = os.getenv(prefix + "API_KEY"), os.getenv(prefix + "BASE_URL")
     name = model_name or os.getenv(prefix + "MODEL") or (None if generic else "deepseek-chat")
@@ -94,9 +125,36 @@ def _invalid_json_constant(value):
     raise ValueError("nonfinite JSON value")
 
 
-def initialize_model(model_name=None, *, generic_only=False, **kwargs):
-    """Shared CLI/application/recorder OpenAI-compatible model composition."""
-    return Model(**model_configuration(model_name, generic_only=generic_only), **kwargs)
+def initialize_model(model_name=None, *, generic_only=False, provider=None, **kwargs):
+    """Shared CLI/application/recorder model composition (OpenAI-compatible by default)."""
+    configuration = model_configuration(model_name, generic_only=generic_only, provider=provider)
+    if configuration.pop("provider", None) == "anthropic":
+        return AnthropicModel(configuration.pop("model_name"), **configuration, **kwargs)
+    return Model(**configuration, **kwargs)
+
+
+def thinking_value(text):
+    """--thinking: adaptive, disabled, or a legacy budget_tokens integer (>= 1024)."""
+    if text in ("adaptive", "disabled"):
+        return text
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("expected adaptive, disabled or a token budget >= 1024") from None
+    if value < 1024:
+        raise argparse.ArgumentTypeError("thinking token budget must be >= 1024")
+    return value
+
+
+def anthropic_generation(args):
+    """Anthropic-only request parameters from --thinking / --effort (empty when unset)."""
+    generation = {}
+    if args.thinking is not None:
+        generation["thinking"] = ({"type": "enabled", "budget_tokens": args.thinking} if type(args.thinking) is int
+                                  else {"type": args.thinking})
+    if args.effort is not None:
+        generation["output_config"] = {"effort": args.effort}
+    return generation
 
 
 def _trace_preview(value, limit):
@@ -286,14 +344,17 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--max-workers", type=int, help=f"Main-agent chat: workers that may be active at once (default {CHAT_MAX_WORKERS}); extra delegations are rejected, and only one worker may write at a time")
     parser.add_argument("--budget-cny", help="CNY per turn, charged from reported usage at qwen-plus rates (input 0.8, output 2 CNY per million tokens) and checked before every model request; shared by the main agent and its workers in main-agent chat. Resuming a turn keeps what it already spent and its cap; give the option again to change the cap. Off by default")
     parser.add_argument("--request-bound-profile", choices=["deepseek-context-v1"], help="Explicit conservative whole-context bound for official DeepSeek Flash/Pro; requires --preauthorize-model")
-    parser.add_argument("--max-completion-tokens", type=int, default=4096, help="Output cap for strict or estimated reservations (default: 4096)")
+    parser.add_argument("--max-completion-tokens", type=int, default=None, help="Output cap for strict or estimated reservations, and max_tokens of every --provider anthropic request (default: 4096; anthropic: 16000)")
     parser.add_argument("--completion-policy", type=Path, help="JSON requirements: require_plan, exact command checks, and artifacts")
     parser.add_argument("--test-command", type=json.loads, help='Test-and-fix command as a JSON argv array; requires --allow-command')
     parser.add_argument("--test-fix-max-iterations", type=int, default=None, help="Maximum failure feedback messages (default: 3)")
     parser.add_argument("--test-fix-output-max-chars", type=int, default=None, help="Failure output character limit (default: 4000)")
     parser.add_argument("--accept-config-changes", action="store_true", help="Explicitly accept changed runtime/tools for an unfinished turn")
     parser.add_argument("--accept-workspace-changes", action="store_true", help="Acknowledge changed observed files/guidance; stale write hashes remain rejected")
-    parser.add_argument("--model", default=None, help="Model name (default: BASEAGENT_LLM_MODEL or DEEPSEEK_MODEL)")
+    parser.add_argument("--model", default=None, help="Model name (default: BASEAGENT_LLM_MODEL or DEEPSEEK_MODEL; anthropic: ANTHROPIC_MODEL or claude-opus-5-5)")
+    parser.add_argument("--provider", choices=list(PROVIDERS), default=None, help="Model provider: openai-compatible (BASEAGENT_LLM_*), deepseek (DEEPSEEK_*) or anthropic (ANTHROPIC_API_KEY, optional ANTHROPIC_BASE_URL / ANTHROPIC_MODEL). Default: BASEAGENT_LLM_* when any is set, else DEEPSEEK_*; credentials never mix; see docs/providers.md")
+    parser.add_argument("--thinking", type=thinking_value, default=None, help="--provider anthropic: thinking config: adaptive, disabled, or a budget_tokens integer for older models (default: omitted, the model's own default)")
+    parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None, help="--provider anthropic: output_config.effort (default: omitted)")
     parser.add_argument("--max-steps", type=int, help="Logical rounds (new turn: 8, interactive chat: 16; resume: preserve)")
     parser.add_argument("--max-model-calls", type=int, default=None, help="Actual model call attempts, including middleware retries and failed attempts (defaults to max-steps)")
     parser.add_argument("--max-tool-calls", type=int, help="Actual tool attempts (new turn: 32; resume: preserve)")
@@ -386,6 +447,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     args = parser.parse_args(argv)
     if not math.isfinite(args.harness_timeout) or args.harness_timeout <= 0:
         parser.error("--harness-timeout must be positive and finite")
+    if args.max_completion_tokens is None:
+        args.max_completion_tokens = 16000 if args.provider == "anthropic" else 4096
     if args.tool_package is None:
         args.tool_package = packages_default
     if args.skills_dir is None:
@@ -475,6 +538,19 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         parser.error("duration budget must be positive and finite")
     if not 0 <= args.model_retries <= 4 or not 0 <= args.tool_retries <= 4:
         parser.error("retry counts must be 0-4")
+    if args.provider != "anthropic" and (args.thinking is not None or args.effort is not None):
+        parser.error("--thinking and --effort apply to --provider anthropic")
+    if args.provider == "anthropic":
+        if args.stream:
+            parser.error("--stream is not supported with --provider anthropic: streaming is implemented for "
+                         "OpenAI-compatible chat completions only; run without --stream (replies arrive whole)")
+        if args.request_bound_profile or args.preauthorize_model or args.estimate_model or args.tokenizer_file:
+            parser.error("--provider anthropic has no request reservations: --preauthorize-model, "
+                         "--request-bound-profile, --estimate-model and --tokenizer-file apply to OpenAI-compatible providers")
+        if args.max_completion_tokens < 1:
+            parser.error("--max-completion-tokens must be positive")
+        if type(args.thinking) is int and args.thinking >= args.max_completion_tokens:
+            parser.error("--thinking budget must be below --max-completion-tokens")
     if args.ui != "cli" and not interactive:
         parser.error("--ui tui/web applies to interactive chat; one-shot prompts and session operations stay on the CLI")
     if args.force and args.rewind is None:
@@ -545,7 +621,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         adapter = None
 
         def bound(self):
-            configuration = model_configuration(args.model)
+            configuration = model_configuration(args.model, provider=args.provider)
             return request_bound_profile(args.request_bound_profile, configuration["model_name"], configuration["base_url"], args.max_completion_tokens)
 
         def estimate_request(self, messages, tools):
@@ -572,7 +648,12 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         def initialize(self):
             if self.adapter is None:
                 load_dotenv()
-                self.adapter = initialize_model(args.model,
+                if args.provider == "anthropic":
+                    self.adapter = initialize_model(args.model, provider="anthropic", timeout=ANTHROPIC_TIMEOUT_SECONDS,
+                                                    max_completion_tokens=args.max_completion_tokens,
+                                                    generation=anthropic_generation(args) or None)
+                    return
+                self.adapter = initialize_model(args.model, provider=args.provider,
                                      **({"request_bound": self.bound()} if args.request_bound_profile else {}),
                                      **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
 
@@ -851,6 +932,8 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if estimating and (args.preauthorize_model or args.request_bound_profile):
             raise ValueError("estimated and strict budgets cannot be combined")
         cached = bool(existing and existing.status == "completed" and args.prompt is None and not interactive)
+        if args.provider == "anthropic" and model_factory is None and not cached:
+            anthropic_configuration(args.model)  # readable missing-key error before any model call
         if (estimating and not args.tokenizer_file and not cached) or (args.tokenizer_file and not estimating):
             raise ValueError("estimated budgets require --tokenizer-file; tokenizer-file requires estimated mode")
         if estimating and not 1 <= args.max_completion_tokens <= 393216:
@@ -862,6 +945,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                   "model": args.model or os.getenv("BASEAGENT_LLM_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
                   "endpoint": os.getenv("BASEAGENT_LLM_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL"),
                   "context_policy_version": 1}
+        # An explicit provider records only its own namespace; the default keeps the contract above.
+        if args.provider == "anthropic":
+            config["model"], config["endpoint"] = anthropic_target(args.model)
+        elif args.provider == "deepseek":
+            config["model"] = args.model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+            config["endpoint"] = os.getenv("DEEPSEEK_BASE_URL")
+        elif args.provider == "openai-compatible":
+            config["model"] = args.model or os.getenv("BASEAGENT_LLM_MODEL")
+            config["endpoint"] = os.getenv("BASEAGENT_LLM_BASE_URL")
         spill_settings = {
             "enabled": args.spill_enabled, "threshold_tokens": args.spill_threshold_tokens,
             "single_chars": args.spill_single_chars, "total_chars": args.spill_total_chars,
@@ -893,10 +985,15 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         }.items() if value is not None}
         if watchdog_settings:
             config["watchdog"] = watchdog_settings
-        if os.getenv("BASEAGENT_LLM_PROVIDER"):
+        generic_namespace = args.provider not in ("anthropic", "deepseek")
+        if args.provider == "anthropic":
+            # Recorded so resuming with another provider is a runtime contract change, like a model change.
+            config["provider"] = "anthropic"
+            config["anthropic"] = {"max_tokens": args.max_completion_tokens, **anthropic_generation(args)}
+        elif generic_namespace and os.getenv("BASEAGENT_LLM_PROVIDER"):
             config["provider"] = os.environ["BASEAGENT_LLM_PROVIDER"]
-        if os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
-            config["extra_body"] = model_configuration(args.model).get("extra_body")
+        if generic_namespace and os.getenv("BASEAGENT_LLM_EXTRA_BODY"):
+            config["extra_body"] = model_configuration(args.model, provider=args.provider).get("extra_body")
         config["retries"] = {"model": args.model_retries, "tool": args.tool_retries, "delay": 0.25}
         if not project_rules:
             # Recorded only when off, so the default runtime contract (and existing sessions) stay unchanged.

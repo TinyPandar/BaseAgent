@@ -155,8 +155,12 @@ Successful responses arriving during cancellation are returned for usage account
 the harness then stops. Synchronous I/O uses finite transport timeouts and cannot
 be forcibly interrupted. Close adapters explicitly or use their context managers.
 Anthropic supports text/system messages, grouped tool results, multiple tool calls,
-and reported usage (including cached input); it does not support streaming,
-multimodal content, or extended thinking. Its tool/error mappings follow the
+reported usage (including cached input) and extended thinking: `generation` also accepts
+`thinking` and `output_config` (effort), and thinking blocks are kept on the assistant
+message under `anthropic_content` and sent back unchanged. It does not support streaming
+or multimodal content. The CLI selects it with `--provider anthropic`; flags, credential
+rules, stop reasons and the pending real-API check are in [providers.md](providers.md)
+(中文). Its tool/error mappings follow the
 [Anthropic tool contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools)
 and [error contract](https://platform.claude.com/docs/en/api/errors).
 

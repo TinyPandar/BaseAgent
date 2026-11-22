@@ -17,7 +17,7 @@ SECTIONS = {
             "compaction_max_input_chars",
             "spill_enabled", "spill_threshold_tokens", "spill_single_chars", "spill_total_chars",
             "spill_max_age_turns", "spill_old_preview_chars", "spill_preview_chars",
-            "spill_head_lines", "spill_tail_lines", "wrapup_hint_steps", "repeat_call_guard", "dedupe_reads", "model", "max_steps", "max_model_calls", "max_tool_calls", "max_context_bytes",
+            "spill_head_lines", "spill_tail_lines", "wrapup_hint_steps", "repeat_call_guard", "dedupe_reads", "model", "provider", "thinking", "effort", "max_steps", "max_model_calls", "max_tool_calls", "max_context_bytes",
             "max_tool_context_bytes", "max_total_tokens", "max_duration_seconds", "model_retries",
             "tool_retries", "trace", "estimate_model", "preauthorize_model", "max_completion_tokens",
             "tokenizer_file", "estimate_margin_percent", "estimate_fixed_margin", "request_bound_profile",
@@ -74,6 +74,10 @@ def load_harness_config(path):
                 valid_duration = False
             if not valid_duration:
                 raise ValueError("max_duration_seconds must be positive and finite")
+        elif key == "thinking":
+            # Anthropic only (docs/providers.md): adaptive, disabled or a legacy budget_tokens integer.
+            if value not in ("adaptive", "disabled") and (type(value) is not int or value < 1024):
+                raise ValueError("thinking must be adaptive, disabled or an integer >= 1024")
         elif key == "test_command":
             if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
                 raise ValueError("test_command must be a nonempty argv array")
@@ -86,6 +90,10 @@ def load_harness_config(path):
             raise ValueError(f"{key} must be a nonempty string")
         if key == "sandbox" and value not in SANDBOX_MODES:
             raise ValueError("sandbox mode must be one of " + ", ".join(SANDBOX_MODES))
+        if key == "provider" and value not in ("openai-compatible", "deepseek", "anthropic"):
+            raise ValueError("provider must be openai-compatible, deepseek or anthropic")
+        if key == "effort" and value not in ("low", "medium", "high", "xhigh", "max"):
+            raise ValueError("effort must be low, medium, high, xhigh or max")
         if key == "request_bound_profile" and value != "deepseek-context-v1":
             raise ValueError("unknown request_bound_profile")
     for key in PATH_FIELDS & values.keys():
