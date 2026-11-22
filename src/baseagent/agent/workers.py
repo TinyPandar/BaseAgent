@@ -36,6 +36,7 @@ from baseagent.tools.result import ErrorCode, ToolResult
 from .cancellation import CancellationToken
 from .errors import BudgetExceeded
 from .events import event
+from .inbox import INBOX_HEADER, LEAD, PUSH_HEADER, STEER, USER_HEADER, WORKER, Inbox, InboxMiddleware  # noqa: F401 -- re-exported
 from .router import WORKER_PROMPT, worker_report
 from .state import RunStatus
 
@@ -47,12 +48,10 @@ TERMINAL = frozenset({COMPLETED, FAILED, CANCELLED})
 # qwen-plus non-thinking rates already used by the evaluation metering (CNY per million tokens).
 INPUT_CNY_PER_MILLION = Decimal("0.8")
 OUTPUT_CNY_PER_MILLION = Decimal(2)
-PUSH_HEADER = "[worker 推送：系统自动附加的结果，不是用户输入]"
 # Pushes and trace lines waiting for the CLI to print them between prompts. Older lines are
 # dropped (and counted) beyond this, so a chat that nobody reads cannot grow without bound.
 DISPLAY_LIMIT = 1000
-USER_HEADER = "[用户消息]"
-INBOX_HEADER = "[主 Agent 转达的补充要求]"
+# PUSH_HEADER, USER_HEADER and INBOX_HEADER live in agent/inbox.py (re-exported here).
 
 
 def worker_state(status):
@@ -339,17 +338,6 @@ class SessionTagMiddleware(AgentMiddleware):
             state.metadata.setdefault(key, value)
 
 
-class InboxMiddleware(AgentMiddleware):
-    """Inject requirements sent with message_worker or /tell before the worker's next model call."""
-
-    def __init__(self, record):
-        self.record = record
-
-    def before_model(self, state):
-        for text in self.record.take_inbox():
-            state.messages.append({"role": "user", "content": f"{INBOX_HEADER}\n{text}"})
-
-
 @dataclass
 class WorkerRecord:
     id: str
@@ -372,17 +360,14 @@ class WorkerRecord:
         self.budget = None
         self.cancellation = CancellationToken()
         self.cancel_requested = False
-        self._inbox = []
-        self._inbox_lock = threading.Lock()
+        # Requirements from /tell or message_worker (source lead), delivered by InboxMiddleware.
+        self.inbox = Inbox()
 
     def take_inbox(self):
-        with self._inbox_lock:
-            items, self._inbox = self._inbox, []
-            return items
+        return [item.text for item in self.inbox.take(mode=STEER)]
 
     def put_inbox(self, text):
-        with self._inbox_lock:
-            self._inbox.append(text)
+        self.inbox.put(LEAD, text)
 
     def to_dict(self):
         value = asdict(self)
@@ -414,7 +399,8 @@ class WorkerManager:
     tool_name = DELEGATE_TOOL
 
     def __init__(self, tools, *, system_prompt, store, runner, max_workers=2, max_steps=12, max_tool_calls=24,
-                 reply_reserve=1, summary_chars=4000, budget_factory=None, join_seconds=10.0):
+                 reply_reserve=1, summary_chars=4000, budget_factory=None, join_seconds=10.0, inbox=None,
+                 jobs=None):
         if DELEGATE_TOOL in tools._tools or MESSAGE_TOOL in tools._tools or "run_subtask" in tools._tools:
             raise ValueError("worker tools must not include delegation tools")
         if type(max_workers) is not int or max_workers < 1:
@@ -435,7 +421,10 @@ class WorkerManager:
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._approvals = deque()
-        self._pushes = []
+        # The main agent's inbox: results are delivered at its next safe boundary (a running turn) or with
+        # the next turn (idle). ``jobs`` feeds background-job notices into each worker's own inbox.
+        self.inbox = inbox if inbox is not None else Inbox()
+        self.jobs = jobs
         self._display = deque(maxlen=DISPLAY_LIMIT)
         self.display_dropped = 0
         self.on_notice = None
@@ -533,7 +522,7 @@ class WorkerManager:
 
     def _layers(self, record):
         # The runner puts these innermost, so every real dispatch (including retries) is charged.
-        return [InboxMiddleware(record), SharedBudgetMiddleware(self.pool_for(record), worker=True)]
+        return [InboxMiddleware(record.inbox, jobs=self.jobs), SharedBudgetMiddleware(self.pool_for(record), worker=True)]
 
     def turn_pool(self, turn, build, *, replace=False):
         """The one pool of main turn ``turn`` in this process: the cached one, or ``build()`` cached under the
@@ -644,8 +633,9 @@ class WorkerManager:
             if record.announced == record.status or record.status == RUNNING:
                 return
             record.announced = record.status
-            self._pushes.append(self.push_payload(record))
+            payload = self.push_payload(record)
             stream, text = self.describe(record)
+        self.inbox.put(WORKER, json.dumps(payload, ensure_ascii=False))
         self.post(stream, text)
         self._notify(OBSERVED.get(record.status, "worker_failed"), record, text=text)
 
@@ -696,9 +686,10 @@ class WorkerManager:
         return items
 
     def take_pushes(self):
-        with self._lock:
-            items, self._pushes = self._pushes, []
-            return items
+        """Pending worker results (payload dicts) taken out of the main agent's inbox."""
+        items = self.inbox.take(mode=STEER, source=WORKER)
+        self.inbox.delivered(items, "new_turn")
+        return [json.loads(item.text) for item in items]
 
     def compose(self, text):
         """Attach pending pushes to the next main-agent message, marked as system-added."""

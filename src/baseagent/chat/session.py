@@ -6,6 +6,11 @@ own. The same object drives the CLI (synchronously, with ``printer`` set so the
 exact CLI lines are printed), the Textual TUI and the Web server (both
 asynchronously: ``send`` runs the turn in a background thread).
 
+Every external input goes through one ``Inbox`` (``baseagent.agent.inbox``, docs/inbox.md): a line
+sent while a turn runs is *steered* into that turn (delivered before its next model call, at a safe
+boundary) or, with ``/queue``, *queued* as the next turn; worker results wait there too. Lines left
+over when a turn finishes start the next turn automatically, so typed text is never dropped.
+
 The agent loop is not changed: a turn is still ``run_turn(text)`` from the CLI
 composition in ``main.py``, approvals still go through ``SessionStore`` /
 ``WorkerManager.decide`` with the exact call id and request digest, and worker
@@ -15,10 +20,13 @@ limits, the single writer, the shared budget and persistence stay in
 
 from __future__ import annotations
 
+import ctypes
 import sqlite3
 import threading
 import time
 
+from baseagent.agent.inbox import METADATA_KEY as INBOX_KEY
+from baseagent.agent.inbox import QUEUE, STEER, USER, Inbox, is_inbox_message, user_parts
 from baseagent.agent.state import RunStatus
 from baseagent.agent.workers import ACTIVE, AWAITING, INBOX_HEADER, PUSH_HEADER, USER_HEADER, preview
 from baseagent.agent.workers import worker_label as duplex_worker_label
@@ -37,6 +45,10 @@ ERRORS = (ValueError, SessionBusy, OSError, sqlite3.Error)
 EXIT_COMMANDS = frozenset({"/exit", "/quit"})
 CHECKPOINT_COMMANDS = frozenset({"/checkpoints", "/undo", "/rewind"})
 CONTINUE_COMMAND = "/continue"
+QUEUE_COMMAND = "/queue"
+STEERED = "已加入本轮：主 Agent 下一次调用模型前会看到这条消息（这一轮若已在回复，就作为下一轮发送）。"
+QUEUED = "已排队：这一轮结束后作为新的一轮发送（按输入顺序）。"
+DELIVERED = "（你的补充消息已送达主 Agent：它在这一步就会看到。）"
 # Defaults of /continue: the interactive per-turn step limit and the per-turn tool-call limit.
 CONTINUE_STEPS = 16
 CONTINUE_TOOL_CALLS = 32
@@ -65,7 +77,7 @@ class ChatSession:
 
     def __init__(self, *, run_turn, store, workspace, session_id=None, workers=None, main_agent=False,
                  events=None, printer=None, status_events=True, continue_steps=CONTINUE_STEPS,
-                 continue_tool_calls=CONTINUE_TOOL_CALLS):
+                 continue_tool_calls=CONTINUE_TOOL_CALLS, inbox=None):
         self.run_turn = run_turn
         # /continue: how much more the current turn gets by default (the chat's per-turn allowance).
         self.continue_steps, self.continue_tool_calls = continue_steps, continue_tool_calls
@@ -81,6 +93,17 @@ class ChatSession:
         self.opened = False
         self._turn = threading.Lock()
         self._busy = False
+        # Claiming the session for a background turn and deciding to stop chaining turns happen under this
+        # lock, so a line sent at that moment is either steered into the running chain or starts a new turn.
+        self._gate = threading.Lock()
+        self._thread = None
+        # The main agent's inbox (shared with WorkerManager and InboxMiddleware by main.py).
+        if inbox is None:
+            inbox = workers.inbox if workers is not None and getattr(workers, "inbox", None) is not None else Inbox()
+        self.inbox = inbox
+        if workers is not None:
+            workers.inbox = inbox
+        inbox.listeners.append(self._on_inbox)
         self._status_at = 0.0
         # Compute and publish each status under one lock: a snapshot taken earlier is never published later.
         self._status_lock = threading.Lock()
@@ -116,6 +139,11 @@ class ChatSession:
                 state = None
         self.state = state
         self.started = True
+        if state is not None:
+            # Undelivered lines and results from an earlier process go out with the next turn / model call.
+            restored = self.inbox.restore(state.metadata.get(INBOX_KEY))
+            if restored:
+                self._say("err", f"有 {len(restored)} 条未送达的消息（上次退出时还在收件箱里），会随下一轮发送。")
         if self.workers is not None:
             self.workers.restore(state)
         return state
@@ -156,9 +184,13 @@ class ChatSession:
         self.persist()
 
     # ----- turns (shared by every frontend) ---------------------------------------------
-    def turn(self, text, ask):
-        """One chat line. ``ask(view)`` answers a main-agent approval: (decision or None, stop)."""
-        self.events.publish("user_message", text=text)
+    def turn(self, text, ask, *, announce=True):
+        """One chat line. ``ask(view)`` answers a main-agent approval: (decision or None, stop).
+
+        ``announce=False``: the line was already shown when it entered the inbox (steer/queue).
+        """
+        if announce:
+            self.events.publish("user_message", text=text, mode="turn", queued=False, id=None)
         self.state = self._turn_from(self.state, text, ask)
         self.persist()
         return self.state
@@ -182,6 +214,11 @@ class ChatSession:
                                  "/continue to give it more steps and finish it here, or inspect or resume it with "
                                  f"--session {state.session_id or '<id>'} --resume.")
                 return state
+        earlier = self.inbox.take(mode=STEER, source=USER)
+        if earlier:
+            # Lines steered into a turn that ended (or was cancelled) before its next model call.
+            self.inbox.delivered(earlier, "new_turn")
+            text = "\n\n".join([*(item.text for item in earlier), text])
         compose = self.workers.compose if self.workers is not None else None
         state = self._invoke(compose(text) if compose else text)
         if state is None:
@@ -398,10 +435,11 @@ class ChatSession:
             self.workers.skip_approval(record)
 
     # ----- commands ---------------------------------------------------------------------
-    def command(self, text, *, blocking=True, ask=None):
+    def command(self, text, *, blocking=True, ask=None, background=False):
         """/status, /checkpoints, /undo, /rewind, /continue always; /wait, /cancel, /tell in main-agent chat.
 
         ``ask`` answers a main-agent approval reached while /continue runs (CLI); GUIs leave it pending.
+        ``background``: /continue runs in the turn thread (the threaded CLI keeps reading lines meanwhile).
 
         False means: an ordinary chat line.
         """
@@ -415,7 +453,7 @@ class ChatSession:
             self.checkpoint_command(command, rest)
             return True
         if command == CONTINUE_COMMAND:
-            self.continue_command(rest, blocking=blocking, ask=ask)
+            self.continue_command(rest, blocking=blocking, ask=ask, background=background)
             return True
         if self.workers is None:
             return False
@@ -457,7 +495,7 @@ class ChatSession:
                 max(state.max_model_calls, state.model_calls + steps),
                 max(state.max_tool_calls, state.tool_calls + self.continue_tool_calls))
 
-    def continue_command(self, rest, *, blocking=True, ask=None):
+    def continue_command(self, rest, *, blocking=True, ask=None, background=False):
         """``/continue [N]``. Returns the new limits, or None when nothing was continued."""
         extra = None
         if rest:
@@ -478,12 +516,12 @@ class ChatSession:
                        f"Inspect with baseagent --session {state.session_id} --inspect-session.")
             return None
         limits = self.continue_limits(state, extra)
-        if not blocking:
-            if not self._turn.acquire(blocking=False):
+        if not blocking or background:
+            if not self._claim():
                 self._fail("上一条消息还在处理中：等主 Agent 回复后再 /continue。")
                 return None
             self._announce_continue(state, limits)
-            self._background(lambda: self.continue_turn(self._defer, limits))
+            self._background(lambda: self.continue_turn(ask or self._defer, limits), ask)
             return limits
         self._announce_continue(state, limits)
         self.continue_turn(ask or self._defer, limits)
@@ -657,6 +695,7 @@ class ChatSession:
         self.persist()
 
     def persist(self):
+        self._save_inbox()
         if self.workers is None:
             return
         try:
@@ -664,32 +703,93 @@ class ChatSession:
         except ERRORS as exc:
             self._fail(f"Could not save worker status: {exc}")
 
+    def _save_inbox(self):
+        """Write undelivered inbox items into the session between turns (a running turn saves them itself)."""
+        if not self.session_id:
+            return
+        items = self.inbox.snapshot()
+        try:
+            with self.store.exclusive(self.session_id):
+                state = self.store.load(self.session_id)
+                if state is None or (state.metadata.get(INBOX_KEY) or []) == items:
+                    return
+                if items:
+                    state.metadata[INBOX_KEY] = items
+                else:
+                    state.metadata.pop(INBOX_KEY, None)
+                self.store.save(state)
+        except ERRORS as exc:
+            self._fail(f"Could not save undelivered messages: {exc}")
+
     # ----- non-blocking commands for the TUI and the Web server -------------------------
     @property
     def busy(self):
-        return self._busy
+        """A turn runs, or its thread is still publishing the final status of that turn."""
+        return self._busy or self._thread is not None
 
     def submit(self, text):
-        """A typed line from a GUI: "exit", "command", "sent", "rejected" or "empty". May block on /cancel."""
+        """A typed line from a GUI: "exit", "command", "sent", "queued", "rejected" or "empty". May block on /cancel."""
         text = (text or "").strip()
         if not text:
             return "empty"
         if text in EXIT_COMMANDS:
             return "exit"
-        if self.command(text, blocking=False):
+        if not _is_queue(text) and self.command(text, blocking=False):
             return "command"
-        return "sent" if self.send(text) else "rejected"
+        return self.send(text) or "rejected"
 
-    def send(self, text):
-        """Start a turn in the background. Returns False (and an error event) when one is still running."""
+    def send(self, text, ask=None):
+        """A chat line. Idle: start a turn in the background ("sent"). While a turn runs: put it into the
+        inbox ("queued") as steer (delivered before the turn's next model call), or as queue with
+        ``/queue <text>`` (the next turn after this one). False (and an error event) when refused.
+
+        ``ask`` answers main-agent approvals of the started turn (the threaded CLI); GUIs leave them pending.
+        """
         text = (text or "").strip()
         if not text:
             return False
-        if not self._turn.acquire(blocking=False):
-            self._fail("上一条消息还在处理中：等主 Agent 回复后再发。")
+        mode = STEER
+        if _is_queue(text):
+            text, mode = text[len(QUEUE_COMMAND):].strip(), QUEUE
+            if not text:
+                self._fail("Usage: /queue <text>  （这一轮结束后作为新的一轮发送）")
+                return False
+        if self.closed:
+            self._fail("对话已结束，这条消息没有发送。")
             return False
-        self._background(lambda: self.turn(text, self._defer))
+        if self._claim():
+            self._background(lambda: self.turn(text, ask or self._defer), ask)
+            return "sent"
+        self.interject(text, mode)
+        return "queued"
+
+    def interject(self, text, mode=STEER):
+        """Put a user line into the inbox while a turn runs; shown at once, delivered later."""
+        item = self.inbox.put(USER, text, mode)
+        self.events.publish("user_message", text=text, mode=mode, queued=True, id=item.id)
+        self._say("out", STEERED if mode == STEER else QUEUED)
+        self.publish_status(force=True)
+        return item
+
+    def interrupt(self):
+        """Ctrl+C for a turn running in the background thread: raise KeyboardInterrupt in it.
+
+        The turn then stops exactly as a Ctrl+C in the foreground would (INTERRUPTED, resumable); it takes
+        effect when that thread next runs Python code (a model request already on the wire finishes first).
+        """
+        thread = self._thread
+        if not self._busy or thread is None or not thread.is_alive() or thread.ident is None:
+            return False
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread.ident), ctypes.py_object(KeyboardInterrupt))
         return True
+
+    def _on_inbox(self, kind, items, **data):
+        if kind != "delivered":
+            return
+        self.events.publish("inbox_delivered", ids=[item.id for item in items],
+                            sources=[item.source for item in items], how=data.get("how"))
+        if data.get("how") == "model_call" and any(item.source == USER for item in items) and self.printer is not None:
+            self.printer("err", DELIVERED)
 
     def approve(self, call_id, digest, *, worker=ANY):
         return self._answer(call_id, digest, "allow", worker)
@@ -704,14 +804,14 @@ class ChatSession:
         except ApprovalMismatch as exc:
             self._fail(f"Approval refused: {exc}")
             return {"ok": False, "message": str(exc)}
-        if record is None and not self._turn.acquire(blocking=False):
+        if record is None and not self._claim():
             self._fail("上一条消息还在处理中：等主 Agent 回复后再审批。")
             return {"ok": False, "message": "busy"}
         try:
             self.decide(call_id, digest, decision, worker=record.id if record is not None else None)
         except ERRORS as exc:
             if record is None:
-                self._turn.release()
+                self._release()
             who = f" for {record.id}" if record is not None else ""
             self._fail(f"Could not record the approval decision{who}: {exc}")
             return {"ok": False, "message": str(exc)}
@@ -734,21 +834,66 @@ class ChatSession:
         """GUIs answer approvals asynchronously: leave the call pending (its event is already out)."""
         return None, True
 
-    def _background(self, work):
-        """Run one turn step in a thread; the caller already holds the turn slot."""
-        def run():
+    def _claim(self):
+        """Take the session for a background turn: False while one runs (or after exit)."""
+        with self._gate:
+            if self._busy or self.closed:
+                return False
             self._busy = True
+        self._turn.acquire()   # only brief holders (persist_idle) remain when not busy
+        return True
+
+    def _release(self):
+        with self._gate:
+            self._busy = False
+            self._turn.release()
+
+    def _followup(self, state):
+        """The next turn's text from the inbox after a finished turn: leftover steer lines first, then one
+        queued line. None when nothing is waiting or the turn did not finish (cancelled, paused, limits)."""
+        if self.closed or state is None or state.status != RunStatus.COMPLETED:
+            return None
+        items = self.inbox.take(mode=STEER, source=USER) or self.inbox.take(mode=QUEUE, limit=1)
+        if not items:
+            return None
+        self.inbox.delivered(items, "new_turn")
+        return "\n\n".join(item.text for item in items)
+
+    def _background(self, work, ask=None):
+        """Run one turn step in a thread; the caller already claimed the session (``_claim``).
+
+        When it ends, lines that are still in the inbox start the next turn in the same thread.
+        """
+        def run():
             self.publish_status(force=True)
+            current, released = work, False
             try:
-                work()
-            except Exception as exc:  # noqa: BLE001 -- a turn failure must not kill the frontend.
-                self._fail(f"Session error: {type(exc).__name__}: {exc}")
+                while current is not None:
+                    state = None
+                    try:
+                        state = current()
+                    except KeyboardInterrupt:
+                        self._say("err", "Turn cancelled. Type another message to continue.")
+                    except Exception as exc:  # noqa: BLE001 -- a turn failure must not kill the frontend.
+                        self._fail(f"Session error: {type(exc).__name__}: {exc}")
+                    with self._gate:
+                        text = self._followup(state)
+                        if text is None:
+                            self._busy, released = False, True
+                            self._turn.release()
+                            current = None
+                        else:
+                            current = (lambda line=text: self.turn(line, ask or self._defer, announce=False))
             finally:
-                self._busy = False
-                self._turn.release()
+                if not released:
+                    self._release()
                 self.publish_status(force=True)
+                with self._gate:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
 
         thread = threading.Thread(target=run, name="chat-turn", daemon=True)
+        self._thread = thread
         thread.start()
         return thread
 
@@ -864,6 +1009,12 @@ class ChatSession:
             if not isinstance(content, str) or not content.strip():
                 continue
             if message.get("role") == "user":
+                if is_inbox_message(content):
+                    # Delivered inside a turn: show only the user's own mid-turn words.
+                    words = user_parts(content)
+                    if words:
+                        items.append({"role": "user", "text": words, "mode": STEER})
+                    continue
                 items.append({"role": "user", "text": strip_attachments(content)})
             elif message.get("role") == "assistant":
                 items.append({"role": "assistant", "text": content})
@@ -874,7 +1025,8 @@ class ChatSession:
         last_id = self.events.last_id
         return {"last_id": last_id, "session_id": self.session_id, "workspace": str(self.workspace.root),
                 "mode": "main-agent" if self.main_agent else "single-agent", "history": self.history(),
-                "status": self.status(), "approvals": self.pending_approvals()}
+                "status": self.status(), "approvals": self.pending_approvals(),
+                "inbox": [item.to_dict() for item in self.inbox.pending(source=USER)]}
 
     def events_after(self, after_id):
         """Buffered events after an id, or one synthetic ``resync`` event carrying a snapshot."""
@@ -883,6 +1035,10 @@ class ChatSession:
             return [item.to_dict() for item in items]
         snapshot = self.snapshot()
         return [{"id": snapshot["last_id"], "kind": "resync", "ts": time.time(), "data": {"snapshot": snapshot}}]
+
+
+def _is_queue(text):
+    return text == QUEUE_COMMAND or text.startswith(QUEUE_COMMAND + " ")
 
 
 def _swallow(stream, text):

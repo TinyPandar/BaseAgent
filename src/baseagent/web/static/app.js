@@ -131,7 +131,12 @@ function handle(event) {
   const d = event.data;
   switch (event.kind) {
     case "resync": resync(d.snapshot); break;
-    case "user_message": line("user", d.text); break;
+    case "user_message":
+      line("user", d.text + (d.queued ? (d.mode === "queue" ? "  （已排队：本轮结束后发送）" : "  （已加入本轮，等待送达）") : ""));
+      break;
+    case "inbox_delivered":
+      if ((d.sources || []).includes("user")) line("system", d.how === "model_call" ? "（已送达主 Agent：这一步就会看到）" : "（已送达主 Agent：作为新的一轮）");
+      break;
     case "assistant_message": line("assistant", d.text); break;
     case "tool_call": line("tool", `${d.worker ? "[" + d.worker + "] " : ""}→ ${d.name} ${d.arguments}`); break;
     case "tool_result": line("tool", `${d.worker ? "[" + d.worker + "] " : ""}← ${d.name} ${d.ok ? "ok" : "失败"}: ${d.preview}`); break;
@@ -160,7 +165,7 @@ $("composer").addEventListener("submit", async (event) => {
   const text = input.value.trim();
   if (!text) return;
   const result = await post("/messages" + query, {text});
-  if (result.ok) input.value = "";   // keep the text when it was rejected (for example: still answering)
+  if (result.ok) input.value = "";   // keep the text when it was rejected; while answering it is steered or queued
 });
 $("cancel-all").addEventListener("click", () => post("/workers/all/cancel" + query, {}));
 setInterval(renderWorkers, 1000);    // elapsed time ticks locally between status events

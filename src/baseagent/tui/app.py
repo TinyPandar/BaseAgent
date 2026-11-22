@@ -30,6 +30,7 @@ LIST_HEADER_CHARS = 300   # glob/grep count line (total, shown, omitted, tool tr
 STYLES = {"user": "bold", "assistant": "", "system": "dim", "tool": "dim italic", "warn": "yellow",
           "push": "green", "failed": "red"}
 PREFIX = {"user": "你 › ", "assistant": "主 Agent › "}
+QUEUED_SUFFIX = {"steer": "  （已加入本轮，等待送达）", "queue": "  （已排队：本轮结束后发送）"}
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -135,7 +136,7 @@ class ChatApp(App):
         with Horizontal(id="main"):
             with Vertical(id="chat"):
                 yield RichLog(id="log", wrap=True, markup=False, highlight=False, auto_scroll=True)
-                yield Input(placeholder="输入任务或问题；/status、/continue [N]、/checkpoints、/undo、/cancel <id|all>、/tell <id> <text>、/exit", id="input")
+                yield Input(placeholder="输入任务或问题；/status、/continue [N]、/checkpoints、/undo、/cancel <id|all>、/tell <id> <text>、/queue <text>、/exit（回复中发送 = 追加到本轮）", id="input")
             with Vertical(id="side"):
                 yield Label("Workers", id="side-title")
                 yield DataTable(id="workers", cursor_type="row", zebra_stripes=True)
@@ -167,7 +168,13 @@ class ChatApp(App):
         if kind == "resync":
             self.resync(data["snapshot"])
         elif kind == "user_message":
-            self.write("user", data["text"])
+            # A line sent while the agent works waits in the inbox: steer joins this turn, queue the next one.
+            suffix = QUEUED_SUFFIX.get(data.get("mode"), "") if data.get("queued") else ""
+            self.write("user", data["text"] + suffix)
+        elif kind == "inbox_delivered":
+            if "user" in data.get("sources", ()):
+                self.write("system", "（已送达主 Agent" + ("：这一步就会看到）" if data.get("how") == "model_call"
+                                                         else "：作为新的一轮）"))
         elif kind == "assistant_message":
             self.write("assistant", data["text"])
         elif kind == "tool_call":

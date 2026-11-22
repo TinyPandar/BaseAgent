@@ -10,14 +10,24 @@ pushes and trace lines are printed only between prompts: queued while a line
 is being read, printed before the next prompt. On a real terminal a push may
 also print above an *empty* prompt line and redraw the prompt; it never lands
 inside text the user is typing.
+
+On a terminal (stdin and stdout are TTYs, or ``concurrent=True``) the main
+agent's turn runs in a background thread while this thread keeps reading lines:
+a plain line typed meanwhile is steered into the running turn (delivered before
+its next model call), ``/queue <text>`` waits for the next turn, and while a
+main-agent approval is pending the next typed line answers it (y = allow,
+anything else = deny). Piped or scripted input keeps the sequential behaviour:
+each line waits for the previous turn. See docs/inbox.md.
 """
 
 from __future__ import annotations
 
 import sys
 import threading
+import time
+from collections import deque
 
-from baseagent.chat.session import ERRORS, ChatSession, exit_question
+from baseagent.chat.session import ERRORS, QUEUE_COMMAND, ChatSession, _is_queue, exit_question
 # Re-exported: stop and worker explanations moved to the shared chat layer unchanged.
 from baseagent.chat.text import LIMITS, WORKER_REASONS, WORKER_STATUS, stop_explanation, worker_explanation, worker_label  # noqa: F401
 
@@ -26,6 +36,11 @@ EXIT_COMMANDS = frozenset({"/exit", "/quit"})
 APPROVAL_PROMPT = "Allow {name}? [y/N] "
 WORKER_APPROVAL_PROMPT = "Allow {name} for worker {worker}? [y/N] "
 EXIT_PROMPT = "输入 c 取消它们并退出，输入 w 继续等待（留在对话里）[c/w] "
+THREADED_APPROVAL = "（下一行输入 y 允许，n 或直接回车拒绝；输入其它内容 = 拒绝，并把这句话作为补充消息交给主 Agent）"
+ALLOW_WORDS = frozenset({"y", "yes", "allow"})
+DENY_WORDS = frozenset({"", "n", "no", "deny"})
+DENIED_WITH_LINE = "已拒绝这次调用；你输入的这句话会作为补充消息交给主 Agent。"
+EOF_ANSWER, EXIT_ANSWER = object(), object()
 
 
 class PromptLine:
@@ -52,6 +67,16 @@ class PromptLine:
             with self._lock:
                 self._prompt = None
 
+    def emit(self, file, text):
+        """Print a line from another thread without splitting the prompt: on a live terminal the prompt and
+        what is typed so far are redrawn under it; elsewhere it is an ordinary print."""
+        with self._lock:
+            if self.live and self._prompt is not None and file is self.out:
+                self.out.write("\r\x1b[K" + text + "\n" + self._prompt + (self.line_buffer() or ""))
+                self.out.flush()
+                return
+        print(text, file=file)
+
     def try_print(self, stream, text):
         if not self.live:
             return False
@@ -61,6 +86,59 @@ class PromptLine:
             self.out.write("\r\x1b[K" + text + "\n" + self._prompt)
             self.out.flush()
             return True
+
+
+class ApprovalLines:
+    """Main-agent approvals asked by the turn thread and answered by the next line the main thread reads.
+
+    Questions are answered in the order they were shown. ``close`` (EOF or /exit while a turn runs)
+    answers every waiting and later question at once: EOF denies as before, /exit leaves the call pending.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._waiting = deque()
+        self.closed = None
+
+    def pending(self):
+        with self._lock:
+            return bool(self._waiting)
+
+    def ask(self):
+        slot = {"event": threading.Event(), "answer": None}
+        with self._lock:
+            if self.closed is not None:
+                return self.closed
+            self._waiting.append(slot)
+        try:
+            while not slot["event"].wait(0.1):   # short waits: a Ctrl+C (interrupt) can still reach this thread
+                pass
+        finally:
+            with self._lock:
+                if slot in self._waiting:
+                    self._waiting.remove(slot)
+        return slot["answer"]
+
+    def answer(self, text):
+        with self._lock:
+            if not self._waiting:
+                return False
+            slot = self._waiting.popleft()
+        slot["answer"] = text
+        slot["event"].set()
+        return True
+
+    def close(self, answer):
+        with self._lock:
+            self.closed = answer
+            waiting, self._waiting = list(self._waiting), deque()
+        for slot in waiting:
+            slot["answer"] = answer
+            slot["event"].set()
+
+    def reopen(self):
+        with self._lock:
+            self.closed = None
 
 
 def _interactive(out):
@@ -79,10 +157,16 @@ def _readline_buffer():
 
 
 def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=None, err=None, main_agent=False,
-             workers=None, live=None, session=None) -> int:
-    """Read lines until EOF or an exit command; one line starts one turn."""
+             workers=None, live=None, session=None, concurrent=None) -> int:
+    """Read lines until EOF or an exit command; one line starts one turn.
+
+    ``concurrent`` (default: stdin and stdout are a terminal) runs turns in a background thread and keeps
+    reading lines meanwhile (steer, /queue, approvals); otherwise each line waits for the previous turn.
+    """
     out = out or sys.stdout
     err = err or sys.stderr
+    if concurrent is None:
+        concurrent = _interactive(out)
     if session is None:
         session = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=session_id,
                               workers=workers, main_agent=main_agent)
@@ -93,12 +177,13 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
     if workers is not None:
         print(f"Main agent: answers directly and runs workspace work in background workers "
               f"(up to {workers.max_workers} at once, one writer at a time); results are pushed here.", file=out)
-        print("Type a task, /status, /continue [N], /wait, /cancel <id|all>, /tell <id> <text>, /exit or /quit. "
-              "Ctrl+C cancels the current turn.", file=out)
+        print("Type a task, /status, /continue [N], /wait, /cancel <id|all>, /tell <id> <text>, /queue <text>, "
+              "/exit or /quit. Ctrl+C cancels the current turn.", file=out)
     else:
         if session.main_agent:
             print("Main agent: answers directly and hands workspace work to one worker at a time.", file=out)
-        print("Type a task, /status, /continue [N], /exit or /quit. Ctrl+C cancels the current turn.", file=out)
+        print("Type a task, /status, /continue [N], /queue <text>, /exit or /quit. Ctrl+C cancels the current turn.",
+              file=out)
     print("File checkpoints: /checkpoints lists them, /undo or /rewind <N> restores files written by the agent.", file=out)
     session.start()
     line = PromptLine(out, live=live)
@@ -109,6 +194,10 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
         return _ask_root_approval(view, out, err)
 
     session.resolve_pending(ask)
+    if concurrent:
+        print("While the agent works you can keep typing: a line is added to the current turn (delivered before "
+              "its next model call); /queue <text> sends it as the next turn.", file=out)
+        return _run_threaded(session, line, out, err)
     try:
         while True:
             if workers is not None:
@@ -131,7 +220,13 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
                 if workers is not None and workers.running() and not _confirm_exit(session, line, out):
                     continue
                 break
-            if session.command(text, ask=ask):
+            if _is_queue(text):
+                # Sequential input: nothing runs now, so a queued line is simply the next turn.
+                text = text[len(QUEUE_COMMAND):].strip()
+                if not text:
+                    print("Usage: /queue <text>", file=err)
+                    continue
+            elif session.command(text, ask=ask):
                 continue
             session.turn(text, ask)
     finally:
@@ -140,6 +235,92 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
             _flush(session, out, err)
         session.close()
     return 0
+
+
+def _run_threaded(session, line, out, err):
+    """Turns run in the background; this (main) thread reads every line and routes it."""
+    workers = session.workers
+    approvals = ApprovalLines()
+    session.printer = lambda stream, text: line.emit(out if stream == "out" else err, text)
+
+    def ask(view):
+        _show_root_approval(view, lambda text: line.emit(out, text))
+        line.emit(out, APPROVAL_PROMPT.format(name=view["name"]) + THREADED_APPROVAL)
+        answer = approvals.ask()
+        if answer is EOF_ANSWER:
+            return "deny", True          # as the sequential CLI does at EOF
+        if answer is EXIT_ANSWER:
+            return None, True            # /exit while answering: the call stays pending for next time
+        word = answer.strip().lower()
+        if word in ALLOW_WORDS:
+            return "allow", False
+        if word not in DENY_WORDS:
+            # The user typed something else while the question was up (often a correction meant for the
+            # agent): deny the call, and keep the line instead of discarding it.
+            session.interject(answer.strip())
+            line.emit(err, DENIED_WITH_LINE)
+        return "deny", False
+
+    try:
+        while True:
+            if workers is not None and not approvals.pending():
+                _deliver(session, line, out, err, threaded=True)
+            try:
+                text = line.read(PROMPT)
+            except EOFError:
+                print(file=out)
+                approvals.close(EOF_ANSWER)
+                _join_turn(session, err)
+                if workers is not None:
+                    session.finish_workers()
+                break
+            except KeyboardInterrupt:
+                print(file=out)
+                if approvals.answer(""):
+                    print("Approval prompt interrupted; denying the tool call.", file=err)
+                    continue
+                if session.busy:
+                    if session.interrupt():
+                        print("Cancelling the current turn (Ctrl+C)...", file=err)
+                    continue
+                if workers is not None and workers.running():
+                    session.cancel_all("Ctrl+C")
+                break
+            if approvals.answer(text):
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            if text in EXIT_COMMANDS:
+                if session.busy:
+                    print("主 Agent 还在回复这一轮：等它结束后退出（Ctrl+C 取消这一轮；待答的审批保持待定）。", file=err)
+                    approvals.close(EXIT_ANSWER)
+                    _join_turn(session, err)
+                    approvals.reopen()
+                if workers is not None and workers.running() and not _confirm_exit(session, line, out):
+                    continue
+                break
+            if not _is_queue(text) and session.command(text, ask=ask, background=True):
+                continue
+            session.send(text, ask=ask)
+    finally:
+        approvals.close(EXIT_ANSWER)
+        _join_turn(session, err)
+        if workers is not None:
+            workers.on_notice = None
+            _flush(session, out, err)
+        session.close()
+    return 0
+
+
+def _join_turn(session, err):
+    """Wait for the background turn; Ctrl+C cancels it instead of leaving it running."""
+    while session.busy:
+        try:
+            time.sleep(0.05)
+        except KeyboardInterrupt:
+            if session.interrupt():
+                print("Cancelling the current turn (Ctrl+C)...", file=err)
 
 
 def finish_workers(source, out, err, *, line=None):
@@ -161,14 +342,20 @@ def _flush(source, out, err):
         print(text, file=out if stream == "out" else err)
 
 
-def _deliver(session, line, out, err):
-    """Between prompts: print queued pushes, then ask pending approvals one by one."""
+def _deliver(session, line, out, err, *, threaded=False):
+    """Between prompts: print queued pushes, then ask pending approvals one by one.
+
+    ``threaded``: a turn may hold the session, so the registry is saved only when it is free.
+    """
     _flush(session, out, err)
     while (view := session.next_worker_approval()) is not None:
         if not _ask_worker_approval(session, view, line, out, err):
             break
         _flush(session, out, err)
-    session.persist()
+    if threaded:
+        session.persist_idle()
+    else:
+        session.persist()
 
 
 def _ask_worker_approval(session, view, line, out, err):
@@ -204,17 +391,21 @@ def _ask_worker_approval(session, view, line, out, err):
     return True
 
 
+def _show_root_approval(view, write):
+    write(f"\nApproval required: {view['name']}")
+    if view["node"] is not None:
+        write(f"  requested by: worker {view['node'][:8]}")
+    if view["arguments"]:
+        write(f"  arguments: {view['arguments']}")
+    if view.get("patch"):
+        write(view["patch"])
+    write(f"  call: {view['call_id']}")
+
+
 def _ask_root_approval(view, out, err):
     """Show the exact pending main-agent call and read y/N. Returns (decision, stop)."""
     name = view["name"]
-    print(f"\nApproval required: {name}", file=out)
-    if view["node"] is not None:
-        print(f"  requested by: worker {view['node'][:8]}", file=out)
-    if view["arguments"]:
-        print(f"  arguments: {view['arguments']}", file=out)
-    if view.get("patch"):
-        print(view["patch"], file=out)
-    print(f"  call: {view['call_id']}", file=out)
+    _show_root_approval(view, lambda text: print(text, file=out))
     eof = False
     try:
         answer = input(APPROVAL_PROMPT.format(name=name))

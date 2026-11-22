@@ -928,22 +928,27 @@ class JobManager:
 
 
 class JobNoticeMiddleware(AgentMiddleware):
-    """Tell the agent, before its next model call, which background jobs finished since the last notice."""
+    """Tell the agent, before its next model call, which background jobs finished since the last notice.
+
+    Notices now travel through the agent inbox (``baseagent.agent.inbox``, source ``job``): the chat
+    composition uses ``InboxMiddleware(inbox, jobs=manager)`` so a notice and a user's mid-turn line
+    arrive in one message. This class is that middleware with a private inbox, for callers that only
+    want job notices.
+    """
 
     def __init__(self, manager: JobManager):
+        from baseagent.agent.inbox import InboxMiddleware
         self.manager = manager
+        self._delivery = InboxMiddleware(jobs=manager)
+
+    def before_agent(self, state):
+        self._delivery.before_agent(state)
 
     def before_model(self, state):
-        notices = self.manager.take_notices()
-        if notices:
-            lines = []
-            for item in notices:
-                lines.append(f"- {item['job_id']} {item['status']} (exit code {item['exit_code']}, "
-                             f"{item['log_bytes']} log bytes): {' '.join(item['argv'])[:200]}")
-                if item.get("tail"):
-                    lines.append("  last output:\n" + "\n".join("    " + line for line in item["tail"].splitlines()))
-            state.messages.append({"role": "user", "content": NOTICE_HEADER + "\n" + "\n".join(lines)
-                                   + "\nUse job_output to read the log."})
+        self._delivery.before_model(state)
+
+    def after_agent(self, state):
+        self._delivery.after_agent(state)
 
 
 # -- run_command timeout -> background job ----------------------------------------------------------

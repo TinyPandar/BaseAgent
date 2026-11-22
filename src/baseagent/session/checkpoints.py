@@ -83,11 +83,12 @@ def turn_number(state):
 
     Every new turn appends exactly one user message and the transcript is append-only
     (compaction stores a summary beside it), so the turn number is the count of user
-    messages. Requirements a worker receives through its inbox are not turns.
+    messages. Messages the agent inbox delivers inside a turn (a worker's /tell requirements, worker
+    results, background-job notices, the user's mid-turn lines; see docs/inbox.md) are not turns.
     """
-    from baseagent.agent.workers import INBOX_HEADER
+    from baseagent.agent.inbox import is_inbox_message
     count = sum(1 for message in state.messages if message.get("role") == "user"
-                and not str(message.get("content") or "").startswith(INBOX_HEADER))
+                and not is_inbox_message(message.get("content")))
     return max(1, count)
 
 

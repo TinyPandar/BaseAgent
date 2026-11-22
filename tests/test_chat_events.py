@@ -105,18 +105,29 @@ class ChatSessionTests(ChatTestCase):
                                                {"role": "user", "text": "two"}, {"role": "assistant", "text": "second"}])
         self.assertEqual(session.events_after(snapshot["last_id"]), [])
 
-    def test_a_second_message_while_answering_is_refused_not_queued(self):
+    def test_a_second_message_while_answering_is_kept_and_sent_as_the_next_turn(self):
+        # Replaces the old "refused, not queued" rule: a line sent while the main agent answers enters the
+        # inbox (steer). That answer was already the turn's last model call, so the line starts the next turn.
         gate = Gate({"content": "slow answer"})
         self.gates = [gate]
-        session = self.session(["--session", "demo"], Duplex(main=[gate]))
+        model = Duplex(main=[gate, {"content": "second answer"}])
+        session = self.session(["--session", "demo"], model)
         session.open()
-        self.assertTrue(session.send("first"))
+        self.assertEqual(session.send("first"), "sent")
         self.assertTrue(gate.entered.wait(WAIT))
-        self.assertFalse(session.send("second"))
-        self.assertIn("上一条消息还在处理中", self.events(session, "error")[-1]["message"])
+        self.assertEqual(session.send("second"), "queued")
+        self.assertEqual(self.events(session, "error"), [])
         gate.release()
-        wait_until(lambda: not session.busy)
-        self.assertEqual([item["text"] for item in self.events(session, "user_message")], ["first"])
+        self.idle(session)
+        messages = self.events(session, "user_message")
+        self.assertEqual([(item["text"], item["mode"], item["queued"]) for item in messages],
+                         [("first", "turn", False), ("second", "steer", True)])
+        self.assertEqual([item["text"] for item in self.events(session, "assistant_message")],
+                         ["slow answer", "second answer"])
+        self.assertEqual(model.main_seen[1][-1], {"role": "user", "content": "second"})
+        delivered = self.events(session, "inbox_delivered")
+        self.assertEqual([(item["ids"], item["how"]) for item in delivered], [([messages[1]["id"]], "new_turn")])
+        self.assertEqual([item["text"] for item in session.history() if item["role"] == "user"], ["first", "second"])
 
     def write_worker(self):
         model = Duplex(main=[delegate("d1", "Create out.txt", allow_writes=True), {"content": "已派出 w1。"}],

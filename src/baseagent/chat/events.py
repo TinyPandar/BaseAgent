@@ -27,7 +27,11 @@ PREVIEW_CHARS = 300
 
 # kind -> (data fields, when it is emitted). docs/ui.md renders the same table.
 KINDS = {
-    "user_message": ("text", "a chat line was accepted as a new main-agent turn"),
+    "user_message": ("text, mode, queued, id",
+                     "a chat line was accepted: mode turn (starts a turn now), steer (into the running turn) or "
+                     "queue (next turn); queued true = waiting in the inbox, id = its inbox item"),
+    "inbox_delivered": ("ids, sources, how", "inbox items reached the agent: how model_call (inside the running "
+                        "turn) or new_turn (as / with the next turn)"),
     "assistant_message": ("text, status", "a turn ended with a reply from the main agent (or single agent)"),
     "tool_call": ("worker, call_id, name, arguments (preview)", "a tool call is dispatched (worker null = main agent)"),
     "tool_result": ("worker, call_id, name, ok, preview", "that tool call returned; preview only, never the body"),
