@@ -21,8 +21,10 @@
 
 ```bash
 baseagent --mode full --sandbox workspace-write "跑一下测试并修复"
-baseagent --mode full --sandbox workspace-write --sandbox-network "安装依赖后运行测试"
+baseagent --mode full --auto-approve --sandbox workspace-write --sandbox-network "安装依赖后运行测试"
 ```
+
+`--mode full` 下命令默认先询问；一次性任务不加 `--auto-approve` 会在第一条命令处停下等审批（见 [tool_annotations.md](tool_annotations.md)）。沙箱和审批是两层：沙箱限制命令能碰什么，审批决定要不要先问你。
 
 配置文件（`--config`）：
 

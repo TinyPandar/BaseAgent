@@ -17,9 +17,10 @@
 | --- | --- | --- |
 | 单任务内核与持久会话 | SQLite 检查点、工具账本（`pending → running → completed`）、中断后保守恢复与人工对账、步数 / 模型调用 / 工具调用 / token / 时长预算 | [参考手册](docs/reference.md) |
 | 一次性任务与连续对话 | `baseagent "task"` 一次性；不带任务进入连续对话；`/status`、`/continue [N]`、`Ctrl+C` 只取消当前轮 | 下文「快速上手」 |
+| 插话与统一收件箱 | 主 Agent 回复中可以继续输入：普通一行在下一次模型调用前送达本轮（只在整批工具调用都有结果之后），`/queue <text>` 排到下一轮；本轮结束时没送达的自动作为下一轮，输入不会丢。Worker 结果、`/tell`、后台任务通知走同一个收件箱；未送达的内容随会话保存。终端 CLI 在后台线程跑回合、继续读输入，审批时下一行就是回答（`y` 允许；`n`/回车拒绝；其它文字拒绝并作为插话交给 Agent）。管道输入保持逐行顺序执行 | [docs/inbox.md](docs/inbox.md) |
 | 主 Agent + 后台 Worker | 连续对话默认开启；主 Agent 只对话和分派，Worker 在后台跑，结果自动推送；`--max-workers` 默认 2，同时只允许一个写入 Worker；`--no-main-agent` 回到单 Agent。主 Agent 和当轮 Worker 共用步数、模型调用和可选的 `--budget-cny`；续跑不清零，恢复不出已用额度则拒绝。CNY 是软上限，在途请求可能超支。 | [docs/router_worker.md](docs/router_worker.md#预算共享) |
 | 三个对话前端 | `--ui cli\|tui\|web`，共用同一层会话和事件；Web 一个进程一个会话 | [docs/ui.md](docs/ui.md) |
-| 权限与审批 | `--mode read-only\|edit\|full`；`--tool-policy` 只能再收紧；审批绑定单次调用 | 下文「权限与审批」 |
+| 权限与审批 | `--mode read-only\|edit\|full`；`full` 下命令类工具默认先询问，`--auto-approve` 关闭；`--tool-policy` 只能再收紧；审批绑定单次调用 | 下文「权限与审批」 |
 | 命令级规则 | `--tool-policy` 条件规则支持 `argv_prefix`（如允许 `git status`、询问 `git push`、拒绝 `rm`）；可选 `"precedence": "strictest"`（deny > ask > allow）；放行 shell / 解释器前缀会告警。前缀规则只是弱黑名单，建议默认 `ask` / `deny` | [docs/command_rules.md](docs/command_rules.md) |
 | 工具属性与关键路径保护 | 每个工具标注 `read_only` / `destructive` / `idempotent` / `open_world`，`--tool-policy` 可按属性设 `ask` / `deny`（如所有破坏性工具都要询问）；MCP 服务器自带的提示不放宽权限。内置的关键路径保护始终生效，拒绝删除磁盘根、工作区根、家目录、`.git`、`.baseagent` 的命令（argv 层面的尽力检查，不是沙箱） | [docs/tool_annotations.md](docs/tool_annotations.md) |
 | OS 沙箱 | `--sandbox read-only\|workspace-write`（默认 `off`）：命令只能写工作区和临时目录，保护路径只读，默认断网（`--sandbox-network` 打开）；macOS `sandbox-exec`、Linux `bwrap`，**只做了单元测试，未在真机验证**；原生 Windows 不支持。不可用时退出码 3，不会退回不受限执行 | [docs/sandbox.md](docs/sandbox.md) |
@@ -111,7 +112,9 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 | `RAG_INDEX_DIR` / `RAG_COLLECTION_NAME` | 默认 `.baseagent/rag_index` / `baseagent_docs` |
 | `BASEAGENT_CASSETTE_MODE` | 测试用，默认 `replay` |
 
-CLI 和 `python -m applications.project_assistant` 会加载 `.env`；`scripts/build_knowledge_base.py`、`scripts/query_knowledge_base.py` 只读进程环境变量。Anthropic 适配器只在库里使用，CLI 不读 `ANTHROPIC_API_KEY`。
+CLI 和 `python -m applications.project_assistant` 会加载 `.env`；`scripts/build_knowledge_base.py`、`scripts/query_knowledge_base.py` 只读进程环境变量。
+
+Anthropic：`--provider anthropic`（或配置 `run.provider`），只读 `ANTHROPIC_API_KEY`（必需）、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`（默认 `claude-opus-5-5`），不会混用其它供应商的凭据；`--thinking` / `--effort` 只对它生效，思考块随会话保存并原样回传；`--stream` 暂不支持。**目前只有离线测试，真实 API 尚未验证**（`scripts/anthropic_smoke.py --yes-spend-money`，需要密钥，最多 3 次请求）。见 [docs/providers.md](docs/providers.md)。
 
 ### 3. 不需要密钥的命令
 
@@ -126,9 +129,10 @@ python -B scripts/demo_duplex.py         # 假模型演示主 Agent + 两个 Wor
 
 ```bash
 uv run baseagent "Explain the project structure" --root .                    # 默认只读
-uv run baseagent "Fix the failing test and verify it" --root . --mode full   # 允许写文件和跑命令
+uv run baseagent "Fix the failing test and verify it" --root . --mode full   # 允许写文件和跑命令；命令先询问，一次性任务会停在第一条命令
+uv run baseagent "Fix the failing test and verify it" --root . --mode full --auto-approve   # 命令不询问（以前的行为）
 uv run baseagent "Explain the project structure" --root . --output-format json
-uv run baseagent "Fix the failing test" --root . --mode full --backend docker
+uv run baseagent "Fix the failing test" --root . --mode full --auto-approve --backend docker
 # 命令和文件读写在容器里，默认断网；先 docker pull python:3.12-slim
 # Docker 不在或缺镜像时退出码 3，不会退回 local
 ```
@@ -169,10 +173,11 @@ mock embedding 只验证流程，不代表检索质量。
 | --- | --- | --- |
 | `read-only` | （默认） | 无；读、`grep` / `glob`、`git_diff`、`git_status`、计划和记忆工具照常可用 |
 | `edit` | `--allow-write` | `write_file`、`edit_file`、`apply_patch` |
-| `full` | `--allow-write --allow-command` | 再加 `run_command`、`verify_command`；LocalBackend 下 stderr 警告命令不在沙箱里，`/undo` 撤不回命令造成的改动；`--backend docker` 下改为说明命令在容器里、网络是否开启 |
+| `full` | `--allow-write --allow-command`，外加"命令先询问" | 再加 `run_command`、`verify_command`；**这些命令类工具（同时是 destructive 和 open_world 的工具，含 `start_job` 和非只读 MCP 工具）默认先询问**，文件工具、`job_kill` 仍自动执行；`--auto-approve` 恢复不询问。LocalBackend 下 stderr 警告命令不在沙箱里，`/undo` 撤不回命令造成的改动；`--backend docker` 下改为说明命令在容器里、网络是否开启 |
 
 - 未开启的工具不出现在发给模型的工具列表里，硬调用也会返回 `permission_denied`。`publish_memory` / `withdraw_memory` 另由 `--allow-memory-publish` 控制。
 - 显式的 `--allow-write` / `--no-allow-write` 等标志与 `--mode` 矛盾时报错（退出码 2）。
+- **`--mode full` 的命令默认询问**（见上表），一次性任务停在审批时会打印可直接复制的批准命令，JSON 输出带 `approval_hint`；`--tool-policy` 里对某个命令工具显式 `allow`（或命中的 `argv_prefix` 允许规则）会免去询问，`deny` 始终生效。**注意：** 显式写 `--allow-write --allow-command` 而不用 `--mode full` 时**不会**默认询问。改动前开始、尚未完成的 full 模式回合续跑时会提示配置已变化：加 `--auto-approve` 照旧，或 `--accept-config-changes` 接受新规则。见 [docs/tool_annotations.md](docs/tool_annotations.md)。
 - **CLI / TUI / Web 下写文件默认不审批。** 要逐次批准，用 `--tool-policy` 把对应工具设为 `ask`；策略按工具名精确匹配，要拦住全部写入必须同时列出 `write_file`、`edit_file`、`apply_patch`。`--tool-policy` 只能收紧，写 `allow` 打不开 `--mode` 没给的能力。`--backend docker` 下 `--mode` 和 `--tool-policy` 的含义不变，docker 不放宽任何权限，只是命令和文件操作在容器里执行，见 [docs/docker_backend.md](docs/docker_backend.md)。
 - 审批绑定调用 ID、轮次、工具名和参数原文、策略指纹；批准不会授予工作区没开的能力。
 - **例外：Chainlit 界面**（`uv run --extra ui baseagent-ui`，默认端口 8000）启动时自动生成策略，写入、编辑、`apply_patch` 和命令每次都要点「允许」。它每条消息跑一次性 CLI，没有主 Agent / Worker 和 `/continue`，也不能传 `--mode`、`--tool-policy`、`--watchdog`、`--harness-url`。

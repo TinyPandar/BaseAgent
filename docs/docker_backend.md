@@ -4,7 +4,7 @@
 
 ```bash
 docker pull python:3.12-slim                                   # 只需一次；CLI 不会偷偷拉镜像
-baseagent --backend docker --mode full "跑一下测试并修好"         # 一次性任务
+baseagent --backend docker --mode full --auto-approve "跑一下测试并修好"   # 一次性任务；不加 --auto-approve 时第一条命令会停下等审批
 baseagent --backend docker --mode edit                          # 连续对话（--ui cli|tui|web 都行）
 baseagent --backend docker --session S --resume                 # 续跑：新容器，同样的设置
 baseagent --backend docker --docker-image node:22-slim --docker-network bridge "…"   # 换镜像、显式开网
