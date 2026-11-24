@@ -439,13 +439,16 @@ class JobManager:
         except ValueError:
             return str(path)
 
-    def _save(self, job) -> None:
+    def _save(self, job, *, strict=False) -> None:
+        """Write the job record. Later updates tolerate write errors (the in-memory registry stays
+        authoritative for this process); ``strict`` raises them (a job is only created with a record)."""
         with self._lock:
             value = job.record(self.root)
         try:
             _write_json(self.log_dir / f"{job.id}.json", value)
         except OSError:
-            pass   # the in-memory registry stays authoritative for this process
+            if strict:
+                raise
 
     def _load(self, *, prune=False) -> None:
         """Pick up records written by earlier (or other) processes."""
@@ -647,9 +650,11 @@ class JobManager:
     def adopt(self, handover, argv, cwd) -> tuple[dict, tuple]:
         """Take over a still-running run_command process (tools/process.py ProcessHandover).
 
-        Returns (job description, output captured before the handover). Raises ToolFailure (limits,
-        closed manager, record not writable) before touching the process and without leaving a job
-        behind, so the caller still owns it: it kills it (timeout) or keeps waiting (interjection).
+        Returns (job description, output captured before the handover). All or nothing: a job exists
+        only with its record written and its monitor running. Any failure before that (limits, closed
+        manager, record not writable, or an exception such as KeyboardInterrupt) removes the job again
+        (registry, counter, files, output redirect) and leaves the process with the caller, which kills
+        it (timeout) or keeps waiting (interjection). Expected failures are raised as ToolFailure.
         """
         with self._lock:
             try:
@@ -661,20 +666,27 @@ class JobManager:
             job.started_at = handover.started_at
             self._jobs[job.id] = job
             self._started += 1
+        redirected = False
         try:
             job.leader_identity = probe_process(job.pid)[1]
-            self._save(job)
-        except Exception as exc:  # noqa: BLE001 -- roll back: the process stays with the caller
+            self._save(job, strict=True)
+            # Atomic switch: everything captured so far starts the log, later chunks are appended.
+            snapshot = handover.redirect(lambda chunk: self._write(job, chunk))
+            redirected = True
+            threading.Thread(target=self._monitor, args=(job, list(handover.readers)), name=f"job-{job.id}-wait",
+                             daemon=True).start()
+        except BaseException as exc:
+            if redirected:
+                handover.release()
             with self._lock:
                 self._jobs.pop(job.id, None)
                 self._started -= 1
             job.process = job.windows_job = None
-            self._discard(job)
-            raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"could not record the job: {exc}") from exc
-        # Atomic switch: everything captured so far starts the log, later chunks are appended.
-        snapshot = handover.redirect(lambda chunk: self._write(job, chunk))
-        threading.Thread(target=self._monitor, args=(job, list(handover.readers)), name=f"job-{job.id}-wait",
-                         daemon=True).start()
+            with job.write_lock:
+                self._discard(job)
+            if isinstance(exc, Exception):
+                raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"could not record the job: {exc}") from exc
+            raise
         return self.describe(job.id), snapshot
 
     def _write(self, job, chunk):
@@ -1031,7 +1043,7 @@ class TimeoutHandover:
         return ToolResult(data=data)
 
     def revoke(self, result):
-        """Stop the job an interjection handover just created (cancellation won the race).
+        """Stop the job a handover just created because cancellation or Ctrl+C won the race.
 
         True only when the job is confirmed no longer running.
         """

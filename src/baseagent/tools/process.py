@@ -72,6 +72,11 @@ class ProcessHandover:
             capture.sink = sink
         return snapshot
 
+    def release(self) -> None:
+        """Undo ``redirect`` (a handover that did not complete): later output is captured here again."""
+        with self._capture.lock:
+            self._capture.sink = None
+
 
 class _Capture:
     def __init__(self, limit):
@@ -107,12 +112,33 @@ def _asks(predicate) -> bool:
         return False
 
 
-def _offer(on_timeout, handover):
+def _offer(on_timeout, handover, box):
+    """Offer the process to ``on_timeout`` on a helper thread; return its ToolResult, or None.
+
+    A chat Ctrl+C is an asynchronous KeyboardInterrupt raised in the *turn* thread (this one). Run
+    here, it could cut the handover in half (a job registered, its monitor never started). On the
+    helper thread the handover always completes or fails as a whole; this thread only waits. If the
+    wait is interrupted, it still waits for the helper to finish, so ``box["result"]`` tells the
+    caller whether the process was taken over before it re-raises.
+    """
+    def handover_thread():
+        try:
+            adopted = on_timeout(handover)
+        except BaseException:  # noqa: BLE001 -- a failed handover leaves the process to the caller
+            adopted = None
+        box["result"] = adopted if isinstance(adopted, ToolResult) else None
+
+    helper = threading.Thread(target=handover_thread, name="run-command-handover", daemon=True)
     try:
-        adopted = on_timeout(handover)
-    except Exception:  # noqa: BLE001 -- a failed handover leaves the process to the caller
-        return None
-    return adopted if isinstance(adopted, ToolResult) else None
+        helper.start()
+        helper.join()
+    except BaseException:
+        try:
+            helper.join()
+        except RuntimeError:  # interrupted before the thread started: nothing was taken over
+            pass
+        raise
+    return box.get("result")
 
 
 def _revoke(on_timeout, adopted) -> bool:
@@ -182,6 +208,8 @@ def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int
     cancelled = False
     adopted = None
     early = None  # the result of an interjection handover, while it may still have to be revoked
+    box = {}      # what a handover thread produced; readable even when this thread was interrupted
+    pending = None  # a Ctrl+C during the timeout handover, re-raised once the process is dealt with
     offered = interjection is None or on_timeout is None
     try:
         start = time.monotonic()
@@ -197,7 +225,7 @@ def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int
             if not offered and time.monotonic() - start >= interjection_grace and _asks(interjection):
                 offered = True
                 early = _offer(on_timeout, ProcessHandover(process, job, readers, capture, started_at=started_at,
-                                                           timeout=timeout, reason=INTERJECTION))
+                                                           timeout=timeout, reason=INTERJECTION), box)
                 if early is not None:
                     adopted = early
                     break
@@ -208,18 +236,25 @@ def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int
     except subprocess.TimeoutExpired:
         timed_out = True
     except BaseException:
-        # Ctrl+C in the turn's thread right after a handover: the turn stops, so must the command.
+        # Ctrl+C in the turn's thread during or right after a handover: the turn stops, so must the
+        # command. A completed handover means the job owns the process: stop it through the job.
+        if early is None:
+            early = box.get("result")
         if early is not None:
+            adopted = early
             _revoke(on_timeout, early)
         raise
     finally:
         if timed_out and on_timeout is not None and process.poll() is None:
+            box.clear()
             try:
-                adopted = on_timeout(ProcessHandover(process, job, readers, capture, started_at=started_at, timeout=timeout))
-            except Exception:  # noqa: BLE001 -- a failed handover falls back to the normal kill
-                adopted = None
-            if not isinstance(adopted, ToolResult):
-                adopted = None
+                adopted = _offer(on_timeout, ProcessHandover(process, job, readers, capture, started_at=started_at,
+                                                             timeout=timeout), box)
+            except BaseException as exc:  # Ctrl+C while it was handed over: cancellation still kills
+                adopted = box.get("result")
+                if adopted is not None:
+                    _revoke(on_timeout, adopted)
+                pending = exc
         if adopted is None:
             # Closing the job (or killing the group) also stops background descendants.
             # This runs for timeout, interruption, errors, and normal command completion.
@@ -230,6 +265,8 @@ def run_process(argv: list[str], cwd: Path, *, timeout: float, output_limit: int
             process.wait(timeout=5)
             for reader in readers:
                 reader.join(timeout=2)
+    if pending is not None:
+        raise pending
     try:
         cancelled_after = early is not None and cancellation is not None and cancellation.cancelled()
     except BaseException:

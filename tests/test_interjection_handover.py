@@ -360,6 +360,144 @@ class RecoveryTests(InterjectionCase):
         self.assertEqual(len(workspace.jobs.list()["jobs"]), 1)
 
 
+def raise_in_thread(thread, exc=KeyboardInterrupt):
+    """What a chat Ctrl+C does to the turn thread (ChatSession.interrupt): an asynchronous exception."""
+    import ctypes
+    return ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread.ident), ctypes.py_object(exc))
+
+
+def inside_adopt():
+    """True when called (directly or not) from JobManager.adopt, whichever thread runs it."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code.co_name == "adopt" and frame.f_code.co_filename.endswith("jobs.py"):
+            return True
+        frame = frame.f_back
+    return False
+
+
+class RegistrationFailureTests(InterjectionCase):
+    """Review of PR 3: a handover must never leave a job without a record, or a running job without a process."""
+
+    def turn(self, workspace, argv, *, timeout=TIMEOUT, interjection=None):
+        """Run the command in a separate "turn" thread, as the chat does; returns (thread, outcome dict)."""
+        outcome = {}
+        handover = TimeoutHandover.for_command(workspace.jobs, argv, self.root)
+
+        def body():
+            try:
+                outcome["result"] = workspace.backend.execute(argv, timeout=timeout, on_timeout=handover,
+                                                              interjection=interjection)
+                outcome["annotated"] = handover.annotate(outcome["result"])
+            except BaseException as exc:  # noqa: BLE001 -- the test inspects it
+                outcome["raised"] = exc
+        thread = threading.Thread(target=body, name="chat-turn-test")
+        thread.start()
+        return thread, outcome
+
+    def assert_slot_free(self, workspace):
+        """No phantom running job: with one slot, a new background job still starts."""
+        workspace.jobs.max_running = 1
+        running = [job for job in workspace.jobs.list()["jobs"] if job["status"] == "running"]
+        self.assertEqual(running, [], "a job is still marked running")
+        started = workspace.jobs.start([PY, "-c", "print(1)"], self.root)
+        self.assertTrue(started["job_id"])
+
+    def test_record_write_failure_refuses_the_handover_and_keeps_the_command(self):
+        from unittest.mock import patch as mock_patch
+        for attempt in range(3):
+            with self.subTest(attempt=attempt):
+                self.marker = self.root / f"starts-w{attempt}.txt"
+                workspace = self.workspace()
+                with mock_patch("baseagent.tools.jobs._write_json", side_effect=OSError("disk full (simulated)")):
+                    thread, outcome = self.turn(workspace, self.slow(2.5), interjection=lambda: True)
+                    thread.join(30)
+                result = outcome["annotated"]
+                self.assertTrue(result.ok, result)
+                self.assertNotIn("moved_to_background", result.data)        # not reported as moved
+                self.assertEqual(result.data["exit_code"], 0)                # ran on and finished by itself
+                self.assertIn("could not record the job", result.data["not_moved_on_interjection"])
+                self.assertEqual(self.starts(), ["start"])
+                self.assertEqual(workspace.jobs.list()["jobs"], [])
+                self.assertEqual(self.manager().list()["jobs"], [])          # nothing to find after a rebuild
+
+    def test_record_write_failure_on_timeout_keeps_the_timeout_rule(self):
+        from unittest.mock import patch as mock_patch
+        workspace = self.workspace()
+        with mock_patch("baseagent.tools.jobs._write_json", side_effect=OSError("disk full (simulated)")):
+            thread, outcome = self.turn(workspace, self.slow(), timeout=2)
+            thread.join(30)
+        result = outcome["annotated"]
+        self.assertEqual(result.error.code, "timeout")
+        self.assertIn("could not record the job", result.error.message)
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+        self.assertEqual(workspace.jobs.list()["jobs"], [])
+
+    def ctrl_c_during(self, target, attempt):
+        """Fire an asynchronous Ctrl+C at the turn thread while the handover is inside `target`."""
+        from unittest.mock import patch as mock_patch
+        self.marker = self.root / f"starts-{target}-{attempt}.txt"
+        workspace = self.workspace()
+        inside = threading.Event()
+        holder = {}
+        module, name = target.rsplit(".", 1)
+        original = getattr(__import__(module, fromlist=[name]), name)
+
+        def slow_step(*args, **kwargs):
+            # Only calls made while a job is being registered: monitors of earlier jobs write records too.
+            if inside_adopt():
+                inside.set()
+                time.sleep(0.6)        # the Ctrl+C arrives while this step runs
+            return original(*args, **kwargs)
+
+        with mock_patch(target, slow_step):
+            thread, outcome = self.turn(workspace, self.slow(), interjection=lambda: True)
+            holder["thread"] = thread
+            self.assertTrue(inside.wait(20), "handover never started")
+            self.assertEqual(raise_in_thread(thread), 1)
+            thread.join(30)
+        self.assertFalse(thread.is_alive())
+        self.assertIsInstance(outcome.get("raised"), KeyboardInterrupt, outcome)
+        self.assertTrue(wait_until(lambda: not alive(self.pid())), "process kept running after Ctrl+C")
+        self.assertTrue(wait_until(lambda: all(job["status"] != "running" for job in workspace.jobs.list()["jobs"])),
+                        f"phantom running job: {workspace.jobs.list()['jobs']}")
+        # The handover completed on its helper thread, then the Ctrl+C stopped that job: recorded as killed,
+        # also for a rebuilt manager reading the records from disk.
+        def mine(manager):   # earlier attempts share the workspace: only this attempt's command
+            return [job["status"] for job in manager.list()["jobs"] if str(self.marker) in job["argv"]]
+        self.assertEqual(mine(workspace.jobs), ["killed"])
+        self.assertEqual(mine(self.manager()), ["killed"])
+        self.assert_slot_free(workspace)
+        self.assertEqual(self.starts(), ["start"])
+
+    def test_ctrl_c_while_the_job_is_being_registered_leaves_no_running_job(self):
+        for target in ("baseagent.tools.jobs.probe_process", "baseagent.tools.jobs._write_json"):
+            for attempt in range(3):
+                with self.subTest(target=target, attempt=attempt):
+                    self.ctrl_c_during(target, attempt)
+
+    def test_ctrl_c_while_a_timeout_handover_registers_leaves_no_running_job(self):
+        from unittest.mock import patch as mock_patch
+        workspace = self.workspace()
+        inside = threading.Event()
+        original = __import__("baseagent.tools.jobs", fromlist=["probe_process"]).probe_process
+
+        def slow_probe(*args, **kwargs):
+            if inside_adopt():
+                inside.set()
+                time.sleep(0.6)
+            return original(*args, **kwargs)
+
+        with mock_patch("baseagent.tools.jobs.probe_process", slow_probe):
+            thread, outcome = self.turn(workspace, self.slow(), timeout=2)
+            self.assertTrue(inside.wait(20))
+            self.assertEqual(raise_in_thread(thread), 1)
+            thread.join(30)
+        self.assertIsInstance(outcome.get("raised"), KeyboardInterrupt, outcome)
+        self.assertTrue(wait_until(lambda: not alive(self.pid())))
+        self.assert_slot_free(workspace)
+
+
 class FrontendTests(ChatTestCase):
     """AC12: the CLI, TUI and Web send paths of a single-agent chat move a running command the same way."""
 
