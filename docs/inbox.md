@@ -40,7 +40,7 @@ Use job_output to read the log.
 
 为什么这样定：
 
-- **绝不插在工具调用和它的结果之间。** kernel 在每次请求前检查调用/结果配对（[messages.md](messages.md)），中间插一条消息会让这一轮以 `needs_recovery` 停下。`before_model` 只在整批工具都返回后才运行，另外仍检查一次 `_tool_batch_open`，和看门狗提示的延后规则一致。审批停下的调用也一样：插话要等这次调用有了结果（批准执行或拒绝）后才送达。
+- **绝不插在工具调用和它的结果之间。** kernel 在每次请求前检查调用/结果配对（[messages.md](messages.md)），中间插一条消息会让这一轮以 `needs_recovery` 停下。`before_model` 只在整批工具都返回后才运行，另外仍检查一次 `_tool_batch_open`，和看门狗提示的延后规则一致。审批停下的调用也一样：插话要等这次调用有了结果（批准执行或拒绝）后才送达。正在运行的长 `run_command` 不再让插话一直等：开了 `--background-jobs` 时，用户的 `steer` 行会让它转成后台任务、这次调用立即返回（同一个进程，不停止），见 [background_jobs.md](background_jobs.md#用户插话时-run_command-转后台)。没开时仍等命令结束或超时。
 - **送达不增加模型调用。** 收件箱只往下一次本来就要发出的请求里加一条消息。如果这一轮的最后一次模型调用已经发出（模型马上要给最终回答），插话就留到下一轮。
 - **一条消息，不是几条。** 用户、Worker、任务通知同时到达时合成一条，减少无意义的轮换，也让「哪些是用户原话」一目了然。
 
@@ -61,7 +61,7 @@ Use job_output to read the log.
 
 **一轮没正常结束**（Ctrl+C / 取消、停在审批、撞上限）：收件箱里的消息保留，不自动开新的一轮。下一条用户消息先续跑那一轮（续跑时的模型调用会带上 `steer` 消息），续跑完成后再发新消息；然后排队的消息按顺序接着发。没送达的消息都在会话里，进程退出再进来也还在（见下）。
 
-Ctrl+C 和 `/cancel` 的含义不变：Ctrl+C 取消主 Agent 当前这一轮，`/cancel <id|all>` 取消 Worker。
+Ctrl+C 和 `/cancel` 的含义不变：Ctrl+C 取消主 Agent 当前这一轮，`/cancel <id|all>` 取消 Worker。普通 `steer` 行不取消任何东西：它最多让本 Agent 正在运行的 `run_command` 转后台（见上），不停止命令、不取消已经发出的模型请求。主 Agent 模式下普通一行只交给主 Agent，Worker 里正在跑的命令不受影响（要让 Worker 转向仍用 `/tell`）。
 
 ## 各前端
 

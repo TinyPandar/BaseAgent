@@ -38,7 +38,7 @@ from pathlib import Path
 
 from baseagent.kernel.hooks import AgentMiddleware
 
-from .process import _kill_tree
+from .process import INTERJECTION, TIMEOUT, _kill_tree
 from .result import ErrorCode, ToolFailure, ToolResult
 
 RUNNING, EXITED, FAILED, KILLED = "running", "exited", "failed", "killed"
@@ -645,20 +645,32 @@ class JobManager:
         job.pid = info["pid"]
 
     def adopt(self, handover, argv, cwd) -> tuple[dict, tuple]:
-        """Take over a timed-out run_command process (tools/process.py ProcessHandover).
+        """Take over a still-running run_command process (tools/process.py ProcessHandover).
 
         Returns (job description, output captured before the handover). Raises ToolFailure (limits,
-        closed manager) before touching the process, so the caller can fall back to killing it.
+        closed manager, record not writable) before touching the process and without leaving a job
+        behind, so the caller still owns it: it kills it (timeout) or keeps waiting (interjection).
         """
         with self._lock:
-            job = self._reserve(argv, Path(cwd), kind="run_command", keep_running=False)
+            try:
+                job = self._reserve(argv, Path(cwd), kind="run_command", keep_running=False)
+            except OSError as exc:
+                raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"could not create the job log: {exc}") from exc
             job.process, job.windows_job = handover.process, handover.windows_job
             job.pid = job.leader_pid = handover.process.pid
             job.started_at = handover.started_at
             self._jobs[job.id] = job
             self._started += 1
-        job.leader_identity = probe_process(job.pid)[1]
-        self._save(job)
+        try:
+            job.leader_identity = probe_process(job.pid)[1]
+            self._save(job)
+        except Exception as exc:  # noqa: BLE001 -- roll back: the process stays with the caller
+            with self._lock:
+                self._jobs.pop(job.id, None)
+                self._started -= 1
+            job.process = job.windows_job = None
+            self._discard(job)
+            raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"could not record the job: {exc}") from exc
         # Atomic switch: everything captured so far starts the log, later chunks are appended.
         snapshot = handover.redirect(lambda chunk: self._write(job, chunk))
         threading.Thread(target=self._monitor, args=(job, list(handover.readers)), name=f"job-{job.id}-wait",
@@ -951,15 +963,35 @@ class JobNoticeMiddleware(AgentMiddleware):
         self._delivery.after_agent(state)
 
 
-# -- run_command timeout -> background job ----------------------------------------------------------
+# -- run_command timeout / user interjection -> background job ----------------------------------------
+def user_interjection(context):
+    """Predicate: has the user sent this agent a mid-turn (steer) line that is not delivered yet?
+
+    Only the agent's own inboxes count (the InboxMiddleware layers of the pipeline running this call),
+    so a line for the main agent never moves a worker's command, and ``/queue`` lines (next turn),
+    worker results, job notices and ``/tell`` text never move a command. None without an inbox.
+    """
+    from baseagent.agent.inbox import STEER, USER, InboxMiddleware
+    inboxes = [layer.inbox for layer in (getattr(context, "middleware", None) or ())
+               if isinstance(layer, InboxMiddleware)]
+    if not inboxes:
+        return None
+    return lambda: any(inbox.pending(mode=STEER, source=USER) for inbox in inboxes)
+
+
 class TimeoutHandover:
-    """``on_timeout`` for run_command: move the still-running process into a job instead of killing it."""
+    """``on_timeout`` for run_command: move the still-running process into a job instead of killing it.
+
+    Offered on timeout (refusal: the process is killed, as before) or, earlier, when the user sends
+    this agent a line mid-turn (refusal: the command keeps running under its own timeout).
+    """
 
     def __init__(self, manager, argv, cwd):
         self.manager = manager
         self.argv = list(argv)
         self.cwd = cwd
         self.refused = None
+        self.interjection_refused = None
 
     @classmethod
     def for_command(cls, manager, argv, cwd):
@@ -970,24 +1002,59 @@ class TimeoutHandover:
         return cls(manager, argv, cwd)
 
     def __call__(self, handover):
+        interjection = getattr(handover, "reason", TIMEOUT) == INTERJECTION
         try:
             job, (stdout, stderr, stdout_truncated, stderr_truncated) = self.manager.adopt(handover, self.argv, self.cwd)
         except ToolFailure as exc:
-            self.refused = str(exc)
+            if interjection:
+                self.interjection_refused = str(exc)
+            else:
+                self.refused = str(exc)
             return None
-        message = (f"command still running after {handover.timeout} seconds; moved to background job {job['job_id']} "
-                   "(same process, not restarted). The output so far is below and continues in the job log "
-                   "(job_output). Use job_kill to stop it; it ends with the session.")
-        return ToolResult(data={"exit_code": None, "stdout": stdout.decode("utf-8", errors="replace"),
-                                "stderr": stderr.decode("utf-8", errors="replace"),
-                                "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated,
-                                "moved_to_background": True, "job_id": job["job_id"], "pid": job["pid"],
-                                "log_path": job["log_path"], "message": message})
+        data = {"exit_code": None, "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated,
+                "moved_to_background": True, "job_id": job["job_id"], "pid": job["pid"],
+                "log_path": job["log_path"]}
+        if interjection:
+            elapsed = max(0.0, time.time() - handover.started_at)
+            data["handover_reason"] = INTERJECTION
+            data["message"] = (f"the user sent a message while this command was running ({elapsed:.1f} seconds in); "
+                               f"it was handed over to background job {job['job_id']} (same process, not restarted, "
+                               "not stopped) so the message can be read now. It has not necessarily finished: the "
+                               "output so far is below and continues in the job log (job_output); job_list shows "
+                               "its status. Use job_kill to stop it; it ends with the session.")
+        else:
+            data["message"] = (f"command still running after {handover.timeout} seconds; moved to background job "
+                               f"{job['job_id']} (same process, not restarted). The output so far is below and "
+                               "continues in the job log (job_output). Use job_kill to stop it; it ends with the session.")
+        return ToolResult(data=data)
+
+    def revoke(self, result):
+        """Stop the job an interjection handover just created (cancellation won the race).
+
+        True only when the job is confirmed no longer running.
+        """
+        job_id = (result.data or {}).get("job_id")
+        if not job_id:
+            return False
+        try:
+            info = self.manager.kill(job_id)
+        except ToolFailure:
+            return False
+        return info.get("status") not in (RUNNING, UNKNOWN)
 
     def annotate(self, result):
         if self.refused and result.error is not None and result.error.code == ErrorCode.TIMEOUT:
-            return ToolResult.failure(result.error.code, f"{result.error.message} (not moved to background: {self.refused})",
+            note = self.refused
+            if self.interjection_refused and self.interjection_refused != note:
+                note = f"{note}; earlier, on the user's message: {self.interjection_refused}"
+            return ToolResult.failure(result.error.code, f"{result.error.message} (not moved to background: {note})",
                                       data=result.data, retryable=result.error.retryable)
+        if self.interjection_refused and not (result.data or {}).get("moved_to_background"):
+            # The user's message did not move the command; say why (it ran on and ended on its own).
+            data = {**(result.data or {}), "not_moved_on_interjection": self.interjection_refused}
+            return ToolResult(data=data, error=result.error)
         return result
 
 

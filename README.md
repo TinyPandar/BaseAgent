@@ -12,7 +12,7 @@
 <!-- BAS-2 inbox-finish: BEGIN -->
 ## 施工中 / 本分支需求：插话收尾（BAS-2）
 
-> **状态：仅需求，未实现。** `plan/inbox-finish` 是本轮基础分支；`plan/side-dialogue` 与 `plan/job-wait` 必须等本分支验收合入、更新开发基线后再开发，当前不能直接并行实现。
+> **状态：已在 `feat/inbox-finish` 实现（基于本分支），待 Frank 验收，未合入。** 采用的方案：复用超时转后台的同一条接管路径，触发条件加“本 Agent 收件箱里有用户的 steer 行”（见下方“实现与验收证据”）。`plan/inbox-finish` 是本轮基础分支；`plan/side-dialogue` 与 `plan/job-wait` 必须等本分支验收合入、更新开发基线后再开发，当前不能直接并行实现。
 
 **共同起点：** `origin/master` `f78be3f8535c9b2788619b828b5c56ef5af4dc28`（2026-11-24 核对）。这是需求计划，不是功能完成声明；下方原有“已交付”仍描述共同 master。
 
@@ -51,6 +51,12 @@
 ### 依赖 / 不做
 
 前置消息类型/Inbox/超时后台交接已在共同 master；本分支不等待 `/side` 或 `job_wait`。不实现 `/side`、`job_wait`、`job_input`、单 Agent 默认、Worker 历史模式/worktree 并行写、默认 Watchdog、Docker 后台或新的供应商能力。ROADMAP 同组的 `/jobs`、`/kill` 聊天命令**未分配到本次三条需求分支**，本分支不偷偷加入；现有 `job_list`/`job_kill` 工具保持。源码当前路径与限制见 [Inbox](docs/inbox.md)、[后台任务](docs/background_jobs.md)、[前端](docs/ui.md)，只作为行为依据，不指定技术结构。
+### 实现与验收证据（feat/inbox-finish）
+
+- **做法：** `run_process` 等待命令时每 0.1 秒查一次“本 Agent 收件箱里有没有用户的 steer 行”；有且命令已跑满 1 秒，就提前调用超时转后台用的同一个接管回调（`reason: interjection`）。接管不成时不杀、继续等原超时；取消先于接管，与接管撞上时停掉刚建的任务并报告 `cancelled`。行为说明见 [后台任务：用户插话时 run_command 转后台](docs/background_jobs.md#用户插话时-run_command-转后台)。
+- **离线测试：** `tests/test_interjection_handover.py`（假模型 + 本地受控 Python 进程，记录启动次数与 pid，模型费用 0）：AC02/03 同进程交接与批次配对、AC03 同批其余工具先跑完且短命令照常结束、AC04/05 `/queue`/Worker/job/lead 不触发且合并格式不变、AC04 别的 Agent 的插话不触发、AC07 开关关闭/任务已满/超时规则/`sleep`、AC08 取消与接管竞争（含异步 Ctrl+C）及接管后回合取消不杀任务、AC10 中断后续跑不重启命令不重复送达、AC12 CLI/TUI/Web 三个发送入口。
+- **未覆盖 / 只用模拟：** 前端测试是模拟前端（`ChatSession` 的同一发送入口），没有在真实终端和浏览器里手动操作；只在 Windows 上运行过，POSIX 路径未实测；AC09（在途模型请求）沿用现有行为，本分支没有改模型请求的取消；AC11（审批）本分支没有改审批路径（等审批的命令还没启动，不涉及转后台），由 `tests/test_inbox.py` 现有审批测试覆盖；语料版本按既有流程在合入时重绑。
+
 <!-- BAS-2 inbox-finish: END -->
 
 ## 状态
