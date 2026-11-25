@@ -54,13 +54,28 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 - 已经读到的输出（每个流最多 `run_command` 的 20 KB）写在任务日志开头：先 stdout、再 stderr；之后的输出按到达顺序（两个流合并）追加到同一个日志。超过 20 KB 被丢掉的早期输出找不回来。
 - `run_command` 本身以**确定的成功结果**结束：`ok: true`，`data` 里 `moved_to_background: true`、`job_id`、`pid`、`log_path`、`exit_code: null`、到目前为止的 `stdout` / `stderr`，以及说明文字。账本里这次调用是一个普通的已完成调用，恢复语义不变。
 - 之后它就是一个普通任务（`kind: "run_command"`）：完成通知、`job_output`、`job_kill` 都适用。它的管道连着 baseagent，所以**随会话结束而停止**（不能 `keep_running`）。要跨退出保留，用 `start_job(keep_running=true)` 启动。
-- **取消仍然杀进程**：Ctrl+C、`/cancel`、`--cancel-session` 发生在命令运行期间时，与以前一样杀掉整棵进程树，不转后台。只有超时才转。
+- **取消仍然杀进程**：Ctrl+C、`/cancel`、`--cancel-session` 发生在命令运行期间时，与以前一样杀掉整棵进程树，不转后台。只有超时和用户插话（见下一节）才转。
 - **`sleep` 例外**：`argv[0]` 是 `sleep`（或 `sleep.exe`，忽略路径）的命令超时仍然被杀。模型用 `sleep` 是在等待，超时意味着它不需要等更久（Claude Code 同样把 `sleep` 排除在外）。
 - `verify_command`、`git_diff` 等其他命令路径、以及库里直接调用 `Workspace.run_command()` 都保持超时即杀；只有注册给模型的 `run_command` 工具（`Workspace.run_command_tool`）会转后台。
-- 同时运行的任务已达上限时不转，照旧杀掉，错误信息里附上 `not moved to background: ...` 原因。
+- 同时运行的任务已达上限、或任务记录写不进磁盘时不转，照旧杀掉，错误信息里附上 `not moved to background: ...` 原因。任务只有在记录已写入、监控线程已启动后才算建成；中途任何失败都会撤掉登记（内存登记、计数、记录和日志文件、输出转向），进程仍归 `run_command`。
 - 开关关闭时行为与以前完全相同。
 
 实现：`run_process(on_timeout=...)` 在超时且进程仍在运行时调用回调，交出 `ProcessHandover`（进程、Job object、读取线程、已捕获输出）；回调返回结果即表示接管，`run_process` 不再清理进程。`LocalBackend.execute` 只是把可选的 `on_timeout` 透传下去；其他后端不受影响（只有本地后端才有任务管理器）。
+
+## 用户插话时 run_command 转后台
+
+插话只能在整批工具调用都有结果后送达（见 [inbox.md](inbox.md)），所以以前一个长 `run_command` 会让用户的插话一直等到命令结束或超时。开关打开时，**用户在本轮插话**（发给这个 Agent 的普通一行，即收件箱里 `source=user, mode=steer` 的消息）而命令还在运行，就把它像超时那样交给任务管理器，不等超时：
+
+- 与超时转后台是同一条路：同一个进程、不重启、不停止；输出、任务记录、完成通知、`job_output` / `job_kill`、随会话结束而停止，全部同上。
+- 结果同样是 `ok: true`、`moved_to_background: true`、`exit_code: null`，另有 `handover_reason: "interjection"`，说明文字写明“用户发来消息，命令已交给后台任务，不一定已经结束”，不报告命令成功退出。
+- 这次调用返回后，同一批里剩下的工具调用照常执行；整批都有结果后，插话在下一次模型调用前送达（与以前同一个送达点，不增加模型调用）。
+- **短命令照常结束**：命令要先跑满 1 秒（`INTERJECTION_GRACE`）才会因插话转后台。插话还没送达时，同一批里后面启动的命令也按这条规则处理：1 秒内结束的照常返回结果，跑得更久的也会转后台。
+- **只看这个 Agent 自己的收件箱**（`run_command` 所在 Agent 的 `InboxMiddleware`）：主 Agent 收到的话不会让 Worker 的命令转后台；`/queue`（下一轮）、Worker 结果、任务通知、`/tell` / `message_worker` 的补充要求都不触发。
+- **转不成时不杀**：开关关闭、非本地后端、`sleep`、同时运行的任务已满、任务管理器已关闭或任务记录写不进去时，命令继续运行，仍按原来的超时 / 取消规则处理。原因写在结果里：命令自己结束时 `data.not_moved_on_interjection`；之后又超时时，写在超时错误的 `not moved to background: ...` 里。每个命令只因插话尝试转一次。
+- **取消优先**：每次检查先看取消。如果 Ctrl+C / `/cancel` 恰好与转后台同时发生（转后台过程中或刚转完、这次调用还没返回），刚建的任务会被立即停止（状态 `killed`，释放名额），这次调用报告 `cancelled`；转后台还没建成时，进程照常被杀，不留下任务。确认不了已停止时，错误信息给出任务 id 并说明无法确认，不会说“已停止”。超时转后台也一样。这次调用已经返回之后再取消回合，按上面的生命周期，任务不受影响，用 `job_kill` 停止。
+- 恢复：这次调用在账本里是普通的已完成调用，续跑不会重新启动命令；插话按收件箱原有规则只送达一次。
+
+实现：`run_process(..., interjection=...)` 在等待循环里（每 0.1 秒）查一次这个判断函数，满足条件时以 `ProcessHandover.reason == "interjection"` 提前调用同一个 `on_timeout`（与超时时一样在单独的短线程里执行，见“已知限制”）；回调拒绝时只记下原因、继续等。`Workspace.run_command_tool` 从工具上下文的 middleware 中找到这个 Agent 的 `InboxMiddleware`，做出判断函数（`tools/jobs.py` 的 `user_interjection`），只有在可能接管（开关打开、本地后端、非 `sleep`）时才传下去。
 
 ## 输出
 
@@ -132,7 +147,8 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 ## 已知限制
 
 - Windows 上进程先创建、再加入 Job object；在这极短的窗口内派生并立即脱离的子进程可能漏掉（`run_command` 有同样的限制）。POSIX 上自己调用 `setsid` 的子孙进程会离开进程组，`job_kill` 管不到它。
-- 超时转来的任务只保留超时前每个流的前 20 KB 输出，且超时前的 stdout 与 stderr 在日志里是先后排列、不是交错的。
+- 超时转来的任务只保留超时前每个流的前 20 KB 输出，且超时前的 stdout 与 stderr 在日志里是先后排列、不是交错的。插话转来的任务相同。
+- 终端 / TUI / Web 的 Ctrl+C 在回合线程里以异步异常生效，可能打断任意一行 Python 代码。所以转后台（登记任务、写记录、转向输出、启动监控）放在一个单独的短线程里完成，回合线程只等它；Ctrl+C 打断等待时，会先等这个线程结束，再按结果停止刚建的任务或杀掉进程，不会留下没有进程的 `running` 记录。仍有一个极端情况：两次 Ctrl+C 几乎同时到达，第二次打断了这次等待，此时命令可能作为普通后台任务继续运行（状态真实、有监控，可用 `job_kill` 停止）。
 - 两个 baseagent 进程同时使用同一工作区时，各自看到对方的任务（显示为 `from_earlier_process`），状态判断与写盘之间有很小的竞争窗口。
 - `keep_running` 任务在 Windows 上依赖能脱离外层 Job object；某些终端 / 服务管理器禁止脱离，此时它会随外层一起结束。
 - 日志只保留开头 10 MB；长时间训练如果输出很多，后面的进度会丢，建议让训练脚本自己写日志文件或减少输出。

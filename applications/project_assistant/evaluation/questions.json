@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "corpus_version": "28eb15be88556bea",
+  "corpus_version": "cedc2aa408e29843",
   "corpus_version_method": "collect_corpus(repository_root) with default include/exclude; compute_corpus_version(chunks). JSON questions/reports are not ingested.",
-  "corpus_version_note": "2026-11-22 merge of feat/inbox-interjection, feat/anthropic-cli and feat/full-mode-ask plus README/ROADMAP/docs (696b97b). Rebound with scripts/rebind_corpus_version.py --write on a clean checkout: 583ed2a818f703ea -> 28eb15be88556bea; 1 reference moved by line drift (main.py:354-355 -> 438-439, hash unchanged). No cited text changed. All 101 evidence hashes match. Gold summaries were not regenerated. Published hybrid MRR was not recomputed.",
+  "corpus_version_note": "2026-11-25 integration of PR #3 inbox-finish (abb8dee) after removing the README construction section and aligning formal README/ROADMAP/reference usage. Rebound with scripts/rebind_corpus_version.py --write on the final code/document tree: 28eb15be88556bea -> cedc2aa408e29843; 0 references moved and all 101 evidence hashes match. No cited text changed. Gold summaries were not regenerated. Published hybrid MRR was not recomputed.",
   "evidence_sha256": {
     "applications/project_assistant/corpus.py:31-45": "eaeaf8f80d1a1af7c3e949cc568e565439acf325f59ec2d278f0a8b7b4c1a434",
     "applications/project_assistant/corpus.py:49-71": "2050a664e8eb6ff28668bcff5555f5e7fdc84a1783ea9e22ba10df4b6be37ad7",
