@@ -10,6 +10,8 @@
 
 新的连续对话默认是主沟通 Agent：它只回答和分派，自己不读、不改文件，也不跑命令。需要动手时调用 `delegate_task`，在后台派出通用执行 Worker，立刻返回 `w1` 这样的 id，对话不等它。Worker 用本入口已授权的工具（默认只读子集；用户明确要求修改时才允许写入），在自己的会话里运行；结束后摘要、引用、路径、call id 和 spill ref 自动推送回对话（在两次提示之间打印，并附在下一条消息前交给主 Agent）。只读 Worker 可以并行，`--max-workers N`（默认 2）限制同时活跃的数量，写入 Worker 同一时间只有一个，超出时直接拒绝并说明原因。`/status` 列出所有 Worker，`/wait` 等它们跑完，`/cancel <id|all>` 取消，`/tell <id> <text>` 补要求。Worker 的审批在对话里逐条 `y` / `N`。主 Agent 这一轮和它派出的 Worker 共用下面的 16 次额度（以及可选的 `--budget-cny`），并为主 Agent 回复预留 1 次。已有会话保持创建时的模式；`--no-main-agent` 回到以前自己执行工具的单 Agent 对话；一次性 `baseagent "task" --session <主 Agent 会话>` 会被拒绝。细节见 [router_worker.md](router_worker.md)。
 
+插话与长命令：终端 CLI、TUI、Web 的普通输入是本轮 steer，`/queue` 排下一轮；消息仍只在整批工具调用已有结果后的安全边界送达。开启 `--background-jobs` 时，适用的本地 `run_command` 已运行满 1 秒且收到本 Agent 的用户 steer，会将**同一个进程**提前交给后台，调用返回交接信息而非命令成功退出，不等原超时、不重启。`/tell`、queue、Worker/job 通知不触发；主线普通输入也不自动转向 Worker。接管初始记录写失败则不宣称成功；插话路径继续等待原命令，超时路径沿原规则停止，取消竞争按真实接管结果清理。未开开关、非适用后端或命令继续遵守原行为。已后台化任务用既有 `job_kill` 停止，普通回合取消不暗杀它；已发出的模型请求仍受 provider 返回边界约束。完整边界与限制见 [Inbox](inbox.md)、[后台任务](background_jobs.md#用户插话时-run_command-转后台)。
+
 连续对话在未显式传参时使用更宽松的默认值：`--max-steps 16`、`--max-model-calls 16`、`--wrapup-hint-steps 2`；一次性 `baseagent "task"` 仍为 8 / 8 / 关闭。显式传参（或 `--config`）以用户为准。上限从 8 提到 16，回合跑满时模型调用最多约多一倍。用尽上限时会写明撞上的是哪条限制（`max-steps` / `max-model-calls` / `max-tool-calls`）和已用/上限。`--resume` 接着同一未完成回合，已用计数不清零，所以要把上限提高到已用值之上，例如 `baseagent --session <id> --resume --max-steps 32 --max-model-calls 32`。在对话里直接再发一条消息，会先用原上限续跑同一回合，因此会再次停住；要提高上限，在对话里输入 `/continue [N]`，或退出后按提示的命令 `--resume`。只有上一回合完成后，新输入才会开新回合并重置计数。需要批准的工具调用在终端询问 `Allow ...? [y/N]`，批准/拒绝沿用 `--tool-policy` 和 `--allow-write` / `--allow-command` 的能力边界，批准不会授予工作区未开启的能力。
 
 ```bash
