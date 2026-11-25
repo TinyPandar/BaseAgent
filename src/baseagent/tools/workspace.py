@@ -340,17 +340,21 @@ class Workspace:
             raise ToolFailure(ErrorCode.LIMIT_EXCEEDED, "command arguments exceed 8 KB")
 
     def run_command_tool(self, argv: list[str], timeout: int = 20, *, context=None) -> ToolResult:
-        """The model's run_command: with background jobs on, a timeout moves the process to a job."""
+        """The model's run_command: with background jobs on, a timeout, or a line the user sends to this
+        agent mid-turn, moves the still-running process to a job (docs/background_jobs.md)."""
         return self.run_command(argv, timeout, context=context, background_on_timeout=True)
 
     def run_command(self, argv: list[str], timeout: int = 20, *, context=None,
                     background_on_timeout: bool = False) -> ToolResult:
         self.validate_command(argv, timeout)
-        handover = None
+        handover = interjection = None
         if background_on_timeout and self.jobs is not None:
-            from .jobs import TimeoutHandover
+            from .jobs import TimeoutHandover, user_interjection
             handover = TimeoutHandover.for_command(self.jobs, argv, self.root)
-        result = self._run_bounded_command(argv, timeout, context=context, on_timeout=handover)
+            if handover is not None:
+                interjection = user_interjection(context)
+        result = self._run_bounded_command(argv, timeout, context=context, on_timeout=handover,
+                                           interjection=interjection)
         if handover is not None:
             result = handover.annotate(result)
         if context is not None:
@@ -382,7 +386,8 @@ class Workspace:
         return ToolResult(data=parse_git_status(str(data.get("stdout") or ""),
                                                 truncated=bool(data.get("stdout_truncated"))))
 
-    def _run_bounded_command(self, argv, timeout, *, output_limit=20_000, context=None, on_timeout=None):
+    def _run_bounded_command(self, argv, timeout, *, output_limit=20_000, context=None, on_timeout=None,
+                             interjection=None):
         effective = timeout
         if context is not None and context.remaining_seconds is not None:
             remaining = context.remaining_seconds()
@@ -390,10 +395,12 @@ class Workspace:
                 if remaining <= 0:
                     return ToolResult.failure(ErrorCode.TIMEOUT, "turn deadline expired before command launch")
                 effective = min(timeout, remaining)
-        # on_timeout is only passed when set (background jobs exist only with LocalBackend).
+        # on_timeout / interjection are only passed when set (background jobs exist only with LocalBackend).
+        extra = {"on_timeout": on_timeout} if on_timeout is not None else {}
+        if on_timeout is not None and interjection is not None:
+            extra["interjection"] = interjection
         return self.backend.execute(argv, timeout=effective, output_limit=output_limit,
-                           cancellation=context.cancellation if context else None,
-                           **({"on_timeout": on_timeout} if on_timeout is not None else {}))
+                           cancellation=context.cancellation if context else None, **extra)
 
 
 def coding_tools(workspace: Workspace) -> ToolRegistry:
