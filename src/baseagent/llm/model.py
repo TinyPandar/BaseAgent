@@ -86,8 +86,11 @@ class Model:
                     raise TimeoutError("deadline elapsed during model metadata verification")
         return self.complete_with_timeout(messages, tools, timeout=timeout, max_completion_tokens=reservation.max_completion_tokens)
 
-    def complete_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
+    def request_kwargs(self, messages, tools=None, *, timeout=None, max_completion_tokens=None, stream=False):
+        """The chat.completions.create arguments for one request; streamed and whole requests share them."""
         kwargs = {"model": self.model_name, "messages": without_provider_blocks(messages)}
+        if stream:
+            kwargs.update(stream=True, stream_options={"include_usage": True})
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -98,6 +101,10 @@ class Model:
         kwargs.update(self.generation_params)
         if self.extra_body is not None:
             kwargs["extra_body"] = self.extra_body
+        return kwargs
+
+    def complete_with_timeout(self, messages, tools=None, *, timeout=None, max_completion_tokens=None):
+        kwargs = self.request_kwargs(messages, tools, timeout=timeout, max_completion_tokens=max_completion_tokens)
         try:
             response = self.client.chat.completions.create(**kwargs)
         except APITimeoutError:
@@ -142,18 +149,8 @@ class Model:
         """Yield StreamDelta values; return ModelResponse via StopIteration.value."""
         from .streaming import StreamAssembler
 
-        kwargs = {"model": self.model_name, "messages": without_provider_blocks(messages), "stream": True,
-                  "stream_options": {"include_usage": True}}
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-        if timeout is not None:
-            kwargs["timeout"] = min(self.timeout, positive_seconds(timeout))
-        if max_completion_tokens is not None:
-            kwargs["max_tokens"] = max_completion_tokens
-        kwargs.update(self.generation_params)
-        if self.extra_body is not None:
-            kwargs["extra_body"] = self.extra_body
+        kwargs = self.request_kwargs(messages, tools, timeout=timeout, max_completion_tokens=max_completion_tokens,
+                                     stream=True)
         try:
             stream = self.client.chat.completions.create(**kwargs)
         except APITimeoutError:
@@ -198,6 +195,25 @@ class Model:
             cancellation.check()
             raise
 
+    def open_stream(self, messages, tools=None, *, timeout=None, keep_reasoning=False):
+        """A streamed request whose connection another thread may close (side chat stop, docs/side.md).
+
+        Iterate the returned ``ModelStream`` for StreamDelta values, then read ``response()``. Unlike
+        complete_stream_with_control, nothing here discards a response that already arrived.
+        """
+        kwargs = self.request_kwargs(messages, tools, timeout=timeout, stream=True)
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+        except APITimeoutError:
+            raise ModelTimeoutError("model transport timed out") from None
+        except APIConnectionError:
+            raise TransientError("model transport connection failed") from None
+        except APIStatusError as exc:
+            raise http_error(exc.status_code, exc.body, exc.response.headers) from None
+        except (json.JSONDecodeError, APIResponseValidationError):
+            raise ResponseParseError("model response is not valid chat completion JSON") from None
+        return ModelStream(stream, keep_reasoning=keep_reasoning)
+
     def close(self):
         self.client.close()
 
@@ -209,3 +225,45 @@ class Model:
 
     def __repr__(self):
         return f"<{type(self).__name__}>"
+
+
+
+class ModelStream:
+    """One streamed chat completion: iterate deltas, then ``response()``; ``close()`` from any thread."""
+
+    def __init__(self, stream, *, keep_reasoning=False):
+        from .streaming import StreamAssembler
+        self._stream = stream
+        self._assembler = StreamAssembler(keep_reasoning=keep_reasoning)
+        self.closed = False
+
+    def __iter__(self):
+        try:
+            for chunk in self._stream:
+                yield from self._assembler.ingest_openai_chunk(chunk)
+        except APITimeoutError:
+            raise ModelTimeoutError("model transport timed out") from None
+        except APIStatusError as exc:
+            raise http_error(exc.status_code, exc.body, exc.response.headers) from None
+        except (json.JSONDecodeError, APIResponseValidationError):
+            raise ResponseParseError("model response is not valid chat completion JSON") from None
+        except Exception:
+            # A connection closed by close() (or dropped) surfaces as a transport error here.
+            raise TransientError("model stream ended before completion") from None
+
+    def response(self):
+        try:
+            response = self._assembler.response()
+            response.to_dict()
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise ResponseParseError("model stream assembled an invalid message envelope") from None
+        return response
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self._stream.close()
+        except Exception:  # noqa: BLE001 -- closing a dropped connection must not raise.
+            pass

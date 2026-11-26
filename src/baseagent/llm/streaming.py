@@ -36,7 +36,11 @@ class StreamDelta:
 class StreamAssembler:
     """Assemble OpenAI chat-completion stream chunks into a final assistant message."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, keep_reasoning: bool = False) -> None:
+        # keep_reasoning: also assemble ``reasoning_content`` (DeepSeek thinking mode needs it sent back when
+        # a later request carries tools). Off by default, so existing streamed messages stay unchanged.
+        self.keep_reasoning = keep_reasoning
+        self._reasoning: list[str] = []
         self._content: list[str] = []
         self._tools: dict[int, dict[str, Any]] = {}
         self._index = 0
@@ -57,6 +61,9 @@ class StreamAssembler:
             choice = None
         delta = getattr(choice, "delta", None) if choice is not None else None
         if delta is not None:
+            reasoning = getattr(delta, "reasoning_content", None)
+            if self.keep_reasoning and isinstance(reasoning, str) and reasoning:
+                self._reasoning.append(reasoning)
             text = getattr(delta, "content", None)
             if isinstance(text, str) and text:
                 emitted.append(StreamDelta(kind="content", index=self._index, delta=text))
@@ -129,6 +136,8 @@ class StreamAssembler:
             message["tool_calls"] = calls
         if content is None and "tool_calls" not in message:
             message["content"] = ""
+        if self._reasoning:
+            message["reasoning_content"] = "".join(self._reasoning)
         return message
 
     def response(self) -> ModelResponse:

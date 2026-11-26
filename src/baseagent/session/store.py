@@ -187,6 +187,114 @@ class SessionStore:
             row = connection.execute("SELECT state_json FROM sessions WHERE id=?", (session_id,)).fetchone()
         return checked_messages(State.from_dict(json.loads(row[0])), f"session {session_id!r}") if row else None
 
+    def read_frame(self, session_id: str, *, event_limit: int = 400):
+        """(state, ledger rows of its turn, {call_id: start timestamp}) read in ONE read transaction.
+
+        Takes no session lock, so it may run while the turn's executor holds it. The parts come from one
+        committed database point. That point is not the executor's in-memory state at the same instant:
+        the executor commits at its checkpoints. None when the session does not exist.
+        """
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            row = connection.execute("SELECT state_json FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            state = checked_messages(State.from_dict(json.loads(row[0])), f"session {session_id!r}")
+            calls = [dict(item) for item in connection.execute(
+                "SELECT * FROM tool_calls WHERE session_id=? AND turn_id=? ORDER BY rowid", (session_id, state.turn_id))]
+            started = {}
+            for item in connection.execute("SELECT event_json FROM events WHERE session_id=? AND turn_id=? "
+                                           "ORDER BY sequence DESC LIMIT ?", (session_id, state.turn_id, event_limit)):
+                value = json.loads(item[0])
+                call_id = (value.get("data") or {}).get("call_id")
+                stamp = value.get("timestamp")
+                if value.get("type") in {"tool_started", "tool_call_started"} and call_id and stamp:
+                    started[call_id] = min(started.get(call_id, stamp), stamp)
+        return state, calls, started
+
+    # ----- side chat attempts (docs/side.md) ---------------------------------------------
+    # The table is created on first /side use: a database that never ran a side chat keeps its tables.
+    SIDE_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS side_attempts (
+            attempt_id TEXT PRIMARY KEY,
+            op_id TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            side_id TEXT NOT NULL,
+            process_id TEXT NOT NULL,
+            main_turn INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            usage TEXT NOT NULL DEFAULT 'unknown' CHECK(usage IN ('unknown', 'reported')),
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            total_tokens INTEGER,
+            created_at REAL NOT NULL,
+            settled_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS side_attempts_turn ON side_attempts(session_id, main_turn);
+    """
+
+    def ensure_side_table(self) -> None:
+        with self._connection() as connection:
+            connection.executescript("BEGIN IMMEDIATE;" + self.SIDE_SCHEMA + "COMMIT;")
+
+    def side_begin(self, *, attempt_id, op_id, session_id, side_id, process_id, main_turn, created_at) -> bool:
+        """Record a side attempt BEFORE its request is sent, usage unknown. False when op_id was used before."""
+        try:
+            with self._connection() as connection:
+                connection.execute("INSERT INTO side_attempts(attempt_id, op_id, session_id, side_id, process_id, "
+                                   "main_turn, status, created_at) VALUES(?, ?, ?, ?, ?, ?, 'dispatching', ?)",
+                                   (attempt_id, op_id, session_id, side_id, process_id, main_turn, created_at))
+        except sqlite3.IntegrityError as exc:
+            if "op_id" in str(exc):
+                return False
+            raise
+        return True
+
+    def side_status(self, attempt_id, status) -> None:
+        with self._connection() as connection:
+            connection.execute("UPDATE side_attempts SET status=? WHERE attempt_id=?", (status, attempt_id))
+
+    def side_settle(self, attempt_id, usage: TokenUsage, *, settled_at) -> bool:
+        """Record reported usage once: only an attempt whose usage is still unknown changes (then True)."""
+        with self._connection() as connection:
+            return connection.execute(
+                "UPDATE side_attempts SET usage='reported', prompt_tokens=?, completion_tokens=?, total_tokens=?, "
+                "settled_at=? WHERE attempt_id=? AND usage='unknown'",
+                (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens, settled_at, attempt_id)).rowcount == 1
+
+    def side_has_op(self, op_id) -> bool:
+        if not self._has_side_table():
+            return False
+        with self._connection() as connection:
+            return connection.execute("SELECT 1 FROM side_attempts WHERE op_id=?", (op_id,)).fetchone() is not None
+
+    def side_attempts(self, session_id, turn=None) -> list[dict]:
+        """Side attempts of a main session (of one main turn when given), oldest first; [] before any /side."""
+        if not self._has_side_table():
+            return []
+        query = "SELECT * FROM side_attempts WHERE session_id=?" + (" AND main_turn=?" if turn is not None else "")
+        with self._connection() as connection:
+            rows = connection.execute(query + " ORDER BY created_at, rowid",
+                                      (session_id,) if turn is None else (session_id, turn))
+            return [dict(row) for row in rows]
+
+    def side_close_stale(self, session_id, process_id) -> list[dict]:
+        """Attempts an earlier process left in flight become 'interrupted' (their usage stays as recorded).
+        Returns every attempt of earlier processes for the restart notice."""
+        if not self._has_side_table():
+            return []
+        with self._connection() as connection:
+            connection.execute("UPDATE side_attempts SET status='interrupted' WHERE session_id=? AND process_id!=? "
+                               "AND status IN ('dispatching', 'streaming')", (session_id, process_id))
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM side_attempts WHERE session_id=? AND process_id!=? ORDER BY created_at, rowid",
+                (session_id, process_id))]
+
+    def _has_side_table(self) -> bool:
+        with self._connection() as connection:
+            return connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='side_attempts'").fetchone() is not None
+
     def create_task(self, root_state, *, parent_task_id="root", call_id, name, state, max_depth=4, max_nodes=32):
         from .tasks import create
         return create(self, root_state, parent_task_id=parent_task_id, call_id=call_id, name=name, state=state, max_depth=max_depth, max_nodes=max_nodes)

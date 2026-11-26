@@ -7,6 +7,7 @@ from decimal import Decimal
 import os
 import sqlite3
 import sys
+import threading
 from hashlib import sha256
 from importlib.metadata import version
 from pathlib import Path
@@ -645,6 +646,18 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         # json/jsonl report the session id even when the run fails before the first checkpoint.
         args.session = uuid4().hex
 
+    def build_adapter():
+        """The provider adapter for this run's model settings. The side chat builds its own instance with
+        exactly these settings (docs/side.md); nothing about the main model changes."""
+        load_dotenv()
+        if args.provider == "anthropic":
+            return initialize_model(args.model, provider="anthropic", timeout=ANTHROPIC_TIMEOUT_SECONDS,
+                                    max_completion_tokens=args.max_completion_tokens,
+                                    generation=anthropic_generation(args) or None)
+        return initialize_model(args.model, provider=args.provider,
+                                **({"request_bound": LazyModel().bound()} if args.request_bound_profile else {}),
+                                **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
+
     # Defer provider configuration: inspection, reconciliation, and cached completion
     # need no model key and must not make an API call.
     class LazyModel:
@@ -677,15 +690,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
         def initialize(self):
             if self.adapter is None:
-                load_dotenv()
-                if args.provider == "anthropic":
-                    self.adapter = initialize_model(args.model, provider="anthropic", timeout=ANTHROPIC_TIMEOUT_SECONDS,
-                                                    max_completion_tokens=args.max_completion_tokens,
-                                                    generation=anthropic_generation(args) or None)
-                    return
-                self.adapter = initialize_model(args.model, provider=args.provider,
-                                     **({"request_bound": self.bound()} if args.request_bound_profile else {}),
-                                     **({"token_estimator": estimator, "max_completion_tokens": args.max_completion_tokens} if estimator else {}))
+                self.adapter = build_adapter()
 
     mcp = None
     mcp_skipped = None
@@ -1098,6 +1103,22 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         layers.extend(retry_layers)
         model = model_factory(args) if model_factory is not None else LazyModel()
         session = {"id": args.session}
+        # Side chat (docs/side.md): a passive copy of each main-agent request (never a worker's) and its own
+        # adapter instance with this run's settings. Nothing here changes the main task's requests.
+        tap = None
+        if interactive:
+            from baseagent.agent.side import RequestTap
+            tap = RequestTap()
+        side_adapter = {}
+        side_lock = threading.Lock()
+
+        def side_model():
+            if model_factory is not None:
+                return model          # an injected (test) model serves both
+            with side_lock:
+                if "adapter" not in side_adapter:
+                    side_adapter["adapter"] = build_adapter()
+                return side_adapter["adapter"]
         prompt = system_prompt
         workers = None
         # Chat sessions record their mode; one-shot sessions keep their original metadata.
@@ -1135,13 +1156,16 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
 
         pools = {}  # a single agent's pools by turn; with workers, WorkerManager.turn_pool holds them
 
+        pools_lock = threading.Lock()   # the side chat looks pools up from its own thread
+
         def cached(number, build, replace=False):
             if workers is not None:
                 return workers.turn_pool(number, build, replace=replace)
-            if replace or number not in pools:
-                pools[number] = build()
-                pools[number].turn = number
-            return pools[number]
+            with pools_lock:
+                if replace or number not in pools:
+                    pools[number] = build()
+                    pools[number].turn = number
+                return pools[number]
 
         def unrecovered_pool(reason, known=()):
             """A turn whose earlier spend cannot be rebuilt (sessions from before budget records). Without an
@@ -1281,7 +1305,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                 tool_policy=policy,
                 completion_policy=completion,
                 estimate_model=args.estimate_model, preauthorize_model=args.preauthorize_model, accept_request_bound_violation=args.accept_request_bound_violation,
-                subtasks=subtasks,
+                subtasks=subtasks, request_observer=tap,
             )
             session["id"] = state.session_id or session["id"]
             return state
@@ -1295,12 +1319,42 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
                     raise ValueError(f"{exc}. {FLOOR_RESUME_HINT}") from exc
                 raise
 
+        def open_side(chat):
+            from baseagent.agent.side import SideChat, SideUnavailable, port_for, provider_notes, take_snapshot
+            from baseagent.session.checkpoints import turn_number
+            if args.preauthorize_model or args.estimate_model:
+                raise SideUnavailable("侧聊不支持 --preauthorize-model / --estimate-model：侧聊请求无法按同样的规则预留 "
+                                      "token，所以不发送。")
+            session_id = chat.session_id or session["id"]
+            if not session_id:
+                raise SideUnavailable("主会话还没有内容：先和主 Agent 说一句话，再打开侧聊。")
+            snapshot = take_snapshot(store=store, session_id=session_id, tap=tap, reference=chat.task_reference)
+            adapter = side_model()
+            streams = hasattr(adapter, "open_stream")
+
+            def pool_for():
+                """(main turn, its shared pool) at admission: side spend counts against that turn's cap."""
+                current = store.load(session_id)
+                try:
+                    pool = turn_budget(resuming=True)
+                except (ValueError, OSError, sqlite3.Error):
+                    pool = unrecovered_pool("side_turn_unknown")
+                turn = getattr(pool, "turn", None) or (turn_number(current) if current is not None else 1)
+                return turn, pool
+
+            return SideChat(snapshot, store=store, port_factory=lambda: port_for(adapter),
+                            publish=chat.side_events.publish, pool_for=pool_for, process_id=chat.process_id,
+                            notes=provider_notes(args.provider, streams), streams=streams,
+                            max_calls=args.max_model_calls or CHAT_MAX_STEPS, max_total_tokens=args.max_total_tokens)
+
         if interactive:
             from baseagent.chat import ChatSession
             chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
                                workers=workers, main_agent=main_agent, events=chat_events, inbox=inbox,
                                continue_steps=args.max_steps or CHAT_MAX_STEPS,
-                               continue_tool_calls=args.max_tool_calls or 32)
+                               continue_tool_calls=args.max_tool_calls or 32,
+                               side_factory=lambda chat: open_side(chat), jobs=jobs)
+            chat.request_tap = tap    # read-only diagnostics: what the side chat's live snapshots start from
             if args.ui == "tui":
                 from baseagent.tui.app import run_tui
                 return run_tui(chat)

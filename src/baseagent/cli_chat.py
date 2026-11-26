@@ -27,7 +27,7 @@ import threading
 import time
 from collections import deque
 
-from baseagent.chat.session import ERRORS, QUEUE_COMMAND, ChatSession, _is_queue, exit_question
+from baseagent.chat.session import ERRORS, QUEUE_COMMAND, ChatSession, _is_queue, exit_question, is_side_command
 # Re-exported: stop and worker explanations moved to the shared chat layer unchanged.
 from baseagent.chat.text import LIMITS, WORKER_REASONS, WORKER_STATUS, stop_explanation, worker_explanation, worker_label  # noqa: F401
 
@@ -141,6 +141,93 @@ class ApprovalLines:
             self.closed = None
 
 
+SIDE_PREFIX = "[侧聊] "
+SIDE_HELP = ("Side chat: /side <question> asks about the current context without tools (answers are shown here only); "
+             "/side-stop, /side-retry, /side-end.")
+
+
+class SidePrinter:
+    """Print side chat events as their own lines, each prefixed ``[侧聊]``, apart from the main agent's output.
+
+    Streamed text is printed line by line as it arrives; the rest when the answer ends or is stopped.
+    It only displays: replaying an event never sends anything.
+    """
+
+    def __init__(self, write):
+        self.write = write
+        self.lock = threading.Lock()
+        self.pending, self.received = {}, {}
+
+    def __call__(self, event):
+        try:
+            with self.lock:
+                self.show(event.kind, event.data)
+        except Exception:  # noqa: BLE001 -- display must never break the side chat
+            pass
+
+    def lines(self, attempt, text, final=False):
+        buffer = self.pending.get(attempt, "") + text
+        *done, rest = buffer.split("\n")
+        for line in done:
+            self.write(SIDE_PREFIX + line)
+        if final:
+            if rest:
+                self.write(SIDE_PREFIX + rest)
+            rest = ""
+        self.pending[attempt] = rest
+
+    def show(self, kind, data):
+        attempt = data.get("attempt")
+        if kind == "side_opened":
+            origin = "主任务最近一次真实请求" if data["origin"] == "live" else "已保存的会话（文本化）"
+            self.write(f"{SIDE_PREFIX}已打开：快照取自主会话第 {data['turn']} 轮，{origin}；之后主任务的进展不会同步进来。")
+            for note in data.get("notes") or ():
+                self.write(f"{SIDE_PREFIX}· {note}")
+        elif kind == "side_delta":
+            self.received[attempt] = self.received.get(attempt, 0) + len(data["text"])
+            self.lines(attempt, data["text"])
+        elif kind == "side_answer":
+            rest = data["text"][self.received.get(attempt, 0):]
+            self.lines(attempt, rest, final=True)
+        elif kind == "side_stopped":
+            self.lines(attempt, "", final=True)
+            self.write(f"{SIDE_PREFIX}已停止（主任务、Worker 和后台任务不受影响）。已显示的部分保留；这次请求的用量若之后到达仍会记录。")
+        elif kind == "side_failed":
+            self.lines(attempt, "", final=True)
+            self.write(f"{SIDE_PREFIX}请求失败：{data.get('error')}。/side-retry 重新发送（按新请求计费）。")
+        elif kind == "side_usage":
+            if data.get("usage") == "unknown":
+                self.write(f"{SIDE_PREFIX}这次请求的用量未知（不按 0 计）。")
+            elif data.get("late"):
+                self.write(f"{SIDE_PREFIX}已停止的那一问的用量后到：输入 {data.get('prompt_tokens')} / 输出 "
+                           f"{data.get('completion_tokens')} tokens，已记入。")
+        elif kind == "side_notice":
+            self.write(SIDE_PREFIX + data["text"])
+        elif kind == "side_ended":
+            known = data["prompt_tokens"] + data["completion_tokens"]
+            line = f"{SIDE_PREFIX}侧聊已结束：{data['attempts']} 次请求，已知用量 {known} tokens"
+            if data.get("unknown"):
+                line += f"，{data['unknown']} 次用量未知"
+            if data.get("pending"):
+                line += f"，{data['pending']} 次还在等待用量（到达后照常记录）"
+            self.write(line + "。")
+
+
+def _stop_side(session):
+    side = getattr(session, "side", None)
+    return side is not None and not side.ended and side.stop()["result"] == "stopped"
+
+
+def _wait_side(session):
+    """Sequential (piped) input: a side question is answered before the next line is read. Ctrl+C stops it."""
+    side = getattr(session, "side", None)
+    while side is not None and side.active is not None:
+        try:
+            time.sleep(0.02)
+        except KeyboardInterrupt:
+            _stop_side(session)
+
+
 def _interactive(out):
     try:
         return out is sys.stdout and sys.stdin.isatty() and sys.stdout.isatty()
@@ -185,6 +272,9 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
         print("Type a task, /status, /continue [N], /queue <text>, /exit or /quit. Ctrl+C cancels the current turn.",
               file=out)
     print("File checkpoints: /checkpoints lists them, /undo or /rewind <N> restores files written by the agent.", file=out)
+    print(SIDE_HELP, file=out)
+    # Looked up at print time: the threaded CLI replaces session.printer below.
+    session.side_events.subscribe(SidePrinter(lambda text: session.printer("out", text)))
     session.start()
     line = PromptLine(out, live=live)
     if workers is not None:
@@ -220,6 +310,10 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
                 if workers is not None and workers.running() and not _confirm_exit(session, line, out):
                     continue
                 break
+            if is_side_command(text):
+                session.command(text)
+                _wait_side(session)
+                continue
             if _is_queue(text):
                 # Sequential input: nothing runs now, so a queued line is simply the next turn.
                 text = text[len(QUEUE_COMMAND):].strip()
@@ -283,9 +377,17 @@ def _run_threaded(session, line, out, err):
                     if session.interrupt():
                         print("Cancelling the current turn (Ctrl+C)...", file=err)
                     continue
+                if _stop_side(session):
+                    continue          # the main agent is idle: Ctrl+C stops only the side chat's answer
                 if workers is not None and workers.running():
                     session.cancel_all("Ctrl+C")
                 break
+            if is_side_command(text):
+                # A side chat line never answers a pending approval; that question stays open.
+                session.command(text.strip())
+                if approvals.pending():
+                    line.emit(out, "（主 Agent 的审批仍在等待：下一行 y 允许，n 或回车拒绝。）")
+                continue
             if approvals.answer(text):
                 continue
             text = text.strip()

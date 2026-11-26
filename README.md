@@ -12,7 +12,9 @@
 <!-- BAS-2 side-dialogue: BEGIN -->
 ## 施工中 / 本分支需求：`/side` 独立侧聊（BAS-2）
 
-> **状态：需求更新，尚未实现。** 2026-11-25 根据 Frank 的侧聊讨论更新本段，替代原来“历史范围未定、仅需求占位”的说明；不是功能完成或实测声明。复用原 `plan/side-dialogue`，不另开重复分支。
+> **状态：方案 A 已在本分支实现，离线验证；未合入 master，未做真实供应商验证。** 2026-11-26 按 Frank 选定的方案 A（续写主任务最近一次真实请求的前缀，未完成的工具改写成标注过的事实）以及与 job-wait 对齐后的共用规则实现：默认看主会话；`/side w1` 未获批准，没有实现；对话只在内存；沿用现有未知用量规则。用法、规则和证据见 [docs/side.md](docs/side.md)，下方「实现与验收（2026-11-26）」逐条列出 AC 证据与未验证项。下面的需求原文保留不改。
+>
+> 2026-11-25：根据 Frank 的侧聊讨论更新本段，替代原来“历史范围未定、仅需求占位”的说明。复用原 `plan/side-dialogue`，不另开重复分支。
 >
 > **前置已满足：插话收尾实现已合入 master，本分支已同步基线。** 2026-11-25 核对并承接 `origin/master` `3607848366aac95ee84d9b166b659b2d47e15916`，包含 [PR #3](https://github.com/TinyPandar/BaseAgent/pull/3) 原 head `abb8deebdde2c516ffc8d2f925fa7f561fef6088` 的实现。可以进入方案设计；侧聊仍未实现，须 Claude 先交至少两套结构不同的方案，Frank 决定后再实现。本次未启动实现者、未开发侧聊；下方原有“已交付”描述更新后的 master。
 
@@ -83,6 +85,35 @@
 | 真实受控并发状态 | 用同步点和临时本地命令验证进程身份/单次副作用、创建/工具批次/压缩/取消/完成竞争；对应 AC01–AC03、AC12–AC15 | 零模型 API 费用；不运行真实任务、不下载大型资源、不碰真实凭据 |
 | 前端自动化与人工体验 | CLI/TUI/Web 触发、目标归属、渐进输出、断连/重连和停止；对应 AC01、AC05–AC06、AC12–AC13；人工体验另列 | 自动化可零模型费用；模拟不等于人工真实终端/浏览器已验证 |
 | 真实 provider / 缓存性能 | 如获授权，对相同背景的空白补背景、可用摘要、fork 请求核对实际 cache/read tokens、usage、首字/完成延迟及费用；记录模型/参数/上下文差异 | 不属于本次授权；另向 Frank 申请明确预算。无实测不写命中率、提速或省钱数字；已有摘要时不强行新增摘要调用 |
+
+### 实现与验收（2026-11-26）
+
+实现：`src/baseagent/agent/side.py`（快照、请求构造、无工具的侧聊状态机，不引用工具注册表、工作区、MCP、Worker 或 agent 循环）。改动的现有代码都是接点：`run_agent` 的被动请求观察回调、`SessionStore` 的一致读与首次用 `/side` 才建的 `side_attempts` 表、`TurnBudget` 的侧聊准入与结算、OpenAI 兼容适配器的可关闭流和可选保留 `reasoning_content`、`ChatSession` 与三个前端。kernel 没有改。默认行为不变：不输入 `/side` 就不发侧聊请求，也不建表。
+
+| AC | 证据（全部离线、假模型或本机假供应商，零 API 费用） |
+| --- | --- |
+| 01 | 三个前端都能显式进入；不用 `/side` 时没有侧聊请求、不建表；`/queue`、`/tell`、Worker 归属不变；审批等待中输入 `/side` 不会被当成审批回答；主任务运行时打开侧聊，命令只启动一次（`test_side_frontends`、`test_side_snapshot`、`test_side_providers`） |
+| 02、03 | 请求在途、工具部分返回、并行批次半返回、压缩相邻、读取期间又有请求返回、历史被改写：快照包含当时已知的事实，不混版本，消息配对合法，主历史、账本和收件箱逐字不变（`test_side_snapshot`） |
+| 04 | 同一次主请求的会话历史、最终投影、实际线上请求与侧聊首请求逐层对照，给出首个差异和共享前缀：Agent 层的投影不等于 Anthropic 的线上格式，因此比对在线上请求上做（`test_side_providers`） |
+| 05、06 | CLI 前缀行、TUI 侧栏、Web 侧聊面板与独立 SSE；受控分块证明回答在结束前逐段到达；Anthropic 明确提示“不支持流式”（`test_side_frontends`、`test_side_providers`） |
+| 07 | 模型在侧聊里请求 `run_command`、`write_file`、`delegate_task` 时：没有执行、没有文件变化、没有新 Worker、账本不变；导入边界测试（`test_side_frontends`、`test_side_snapshot`） |
+| 08 | 默认沿用主会话的模型和参数；本版不提供单独降低思考预算，打开时明确说明；签名思考块原样回传，假供应商按前缀规则接受（`test_side_providers`） |
+| 09、10 | 追问复用同一快照，任务参考只加一次；主任务之后的新结果不进侧聊，侧聊内容不进主线、收件箱或 Worker（`test_side_snapshot`、`test_side_frontends`） |
+| 11 | cold、裁剪（注明省略条数）、模型请求工具后继续追问，在三种供应商规则下都合法；破坏规则的反例被拒（`test_side_providers`） |
+| 12、13 | 停止、结束只作用于侧聊，主回合与 Worker 继续；停止与完成两种先后各结算一次；晚到用量不显示正文但照样记账；重复 `op_id`、重连、显式重试不重复生成（`test_side_accounting`、`test_side_frontends`） |
+| 14 | 跨主轮次时用量归受理时的那一轮；未知用量不按 0 计，设了 `--budget-cny` 时按现有规则拦住这一轮；崩溃重启后侧聊结束、用量和未知次数保留并提示，从库里重建的花费与运行中一致（`test_side_accounting`） |
+| 15 | 所有竞争都用事件同步点和真实本地子进程控制，不靠 sleep 赌时序 |
+| 16 | 见本段下方的“验证记录”与 docs/side.md 的证据表；真实供应商、缓存、延迟、费用和人工体验**未验证** |
+
+**验证记录（2026-11-26，Windows 10，Python 3.12.13，基线 `887c061`）**：测试环境建在仓库外，隔离真实 `.env` 和 MCP 信任配置，不用密钥，不调用付费 API。
+
+- 侧聊测试 39 项全部通过（`tests/test_side_snapshot.py`、`test_side_providers.py`、`test_side_accounting.py`、`test_side_frontends.py`），连跑 3 遍都通过；时序全部用事件同步点和真实本地子进程控制，没有靠重试。
+- 变异检查：每次只破坏一条侧聊规则（共 21 条：例如未完成批次原样发送、侧聊说明改成 system 消息、不复核最近请求、任务参考取走收件箱或后台任务通知、晚到用量丢弃或记到当前轮、结算不止一次、重复 `op_id` 被受理、侧聊占用主任务调用次数、审批等待中 `/side` 被当成回答），测试全部失败。
+- 全量离线回归：改动前 1425 通过 / 97 失败 / 24 错误 / 21 跳过；改动后 1465 通过 / 96 失败 / 24 错误 / 21 跳过。**没有新增失败**：改动后的失败在改动前都已失败，原因是这台 Windows 机器的环境（找不到 git、docker 等可执行文件，文件被占用，没有创建符号链接的权限，没有 ripgrep）。改动前失败、改动后通过的有 1 条（`test_checkpoint_chat` 的 TUI 撤销），没有归因。检索语料版本没有重绑，`corpus_version` 相关测试本来就失败。
+- 现有测试只改了 1 处：`test_kernel_compatibility` 的新增参数登记表里加上 `request_observer`（仅限关键字、默认 `None`，检查强度不变）。
+- **未验证**：真实供应商（OpenAI 兼容、DeepSeek、Anthropic）、真实缓存命中、首字延迟和费用；人工在真实终端或浏览器里的体验；macOS / Linux。
+
+已知限制：主线现有的一个问题（侧聊不会新增它）——走 Anthropic 时，工具结果超过 `--max-tool-context-bytes` 会让 `ContextPolicy` 插入一条 system 提示，并入顶层 `system` 后签名思考块不再匹配，详见 docs/side.md。
 
 ### 依赖、现状与给实现者的交接
 
@@ -232,7 +263,7 @@ uv run --extra web baseagent --ui web --root . --session demo  # http://127.0.0.
 
 - 默认上限放宽到 16 步、16 次模型调用，剩 2 步时提示模型收尾；显式参数或 `--config` 优先。
 - 撞上限时输入 `/continue [N]` 在对话里提高本轮步数和模型调用上限，已用计数不清零、已完成的工具调用不重做；`--budget-cny` 不会因此清零或提高。
-- 常用命令：`/status`、`/wait`、`/cancel <id|all>`、`/tell <id> <text>`、`/checkpoints`、`/undo`、`/rewind N`、`/exit`。
+- 常用命令：`/status`、`/wait`、`/cancel <id|all>`、`/tell <id> <text>`、`/checkpoints`、`/undo`、`/rewind N`、`/exit`；侧聊 `/side <问题>`、`/side-stop`、`/side-retry`、`/side-end`（本分支，见 [docs/side.md](docs/side.md)）。
 - 默认是主 Agent 模式：主 Agent 不读写文件、不跑命令，需要动手时派出 Worker；Worker 默认只拿只读工具，用户明确要求修改时才允许写入。主 Agent 这一轮和它派出的 Worker 共用步数、模型调用和可选的 `--budget-cny`；续跑沿用已花金额。完整规则见 [参考手册](docs/reference.md#共享预算) 和 [预算共享](docs/router_worker.md#预算共享)。
 - `--session` 可以在三个前端之间接着用；连续对话也可以加 `--backend docker`。
 

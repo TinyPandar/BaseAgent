@@ -24,6 +24,7 @@ import ctypes
 import sqlite3
 import threading
 import time
+from uuid import uuid4
 
 from baseagent.agent.inbox import METADATA_KEY as INBOX_KEY
 from baseagent.agent.inbox import QUEUE, STEER, USER, Inbox, is_inbox_message, user_parts
@@ -37,7 +38,7 @@ from baseagent.session.checkpoints import summary as checkpoint_summary
 
 from baseagent.timestamps import iso_utc
 
-from .events import EventBuffer
+from .events import SIDE_KINDS, EventBuffer
 from .text import (arguments_preview, call_request_json, node_arguments_preview, patch_approval_text, pending_worker, status_lines, stop_explanation,
                    worker_explanation, worker_nodes)
 
@@ -56,6 +57,15 @@ MAX_CONTINUE = 1000
 ANY = object()
 STATUS_INTERVAL = 1.0
 HISTORY_LIMIT = 200
+# Side chat (docs/side.md): "/side <question>" opens one (or asks the open one); the others act on it only.
+SIDE_COMMANDS = frozenset({"/side", "/side-stop", "/side-retry", "/side-end"})
+SIDE_USAGE = ("侧聊：/side <问题> 打开或继续追问（看创建时的主会话上下文，不执行工具，答案不回到主任务）；"
+              "/side-stop 停止正在回答的侧聊问题；/side-retry 重新发送已停止或失败的上一问（按新请求计费）；"
+              "/side-end 结束侧聊。")
+
+
+def is_side_command(text):
+    return (text or "").strip().partition(" ")[0] in SIDE_COMMANDS
 
 
 class ApprovalMismatch(ValueError):
@@ -77,7 +87,7 @@ class ChatSession:
 
     def __init__(self, *, run_turn, store, workspace, session_id=None, workers=None, main_agent=False,
                  events=None, printer=None, status_events=True, continue_steps=CONTINUE_STEPS,
-                 continue_tool_calls=CONTINUE_TOOL_CALLS, inbox=None):
+                 continue_tool_calls=CONTINUE_TOOL_CALLS, inbox=None, side_factory=None, jobs=None):
         self.run_turn = run_turn
         # /continue: how much more the current turn gets by default (the chat's per-turn allowance).
         self.continue_steps, self.continue_tool_calls = continue_steps, continue_tool_calls
@@ -111,6 +121,14 @@ class ChatSession:
         self.status_events = status_events
         if workers is not None:
             workers.observer = self._on_worker
+        # Side chat: its own event buffer and cursor (never the main-line buffer); one open at a time.
+        self.side_factory = side_factory
+        self.jobs = jobs
+        self.side = None
+        self.request_tap = None
+        self.side_events = EventBuffer(kinds=SIDE_KINDS)
+        self._side_lock = threading.Lock()
+        self.process_id = uuid4().hex
 
     # ----- output -----------------------------------------------------------------------
     def _say(self, stream, text, kind="notice", **data):
@@ -144,6 +162,7 @@ class ChatSession:
             restored = self.inbox.restore(state.metadata.get(INBOX_KEY))
             if restored:
                 self._say("err", f"有 {len(restored)} 条未送达的消息（上次退出时还在收件箱里），会随下一轮发送。")
+            self._report_stale_side()
         if self.workers is not None:
             self.workers.restore(state)
         return state
@@ -175,6 +194,7 @@ class ChatSession:
     def close(self):
         if self.closed:
             return
+        self.end_side()
         self.closed = True
         if self.workers is not None:
             # Nobody drains the display queue of a TUI/Web session, so keep swallowing pushes
@@ -443,6 +463,9 @@ class ChatSession:
 
         False means: an ordinary chat line.
         """
+        if is_side_command(text):
+            self.side_command(text)
+            return True
         if text == "/status":
             self._say("out", "\n".join(self.status_lines()))
             self.publish_status(force=True)
@@ -978,6 +1001,11 @@ class ChatSession:
             "max_workers": self.workers.max_workers if self.workers is not None else 0,
             "pending_approvals": len(self.pending_approvals(previews=False)),
         }
+        side = self.side
+        if side is not None:
+            view = side.view()
+            value["side"] = {"id": view["side"], "ended": view["ended"], "active": view["active"],
+                             "attempts": len(view["attempts"]), "unknown": view["summary"]["unknown"]}
         describe = getattr(getattr(self.workspace, "backend", None), "describe", None)
         if callable(describe):
             value["backend"] = describe()       # --backend docker only; absent means local
@@ -1035,6 +1063,121 @@ class ChatSession:
             return [item.to_dict() for item in items]
         snapshot = self.snapshot()
         return [{"id": snapshot["last_id"], "kind": "resync", "ts": time.time(), "data": {"snapshot": snapshot}}]
+
+
+    # ----- side chat (docs/side.md) ------------------------------------------------------
+    def side_command(self, text, *, op_id=None):
+        """/side <question>, /side-stop, /side-retry, /side-end. Never touches the main turn, a worker, the
+        inbox or a background job. ``op_id`` identifies one submission: the same id is never sent twice."""
+        command, _, rest = (text or "").strip().partition(" ")
+        rest = rest.strip()
+        op_id = op_id or uuid4().hex
+        if command == "/side":
+            if not rest:
+                side = self.side
+                if side is None or side.ended:
+                    return self._side_notice(SIDE_USAGE)
+                summary = side.summary()
+                return self._side_notice(f"侧聊 {side.id} 打开中：{summary['attempts']} 次请求，已知用量 "
+                                         f"{summary['prompt_tokens'] + summary['completion_tokens']} tokens，"
+                                         f"未知 {summary['unknown']} 次。{SIDE_USAGE}")
+            return self.side_ask(rest, op_id=op_id)
+        side = self.side
+        if side is None or side.ended:
+            return self._side_notice("现在没有打开的侧聊。" + SIDE_USAGE)
+        if command == "/side-stop":
+            result = side.stop()
+            if result["result"] != "stopped":
+                self._side_notice("侧聊没有正在回答的问题。")
+            return result
+        if command == "/side-retry":
+            return side.retry(op_id)
+        return self.end_side()
+
+    def side_ask(self, text, *, op_id=None):
+        """Ask the open side chat, opening one first (its snapshot is fixed now)."""
+        op_id = op_id or uuid4().hex
+        from baseagent.agent.side import SideUnavailable
+        with self._side_lock:
+            side = self.side
+            if side is None or side.ended:
+                if self.side_factory is None:
+                    return self._side_notice("这个对话没有侧聊功能。")
+                try:
+                    side = self.side_factory(self)
+                except SideUnavailable as exc:
+                    return self._side_notice(str(exc))
+                except ERRORS as exc:
+                    return self._side_notice(f"侧聊没有打开：{exc}")
+                self.side = side
+                view = side.view()
+                self.side_events.publish("side_opened", side=side.id, origin=view["origin"], mode=view["mode"],
+                                         turn=view["turn"], taken_at=view["taken_at"], notes=view["notes"],
+                                         streams=view["streams"])
+        return side.ask(op_id, text)
+
+    def end_side(self):
+        side = self.side
+        if side is None or side.ended:
+            return None
+        return side.end()
+
+    def _side_notice(self, text):
+        self.side_events.publish("side_notice", side=self.side.id if self.side is not None else None, text=text)
+        return {"result": "refused", "reason": text}
+
+    def side_snapshot(self):
+        return {"last_id": self.side_events.last_id, "side": self.side.view() if self.side is not None else None}
+
+    def side_events_after(self, after_id):
+        """Side events after an id, or one ``resync`` with the side panel's state (display only)."""
+        items = self.side_events.after(after_id)
+        if items is not None:
+            return [item.to_dict() for item in items]
+        snapshot = self.side_snapshot()
+        return [{"id": snapshot["last_id"], "kind": "resync", "ts": time.time(), "data": {"snapshot": snapshot}}]
+
+    def task_reference(self):
+        """Unfinished tasks as the main agent's owners hold them now, READ ONLY (the side chat freezes it).
+
+        Nothing is taken from the inbox, no job notice is consumed or marked, no worker is touched.
+        """
+        reference = {"read_at": time.time(), "workers": [], "jobs": [], "approvals": [], "inbox": []}
+        if self.workers is not None:
+            with self.workers._lock:
+                records = list(self.workers.records.values())
+            finished = [record for record in records if record.status not in ACTIVE][-5:]
+            for record in [*[record for record in records if record.status in ACTIVE], *finished]:
+                reference["workers"].append({"id": record.id, "status": record.status, "task": record.task,
+                                             "allow_writes": record.allow_writes,
+                                             "summary": (record.report or {}).get("summary")})
+                if record.status == AWAITING and record.approval:
+                    reference["approvals"].append({"who": f"worker {record.id}", "name": record.approval.get("name")})
+        if self.jobs is not None:
+            for job in self.jobs.peek():
+                if job["status"] in ("running", "unknown") or not job.get("notified"):
+                    reference["jobs"].append(job)
+        reference["inbox"] = [{"source": item.source, "mode": item.mode, "text": item.text}
+                              for item in self.inbox.pending()]
+        return reference
+
+    def _report_stale_side(self):
+        """A side chat open when an earlier process ended is over now; its usage stays recorded."""
+        if not self.session_id or not hasattr(self.store, "side_close_stale"):
+            return
+        try:
+            rows = self.store.side_close_stale(self.session_id, self.process_id)
+        except ERRORS:
+            return
+        if not rows:
+            return
+        interrupted = [row for row in rows if row["status"] == "interrupted"]
+        unknown = [row for row in rows if row["usage"] == "unknown"]
+        if not interrupted and not unknown:
+            return
+        known = sum((row["total_tokens"] or 0) for row in rows if row["usage"] == "reported")
+        self._say("err", f"上次进程里的侧聊已随进程结束（侧聊内容不保存）：共 {len(rows)} 次侧聊请求，已记录用量 {known} "
+                         f"tokens，{len(unknown)} 次用量未知。未知不按 0 计，设了 --budget-cny 的那一轮仍按未知用量处理。")
 
 
 def _is_queue(text):

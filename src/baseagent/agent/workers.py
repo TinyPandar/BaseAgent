@@ -101,6 +101,12 @@ class TurnBudget:
         self.usage_unknown = False
         self.turn = turn
         self.unrecovered = None
+        # Side chat attempts charged to this turn (docs/side.md): they use no step or model call of the
+        # pool, only its CNY cap. An attempt that ended without reported usage stays unknown until a late
+        # report settles it; settled is final.
+        self.side_calls = 0
+        self.side_unknown = set()
+        self.side_settled = set()
         self._lock = threading.Lock()
 
     def seed(self, *, model_calls=0, steps=0, prompt_tokens=0, completion_tokens=0, unknown=False):
@@ -120,7 +126,35 @@ class TurnBudget:
                 self.max_steps = max(self.max_steps, self.steps + steps)
 
     def _cny_spent(self):
-        return self.budget_cny is not None and (self.usage_unknown or self.cost_cny >= self.budget_cny)
+        return self.budget_cny is not None and (self.usage_unknown or bool(self.side_unknown)
+                                                or self.cost_cny >= self.budget_cny)
+
+    def admit_side(self):
+        """Admit one side chat request: refused while the turn's spend is unknown or its CNY cap is spent.
+        Uses no step or model call of the pool (the main agent and its workers keep their allowance)."""
+        with self._lock:
+            if self.unrecovered:
+                return "budget_unknown"
+            if self._cny_spent():
+                return "budget_cny"
+            self.side_calls += 1
+            return None
+
+    def side_unresolved(self, attempt_id):
+        """A side attempt ended without reported usage: unknown (existing rule: blocks CNY-capped spend)."""
+        with self._lock:
+            if attempt_id not in self.side_settled:
+                self.side_unknown.add(attempt_id)
+
+    def settle_side(self, attempt_id, prompt_tokens, completion_tokens):
+        """Charge a side attempt's reported usage exactly once (also when it arrives after a stop)."""
+        with self._lock:
+            if attempt_id in self.side_settled:
+                return False
+            self.side_settled.add(attempt_id)
+            self.side_unknown.discard(attempt_id)
+        self.charge(prompt_tokens, completion_tokens)
+        return True
 
     def admit_step(self, *, worker):
         with self._lock:
@@ -178,6 +212,8 @@ class TurnBudget:
                 value.update(cost_cny=str(self.cost_cny.quantize(Decimal("0.000001"))), budget_cny=str(self.budget_cny))
             if self.unrecovered:
                 value["unrecovered"] = self.unrecovered
+            if self.side_calls or self.side_unknown:
+                value.update(side_calls=self.side_calls, side_unknown=len(self.side_unknown))
             return value
 
 
@@ -257,8 +293,24 @@ def seed_turn_usage(budget, store, main_state, records, turn):
             continue
         budget.seed(model_calls=worker.model_calls, steps=worker.step, prompt_tokens=worker.prompt_tokens,
                     completion_tokens=worker.completion_tokens, unknown=worker.unknown_usage_calls > 0)
+    seed_side_usage(budget, store, main_state, turn)
     budget.turn = turn
     return budget
+
+
+def seed_side_usage(budget, store, main_state, turn):
+    """Add the side chat attempts charged to ``turn`` (docs/side.md): reported usage is charged, an attempt
+    whose usage never arrived stays unknown (never counted as zero)."""
+    attempts = getattr(store, "side_attempts", None)
+    if main_state is None or not main_state.session_id or attempts is None:
+        return
+    for row in attempts(main_state.session_id, turn):
+        with budget._lock:
+            budget.side_calls += 1
+        if row["usage"] == "reported":
+            budget.settle_side(row["attempt_id"], row["prompt_tokens"], row["completion_tokens"])
+        else:
+            budget.side_unresolved(row["attempt_id"])
 
 
 class SharedBudgetMiddleware(AgentMiddleware):
