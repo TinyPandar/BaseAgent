@@ -25,9 +25,10 @@ This module is harness-level (it is not part of ``baseagent.kernel``).
 
 from __future__ import annotations
 
+import json
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from uuid import uuid4
 
 from baseagent.middleware import AgentMiddleware
@@ -92,8 +93,8 @@ class Inbox:
         self.listeners = []
 
     # ----- producers ----------------------------------------------------------------
-    def put(self, source, text, mode=STEER):
-        item = InboxItem(source, text, mode)
+    def put(self, source, text, mode=STEER, *, item_id=None):
+        item = InboxItem(source, text, mode, **({"id": item_id} if item_id else {}))
         with self._lock:
             self._items.append(item)
         self._notify("put", [item])
@@ -219,13 +220,69 @@ def user_parts(content):
     return content.split(STEER_HEADER + "\n", 1)[-1].strip()
 
 
+def direct_inputs(messages):
+    """[(message index, text)] of what was said to this agent itself, oldest first: the prompt of each turn,
+    the user's mid-turn lines and, for a worker, /tell or message_worker. Worker results and job notices are
+    not inputs. Read from the stored conversation, which compaction never rewrites."""
+    found = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, str):
+            continue
+        if not is_inbox_message(content):
+            if content.startswith(PUSH_HEADER) and f"\n{USER_HEADER}\n" in content:
+                content = content.split(f"\n{USER_HEADER}\n", 1)[1]
+            found.append((index, content))
+            continue
+        words = user_parts(content)
+        if not words and content.startswith(INBOX_HEADER):
+            words = content[len(INBOX_HEADER):].split("\n" + PUSH_HEADER)[0].split("\n" + _notice_header())[0].strip()
+        if words:
+            found.append((index, words))
+    return found
+
+
+def job_in_notice(content, job_id):
+    """True when a delivered inbox message carries the completion notice of ``job_id``."""
+    if _notice_header() not in content:
+        return False
+    body = content.split(_notice_header() + "\n", 1)[-1].split(STEER_HEADER + "\n", 1)[0]
+    return any(line.startswith(f"- {job_id} ") for line in body.splitlines())
+
+
 def notice_lines(notice):
     """The lines of one finished background job (as the job notice has always shown them)."""
     lines = [f"- {notice['job_id']} {notice['status']} (exit code {notice['exit_code']}, "
              f"{notice['log_bytes']} log bytes): {' '.join(notice['argv'])[:200]}"]
     if notice.get("tail"):
         lines.append("  last output:\n" + "\n".join("    " + line for line in notice["tail"].splitlines()))
+    lines.extend(_association_lines(notice))
     return "\n".join(lines)
+
+
+def _association_lines(notice):
+    """Why the job was started and whether that still holds; nothing is made up when it was never stated."""
+    link = notice.get("link")
+    if not link or not (link["agent_session"] or any(link[key] for key in ("purpose", "expect", "next_step"))):
+        return []
+    lines = ["  " + "; ".join(f"{label}: {link[key] or '(not stated)'}" for label, key in
+                             (("purpose", "purpose"), ("expected", "expect"), ("next step", "next_step")))]
+    if link["purpose"] is None and (link["origin"] or {}).get("request"):
+        lines.append("  user's words when it started: " + json.dumps(link["origin"]["request"], ensure_ascii=False))
+    if link["goal"]["standing"] == "dropped":
+        lines.append("  its goal was dropped: information only, do not carry out the next step")
+    if notice.get("newer_inputs"):
+        lines.append("  the user said more after this goal was last confirmed; check that it still holds: "
+                     + json.dumps(notice["newer_inputs"], ensure_ascii=False))
+    if notice.get("handed_over_by"):
+        lines.append(f"  started by agent session {notice['handed_over_by']}, which has ended; you are responsible now")
+    received = [item["session"] for item in link["delivery"]["received"]]
+    if received:
+        lines.append(f"  already received by {', '.join(str(item) for item in received)} but not settled: its follow-up "
+                     "may have been done; check before doing it")
+    if notice["status"] == "lost":
+        lines.append("  its exit status is unknown: neither success nor failure; check before running anything again")
+    return lines
 
 
 def _batch_open(messages):
@@ -233,16 +290,35 @@ def _batch_open(messages):
     return _tool_batch_open(messages)
 
 
+class JobOwnerMiddleware(AgentMiddleware):
+    """A session without ``--session`` gets its id when it starts: its jobs belong to that id from then on."""
+
+    def __init__(self, jobs):
+        self.jobs = jobs
+
+    def before_agent(self, state):
+        if self.jobs.owner is None:
+            self.jobs.owner = getattr(state, "session_id", None)
+
+
 class InboxMiddleware(AgentMiddleware):
     """Deliver pending steer items before the next model call, at a safe boundary only.
 
-    ``jobs`` (a JobManager) feeds finished background jobs of the owning session into the
-    same inbox, so a job notice and a user's mid-turn line arrive in one message.
+    ``jobs`` (a JobManager) feeds the finished background jobs this agent is responsible for into the same
+    inbox, so a job notice and a user's mid-turn line arrive in one message. Three steps are recorded
+    separately: the notice was taken, the model received it (it replied after it), the job was settled.
+    What was taken but never received is found again from the records, not from a summary.
+
+    ``active(session_id)`` (main agent): is that worker still able to handle its own jobs? ``settles``: this
+    agent has ``job_settle``, so a stated next step stays open until it says so; without it, a completed
+    turn after the receipt settles the job as reported (a worker's report, the main agent's reply).
     """
 
-    def __init__(self, inbox=None, *, jobs=None):
+    def __init__(self, inbox=None, *, jobs=None, active=None, settles=False):
         self.inbox = inbox if inbox is not None else Inbox()
         self.jobs = jobs
+        self.active = active
+        self.settles = settles
 
     def before_agent(self, state):
         metadata = getattr(state, "metadata", None)
@@ -252,8 +328,7 @@ class InboxMiddleware(AgentMiddleware):
 
     def before_model(self, state):
         if self.jobs is not None:
-            for notice in self.jobs.take_notices():
-                self.inbox.put(JOB, notice_lines(notice))
+            self._collect(state)
         # Never between an assistant tool call and its reply (the kernel would refuse the request).
         if not _batch_open(state.messages):
             items = self.inbox.take(mode=STEER)
@@ -264,11 +339,88 @@ class InboxMiddleware(AgentMiddleware):
 
     def after_model(self, state, message):
         self.inbox.sync(state)
+        self._mark_received(state)
 
     def after_agent(self, state):
         self.inbox.sync(state)
+        self._settle_reported(state)
+
+    # ----- background jobs --------------------------------------------------------------
+    def _tracks(self):
+        return self.jobs is not None and hasattr(self.jobs, "unreceived")
+
+    def _unreceived(self, state):
+        return self.jobs.unreceived(getattr(state, "session_id", None), active=self.active)
+
+    def _collect(self, state):
+        if not self._tracks():
+            for notice in self.jobs.take_notices():
+                self.inbox.put(JOB, notice_lines(notice))
+            return
+        from baseagent.tools.job_wait import told
+        inputs = direct_inputs(state.messages)
+        for notice in self._unreceived(state):
+            job_id = notice["job_id"]
+            if told(state.messages, job_id) is not None:
+                continue          # in the conversation already (job_wait or an earlier notice), never announced twice
+            if not any(item.source == JOB and item.text.startswith(f"- {job_id} ") for item in self.inbox.pending()):
+                confirmed = notice["link"]["goal"]["confirmed_inputs"]
+                newer = inputs[confirmed:] if confirmed is not None else []
+                self.inbox.put(JOB, notice_lines({**notice, "newer_inputs": [text[:150] for _, text in newer[-2:]]}),
+                               item_id=f"job-{job_id}")
+            self.jobs.mark_taken(job_id)
+
+    def _mark_received(self, state):
+        if not self._tracks():
+            return
+        from baseagent.tools.job_wait import answered, told
+        for notice in self._unreceived(state):
+            index = told(state.messages, notice["job_id"])
+            if index is not None and answered(state.messages, index):
+                self.jobs.mark_received(notice["job_id"], getattr(state, "session_id", None),
+                                        getattr(state, "turn_id", None))
+
+    def _settle_reported(self, state):
+        from .state import RunStatus
+        if not self._tracks() or getattr(state, "status", None) != RunStatus.COMPLETED:
+            return
+        from baseagent.tools.job_links import DROPPED, REPORTED, received_by
+        self._mark_received(state)
+        agent = getattr(state, "session_id", None)
+        for job in self.jobs.unfinished(agent, active=self.active):
+            link = job.link
+            if not received_by(link, agent):
+                continue
+            if self.settles and link["next_step"] and link["goal"]["standing"] != DROPPED:
+                continue          # the stated follow-up stays open until job_settle
+            self.jobs.settle(job.id, REPORTED, agent=agent, turn=getattr(state, "turn_id", None))
+
+    def reference(self, state):
+        """The open jobs of this agent as reference text, or '' (also what a side conversation would freeze).
+
+        Computed for each request and never stored in the conversation. Reading it takes no notice and
+        changes no delivery state.
+        """
+        if not self._tracks():
+            return ""
+        from baseagent.tools.job_links import open_jobs_reference
+        agent = getattr(state, "session_id", None)
+        return open_jobs_reference(self.jobs.unfinished(agent, active=self.active), direct_inputs(state.messages),
+                                   {item["job_id"]: item["phase"] for item in self.jobs.waits()}, agent)
+
+    def wrap_model_call(self, request, handler):
+        text = self.reference(request.state)
+        if not text:
+            return handler(request)
+        # Same role and labelling as other system-added data (worker pushes, job notices): never a system
+        # instruction, because declared purposes and quotes are not trusted instructions.
+        messages = list(request.messages)
+        at = next((index for index, message in enumerate(messages) if message["role"] not in ("system", "developer")),
+                  len(messages))
+        messages.insert(at, {"role": "user", "content": text})
+        return handler(replace(request, messages=messages))
 
 
-__all__ = ["Inbox", "InboxItem", "InboxMiddleware", "INBOX_HEADER", "JOB", "LEAD", "METADATA_KEY", "MODES",
+__all__ = ["Inbox", "InboxItem", "InboxMiddleware", "JobOwnerMiddleware", "INBOX_HEADER", "JOB", "LEAD", "METADATA_KEY", "MODES",
            "PUSH_HEADER", "QUEUE", "SOURCES", "STEER", "STEER_HEADER", "USER", "USER_HEADER", "WORKER", "compose",
-           "is_inbox_message", "notice_lines", "user_parts"]
+           "direct_inputs", "is_inbox_message", "job_in_notice", "notice_lines", "user_parts"]

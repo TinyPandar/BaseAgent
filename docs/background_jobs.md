@@ -18,7 +18,7 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 {"version": 1, "permissions": {"allow_command": true}, "run": {"background_jobs": true}}
 ```
 
-库用法：`Workspace(root, allow_command=True, background_jobs=True)`，`coding_tools()` / `assemble_capabilities()` 会多出下面四个工具，能力契约里多一项 `"background_jobs": true`。这四个工具不属于任何 `--tool-package`，开关打开就会加上。开关打开时 `run_command` 的 schema 不变，但超时语义变了（见“run_command 超时转后台”）。
+库用法：`Workspace(root, allow_command=True, background_jobs=True)`，`coding_tools()` / `assemble_capabilities()` 会多出下面六个工具，能力契约里多一项 `"background_jobs": true`。这些工具不属于任何 `--tool-package`，开关打开就会加上。开关打开时 `run_command` 的 schema 不变，但超时语义变了（见“run_command 超时转后台”）。
 
 打开或关闭开关会改变工具契约；未完成的回合换了开关，恢复时需要 `--accept-config-changes`，与其他工具变化一致。
 
@@ -26,10 +26,12 @@ baseagent --allow-command --background-jobs "在后台训练模型，跑完告�
 
 | 工具 | 参数 | 说明 |
 | --- | --- | --- |
-| `start_job` | `argv`（必填，与 `run_command` 同样的字符串数组，不经 shell），`cwd`（可选，工作区内的相对目录，默认根目录），`keep_running`（可选，默认 `false`；`true` 时任务在 baseagent 退出后继续运行，见“生命周期”） | 立即返回 `job_id`（形如 `j1a2b3c4d`）、`pid`、`log_path` 等，不等命令结束。需要 `--allow-command` |
+| `start_job` | `argv`（必填，与 `run_command` 同样的字符串数组，不经 shell），`cwd`（可选，工作区内的相对目录，默认根目录），`keep_running`（可选，默认 `false`；`true` 时任务在 baseagent 退出后继续运行，见“生命周期”），`purpose` / `expect` / `next_step`（可选，各 ≤200 字符：目的、期待结果、下一步，随任务保存，只写一次） | 立即返回 `job_id`（形如 `j1a2b3c4d`）、`pid`、`log_path` 等，不等命令结束。需要 `--allow-command` |
 | `job_list` | 无 | 最近 30 个任务（运行中 / `unknown` 的总会列出，包括以前进程启动的）的状态、退出码、开始/结束时间、日志大小；更早的记录数在 `omitted`。`retry_safe` |
 | `job_output` | `job_id`，`offset`（字节，默认 0），`limit`（1–20000，默认 8000），或 `tail`（读最后 N 字节） | 返回 `content`、`next_offset`、`more`（日志里还有没读的）、`complete`（任务已结束且已读到末尾）。`retry_safe` |
 | `job_kill` | `job_id` | 停止任务及其整棵进程树，返回最终状态；对已结束的任务返回 `killed: false`。需要 `--allow-command` |
+| `job_wait` | `job_id`，`timeout_seconds`（30–3600，默认 600），`still_needed`，`purpose` / `expect` / `next_step` | 安静等待自己负责的一个任务：任务结束、本 Agent 收到插话、到时或回合停止时返回；从不停止或重启任务。见 [job_wait.md](job_wait.md) |
+| `job_settle` | `job_id`，`state`（`handled` / `dropped`），`note` | 记录任务的结果已处理，或原目标已放弃（不碰进程）。见 [job_wait.md](job_wait.md) |
 
 状态：
 
@@ -102,14 +104,12 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 
 ## 完成通知
 
-开关打开时，`main()` 会加一个 `JobNoticeMiddleware`：在下一次模型调用之前，把自上次通知以来结束的任务（id、状态、退出码、日志大小、命令，以及日志最后几行，最多 5 行、约 600 字节）作为一条 user 消息追加到对话，做法与 worker 的 `InboxMiddleware` 相同。回合之间结束的任务在下一个回合的第一次模型调用时通知。主 Agent 聊天里，通知由下一个发出模型调用的 agent（主 Agent 或某个 worker）收到。不打开开关时没有这一层。
+开关打开时，结束的任务在下一次模型调用之前作为一条 user 消息（`[后台任务通知 / background job notice]`：id、状态、退出码、日志大小、命令、日志最后几行；有关联时再加目的、期待、下一步和目标是否仍有效）送到**负责它的 Agent**，与插话合成一条（[inbox.md](inbox.md)）。回合之间结束的任务在下一轮的第一次模型调用时通知。
 
-只通知一次，并且跨重启：
-
-- 通知取出时，任务记录里的 `notified` 立即写盘；另一个管理器（例如恢复会话的新进程）发通知前会先看记录，已通知的不再发。通知消息随下一次模型调用前的检查点（`model_started`）存进会话，恢复时在历史里。
-- 只通知**启动该任务的会话**（`main()` 把 `--session` 设为管理器的 `owner`）：会话结束时还没通知的任务（包括 baseagent 不在时结束的 `keep_running` 任务、被判为 `lost` 的任务），在用 `--resume` / 同一个 `--session` 再次运行时通知；别的会话只能在 `job_list` 里看到它们。
-- 已知窗口：取出通知后、写入会话检查点前进程崩溃，这条通知会丢失（任务状态仍可用 `job_list` 查看）。
-
+- **按负责人投递**：启动任务的 Agent 会话（`agent_session`）。主 Agent 模式下 Worker 启动的任务交给那个 Worker；它结束后才转给主 Agent（只转一次，并注明来源）。别的 Agent 或侧边对话先调用模型也拿不到。没有 `--session` 的对话，在第一轮开始时把会话 id 记为任务的 owner，因此用同一个 id 再进入时能收到，另一个无名会话收不到。（以前 owner 为空，结果正好相反。）
+- **不重复**：对话里已经有这个任务的结果（以前的通知，或 `job_wait` 的结束结果）时不再通知；收件箱里已有它的通知时也不再放入。
+- **找得回**：取走（`notified`）、模型已收到（`delivery.received`）、已处理（`delivery.settled`）分开记录；每次模型调用前都按记录重新找“已结束、负责人还没收到”的任务。所以取走通知后、检查点前崩溃不再丢失（以前的已知窗口）；它在恢复后补发一次。详见 [job_wait.md](job_wait.md#送达的三个阶段以及重新发现)。
+- 只通知**本会话**（`owner_session`）的任务，别的会话只能在 `job_list` 里看到。
 ## 权限与安全
 
 - `start_job` 和 `job_kill` 与 `run_command` 一样需要 `--allow-command`，否则返回 `permission_denied`；没有命令权限时，这两个工具也不会出现在发给模型的工具列表里（`job_list` / `job_output` 只读，保留）。
@@ -130,6 +130,7 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 | --- | --- |
 | `<id>.json` | 任务记录（`version: 1`）：`job_id`、`kind`（`job` / `detached` / `run_command`）、`argv`、`cwd`、`pid`（命令进程）、`leader_pid` 与 `leader_identity`（整棵树的领头进程及其创建时间标识，`job_kill` 杀它）、`started_at` / `ended_at`、`status`、`exit_code`、`log_path`、`log_bytes` / `output_bytes`、`owner_session`、`keep_running`、`notified`、`kill_requested`、`error`。每次变化都先写临时文件再原子替换 |
 | `<id>.log` | 合并的 stdout/stderr 日志 |
+| `<id>.link.json` | 关联（`version: 1`）：负责的 Agent 会话、启动时的回合与用户原话、目的 / 期待 / 下一步（只写一次）、目标是否有效、送达阶段。只由负责会话写；缺失或损坏时按“未说明”处理，见 [job_wait.md](job_wait.md#关联存在哪里怎么接回) |
 | `<id>.run.json` / `<id>.exit.json` | 仅 `keep_running`：runner 记录命令 PID / 退出码 |
 
 新的 `JobManager`（新会话、新进程）会读入以前的记录，`job_list` / `job_output` / `job_kill` 都能用。以前记录为 `running` 的任务按下面的规则判断：
@@ -142,7 +143,7 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 
 进程创建时间：Windows 用 `GetProcessTimes`，Linux 读 `/proc/<pid>/stat` 的 starttime，其他 POSIX 用 `ps -o lstart=`。
 
-保留与清理：启动时只保留最近 50 个已结束任务的记录和日志（`JobManager(keep_finished=...)`），更早的 `<id>.*` 文件被删除；运行中 / `unknown` 的任务不删。`job_list` 默认只显示最近 30 个。没有新增清理工具。旧版本留下的、没有 `.json` 记录的日志不会被列出，也不会被删除。
+保留与清理：启动时只保留最近 50 个已结束任务的记录、日志和关联（`JobManager(keep_finished=...)`），更早的 `<id>.*` 文件被删除（还没处理的结果也一样，此后只能说明它找不到了）；运行中 / `unknown` 的任务不删。`job_list` 默认只显示最近 30 个。没有新增清理工具。旧版本留下的、没有 `.json` 记录的日志不会被列出，也不会被删除。
 
 ## 已知限制
 
@@ -157,4 +158,5 @@ stdout 和 stderr 合并写入 `<工作区>/.baseagent/jobs/<job_id>.log`（文�
 
 - **Docker 后端**：在容器里用 `docker exec -d` 启动 runner 并把日志与记录写在容器内（或挂载目录），`job_kill` 杀容器内进程组；容器随 run 删除，所以 `keep_running` 还需要保留容器的策略。在此之前继续拒绝。
 - **沙箱下的 `keep_running`**：现在拒绝。要支持，需要让 runner 留在沙箱外、只把命令放进沙箱，并给它一个不随本次运行删除的临时目录。
-- 日志滚动（保留最新部分而不是开头）、按任务的输出上限参数、`/jobs` 之类的聊天命令。
+- 日志滚动（保留最新部分而不是开头）、按任务的输出上限参数、`/jobs` 之类的聊天命令、`job_input`。
+- 可打断的等待与接回结果：已做，见 [job_wait.md](job_wait.md)。

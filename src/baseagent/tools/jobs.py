@@ -38,13 +38,14 @@ from pathlib import Path
 
 from baseagent.kernel.hooks import AgentMiddleware
 
+from . import job_links
 from .process import INTERJECTION, TIMEOUT, _kill_tree
 from .result import ErrorCode, ToolFailure, ToolResult
 
 RUNNING, EXITED, FAILED, KILLED = "running", "exited", "failed", "killed"
 LOST, UNKNOWN = "lost", "unknown"
 TERMINAL = (EXITED, FAILED, KILLED, LOST)
-JOB_TOOLS = ("start_job", "job_list", "job_output", "job_kill")
+JOB_TOOLS = ("start_job", "job_list", "job_output", "job_kill", "job_wait", "job_settle")
 DEFAULT_MAX_LOG_BYTES = 10_000_000
 DEFAULT_MAX_RUNNING = 8
 DEFAULT_MAX_JOBS = 100
@@ -374,6 +375,7 @@ class _Job:
         self.write_lock = threading.Lock()
         self.done = threading.Event()
         self.stop_lock = threading.Lock()
+        self.link = job_links.new_link(job_id)   # purpose, responsible agent, delivery (tools/job_links.py)
 
     def describe(self, root):
         if isinstance(self.cwd, Path):
@@ -428,6 +430,10 @@ class JobManager:
         self._jobs: dict[str, _Job] = {}
         self._started = 0
         self._lock = threading.Lock()
+        self._link_lock = threading.Lock()
+        # Waits in progress (tools/job_wait.py), for status display: key -> {"job_id", "agent", "phase", "since"}.
+        self._waits: dict[str, dict] = {}
+        self.wait_observers: list = []   # called without arguments when a wait starts, changes phase or ends
         self._closed = False
         self._load(prune=True)
         _managers.add(self)
@@ -449,6 +455,18 @@ class JobManager:
         except OSError:
             if strict:
                 raise
+
+    def _link_path(self, job_id):
+        return self.log_dir / f"{job_id}{job_links.LINK_SUFFIX}"
+
+    def _save_link(self, job, *, strict=False) -> None:
+        with self._link_lock:
+            value = json.loads(json.dumps(job.link, ensure_ascii=False))
+            try:
+                _write_json(self._link_path(job.id), value)
+            except OSError:
+                if strict:
+                    raise
 
     def _load(self, *, prune=False) -> None:
         """Pick up records written by earlier (or other) processes."""
@@ -482,6 +500,8 @@ class JobManager:
             except (KeyError, TypeError, ValueError):
                 continue
             job.loaded = True
+            job.link = job_links.read_link(_read_json(self._link_path(job.id)), job.id) or job_links.legacy_link(
+                job.id, owner=job.owner, notified=job.notified)
             if job.status in TERMINAL:
                 job.done.set()
             loaded.append(job)
@@ -501,7 +521,7 @@ class JobManager:
             for job in dropped:
                 del self._jobs[job.id]
         for job in dropped:
-            for suffix in (".json", ".log", ".run.json", ".exit.json"):
+            for suffix in (".json", ".log", ".run.json", ".exit.json", job_links.LINK_SUFFIX):
                 try:
                     (self.log_dir / f"{job.id}{suffix}").unlink(missing_ok=True)
                 except OSError:
@@ -581,10 +601,11 @@ class JobManager:
         if job.log is not None:
             job.log.close()
             job.log = None
-        for suffix in (".log", ".json", ".run.json", ".exit.json"):
+        for suffix in (".log", ".json", ".run.json", ".exit.json", job_links.LINK_SUFFIX):
             (self.log_dir / f"{job.id}{suffix}").unlink(missing_ok=True)
 
-    def start(self, argv, cwd=None, *, keep_running=False) -> dict:
+    def start(self, argv, cwd=None, *, keep_running=False, link=None) -> dict:
+        """``link``: who starts it and why (``job_links.job_context``); None leaves both unknown."""
         cwd = self.root if cwd is None else Path(cwd)
         if not cwd.is_dir():
             raise ToolFailure(ErrorCode.NOT_FOUND, "cwd is not an existing directory")
@@ -600,8 +621,10 @@ class JobManager:
             except BaseException:
                 self._discard(job)
                 raise
+            job.link = job_links.new_link(job.id, **(link or {}))
             self._jobs[job.id] = job
             self._started += 1
+        self._save_link(job)
         self._save(job)
         if keep_running:
             threading.Thread(target=self._monitor_detached, args=(job,), name=f"job-{job.id}-wait", daemon=True).start()
@@ -647,7 +670,7 @@ class JobManager:
             raise ToolFailure(ErrorCode.EXECUTION_FAILED, f"could not start job: {message}")
         job.pid = info["pid"]
 
-    def adopt(self, handover, argv, cwd) -> tuple[dict, tuple]:
+    def adopt(self, handover, argv, cwd, *, link=None) -> tuple[dict, tuple]:
         """Take over a still-running run_command process (tools/process.py ProcessHandover).
 
         Returns (job description, output captured before the handover). All or nothing: a job exists
@@ -664,11 +687,13 @@ class JobManager:
             job.process, job.windows_job = handover.process, handover.windows_job
             job.pid = job.leader_pid = handover.process.pid
             job.started_at = handover.started_at
+            job.link = job_links.new_link(job.id, **(link or {}))
             self._jobs[job.id] = job
             self._started += 1
         redirected = False
         try:
             job.leader_identity = probe_process(job.pid)[1]
+            self._save_link(job, strict=True)
             self._save(job, strict=True)
             # Atomic switch: everything captured so far starts the log, later chunks are appended.
             snapshot = handover.redirect(lambda chunk: self._write(job, chunk))
@@ -951,6 +976,138 @@ class JobManager:
         return notices
 
 
+    # -- responsibility and delivery (tools/job_links.py) -------------------------------------------
+    def responsible(self, job, agent, *, active=None) -> bool:
+        """Is ``agent`` (a session id) the one that handles this job's result now?
+
+        The agent that started it, whichever agent happens to call a model first. When that agent is one
+        of this session's workers and is no longer active (``active(session_id)`` is false), the owning
+        session (the main agent) takes over. A job with no recorded agent belongs to its owner session.
+        """
+        started_by = job.link["agent_session"]
+        if started_by is not None and started_by == agent:
+            return True
+        if job.owner != self.owner:
+            return False
+        if started_by is None:
+            return self.owner is None or agent is None or agent == self.owner
+        return agent is not None and agent == self.owner and active is not None and not active(started_by)
+
+    def _of(self, agent, active):
+        self._load()
+        with self._lock:
+            jobs = sorted(self._jobs.values(), key=lambda job: job.started_at)
+        chosen = [job for job in jobs if self.responsible(job, agent, active=active)]
+        for job in chosen:
+            self._refresh(job)
+        return chosen
+
+    def unreceived(self, agent, *, active=None) -> list[dict]:
+        """Finished jobs ``agent`` is responsible for whose result its model has not received yet.
+
+        Read from the records every time and not changed by reading, so a notice that was taken and then
+        lost (a crash before the checkpoint) is found again. ``mark_taken`` / ``mark_received`` /
+        ``settle`` record the three later steps separately.
+        """
+        found = []
+        for job in self._of(agent, active):
+            if job.status in TERMINAL and not job.link["delivery"]["settled"] \
+                    and not job_links.received_by(job.link, agent):
+                found.append({**self.describe(job.id), "tail": self._tail(job), "link": job.link,
+                              "handed_over_by": job.link["agent_session"] if job.link["agent_session"] != agent else None})
+        return found
+
+    def unfinished(self, agent, *, active=None) -> list[_Job]:
+        """Jobs ``agent`` still has to deal with: running or unknown, or finished and not settled."""
+        return [job for job in self._of(agent, active)
+                if job.status not in TERMINAL or not job.link["delivery"]["settled"]]
+
+    def mark_taken(self, job_id) -> None:
+        job = self._get(job_id)
+        with self._lock:
+            if job.notified:
+                return
+            job.notified = True
+        self._save(job)
+
+    def mark_received(self, job_id, agent, turn) -> None:
+        job = self._get(job_id)
+        with self._lock:
+            if job_links.received_by(job.link, agent):
+                return
+            job.link["delivery"]["received"].append({"session": agent, "turn": turn, "at": time.time()})
+        self._save_link(job)
+
+    def settle(self, job_id, how, *, agent, turn, note=None) -> None:
+        job = self._get(job_id)
+        with self._lock:
+            if job.link["delivery"]["settled"]:
+                return
+            job.link["delivery"]["settled"] = job_links.settlement(how, session=agent, turn=turn, note=note)
+        self._save_link(job)
+
+    def set_goal(self, job_id, standing, *, inputs, reason=None, declared=None) -> None:
+        """Confirm or drop the job's goal after the agent has seen ``inputs`` user inputs."""
+        job = self._get(job_id)
+        with self._lock:
+            job_links.fill_declared(job.link, **(declared or {}))
+            job.link["goal"] = {"standing": standing, "confirmed_inputs": inputs,
+                                "reason": job_links.clip(reason, job_links.MAX_REASON) if reason else None,
+                                "changed_at": time.time()}
+        self._save_link(job)
+
+    def link_of(self, job_id) -> dict:
+        """A copy of the job's link; changing it changes nothing."""
+        job = self._get(job_id)
+        with self._lock:
+            return json.loads(json.dumps(job.link, ensure_ascii=False))
+
+    def begin_wait(self, key, job_id, agent, phase) -> None:
+        with self._lock:
+            self._waits[key] = {"job_id": job_id, "agent": agent, "phase": phase, "since": time.time()}
+        self._observe_waits()
+
+    def wait_phase(self, key, phase) -> None:
+        with self._lock:
+            if key in self._waits:
+                self._waits[key]["phase"] = phase
+        self._observe_waits()
+
+    def end_wait(self, key) -> None:
+        with self._lock:
+            self._waits.pop(key, None)
+        self._observe_waits()
+
+    def _observe_waits(self):
+        for observer in list(self.wait_observers):
+            try:
+                observer()
+            except Exception:  # noqa: BLE001 -- display only.
+                pass
+
+    def waits(self) -> list[dict]:
+        with self._lock:
+            return [dict(item) for item in self._waits.values()]
+
+    @property
+    def closing(self) -> bool:
+        return self._closed
+
+    def overview(self, limit=10) -> list[dict]:
+        """This session's jobs for status displays: unsettled ones and the newest ``limit``. Changes nothing."""
+        if self.owner is None:
+            return []      # the session has not started: an unnamed session's old jobs are not this one's
+        with self._lock:
+            jobs = sorted((job for job in self._jobs.values() if job.owner == self.owner), key=lambda job: job.started_at)
+            waits = {item["job_id"]: item["phase"] for item in self._waits.values()}
+            recent = jobs[-limit:]
+            return [{"job_id": job.id, "status": job.status, "exit_code": job.exit_code,
+                     "agent": job.link["agent_session"], "purpose": job.link["purpose"],
+                     "goal": job.link["goal"]["standing"], "waiting": waits.get(job.id),
+                     "delivery": job_links.stage(job.link, terminal=job.status in TERMINAL, notified=job.notified)}
+                    for job in jobs if job in recent or job.id in waits or not job.link["delivery"]["settled"]]
+
+
 class JobNoticeMiddleware(AgentMiddleware):
     """Tell the agent, before its next model call, which background jobs finished since the last notice.
 
@@ -970,6 +1127,9 @@ class JobNoticeMiddleware(AgentMiddleware):
 
     def before_model(self, state):
         self._delivery.before_model(state)
+
+    def after_model(self, state, message):
+        self._delivery.after_model(state, message)
 
     def after_agent(self, state):
         self._delivery.after_agent(state)
@@ -998,25 +1158,27 @@ class TimeoutHandover:
     this agent a line mid-turn (refusal: the command keeps running under its own timeout).
     """
 
-    def __init__(self, manager, argv, cwd):
+    def __init__(self, manager, argv, cwd, link=None):
         self.manager = manager
         self.argv = list(argv)
         self.cwd = cwd
+        self.link = link
         self.refused = None
         self.interjection_refused = None
 
     @classmethod
-    def for_command(cls, manager, argv, cwd):
+    def for_command(cls, manager, argv, cwd, context=None):
         # `sleep` is a deliberate wait: when it times out the model wanted it to end (Claude Code
         # exempts it too), so it keeps the kill-on-timeout behaviour.
         if Path(argv[0]).name.lower() in SLEEP_COMMANDS:
             return None
-        return cls(manager, argv, cwd)
+        return cls(manager, argv, cwd, job_links.job_context(context))
 
     def __call__(self, handover):
         interjection = getattr(handover, "reason", TIMEOUT) == INTERJECTION
         try:
-            job, (stdout, stderr, stdout_truncated, stderr_truncated) = self.manager.adopt(handover, self.argv, self.cwd)
+            job, (stdout, stderr, stdout_truncated, stderr_truncated) = self.manager.adopt(handover, self.argv, self.cwd,
+                                                                                               link=self.link)
         except ToolFailure as exc:
             if interjection:
                 self.interjection_refused = str(exc)
@@ -1084,9 +1246,10 @@ def _require_commands(workspace):
 
 
 def register_job_tools(registry, workspace) -> None:
-    """Register start_job / job_list / job_output / job_kill on ``registry`` for ``workspace``."""
+    """Register start_job / job_list / job_output / job_kill / job_wait / job_settle for ``workspace``."""
+    from .job_wait import register_wait_tools
 
-    def start_job(argv, cwd=".", keep_running=False, *, context=None):
+    def start_job(argv, cwd=".", keep_running=False, purpose=None, expect=None, next_step=None, *, context=None):
         _require_commands(workspace)
         # Same argv validation as run_command; the timeout argument does not apply to jobs.
         workspace.validate_command(argv, 1)
@@ -1094,7 +1257,8 @@ def register_job_tools(registry, workspace) -> None:
         directory = workspace.root if cwd in (".", "") else workspace._path(cwd)
         if context is not None and context.cancellation is not None:
             context.cancellation.check()
-        return manager.start(argv, directory, keep_running=keep_running)
+        link = job_links.job_context(context, purpose=purpose, expect=expect, next_step=next_step)
+        return manager.start(argv, directory, keep_running=keep_running, link=link)
 
     def job_list():
         return _manager(workspace).list()
@@ -1111,15 +1275,18 @@ def register_job_tools(registry, workspace) -> None:
 
     argv = {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 4000}}
     job_id = {"type": "string", "pattern": "^j[0-9a-f]{8}$"}
+    text = {"type": "string", "minLength": 1, "maxLength": job_links.MAX_DECLARED}
+    declared = {key: dict(text) for key in job_links.DECLARED}
     from .annotations import COMMAND, READ, ToolAnnotations
     # Kills processes (destructive); a repeat has no further effect; stays in the workspace's jobs.
     kill_annotations = ToolAnnotations(read_only=False, destructive=True, idempotent=True, open_world=False)
     registry.register("start_job", "Start a long-running argv command (no shell) as a background job in the workspace and "
                       "return its job_id at once; it keeps running across turns and cancellation until job_kill and "
                       "ends with the session unless keep_running is true (then it also survives the harness exiting). "
-                      "Output goes to a size-capped log; requires command permission",
+                      "Output goes to a size-capped log; requires command permission. State purpose, expect and "
+                      "next_step when you know them: they are kept with the job and shown with its result",
                       params({"argv": argv, "cwd": {"type": "string", "minLength": 1, "maxLength": 4000},
-                              "keep_running": {"type": "boolean"}}, ["argv"]),
+                              "keep_running": {"type": "boolean"}, **declared}, ["argv"]),
                       start_job, contextual=True, annotations=COMMAND)
     registry.register("job_list", "List recent background jobs, including ones from earlier sessions, with status "
                       "(running/exited/failed/killed/lost/unknown), exit code and times",
@@ -1132,3 +1299,4 @@ def register_job_tools(registry, workspace) -> None:
                       job_output, retry_safe=True, annotations=READ)
     registry.register("job_kill", "Stop a background job and its whole process tree; requires command permission",
                       params({"job_id": job_id}, ["job_id"]), job_kill, annotations=kill_annotations)
+    register_wait_tools(registry, lambda: _manager(workspace), params, job_id, declared)

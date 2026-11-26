@@ -66,10 +66,13 @@ class ToolRegistry:
     # Host-side metadata only: never in specs() or contract().
     _annotations: dict[str, ToolAnnotations] = field(default_factory=dict)
     _annotation_hints: dict[str, dict[str, bool]] = field(default_factory=dict)
+    # Host-side only: tools whose cut-off call is closed with current facts instead of being run again.
+    _interrupted: dict[str, Callable[..., Any]] = field(default_factory=dict)
 
     def register(self, name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Any], *, retry_safe: bool = False, contextual: bool = False,
                  mcp_server_id: str | None = None, annotations: ToolAnnotations | None = None,
-                 annotation_hints: dict[str, bool] | None = None) -> None:
+                 annotation_hints: dict[str, bool] | None = None,
+                 on_interrupted: Callable[..., Any] | None = None) -> None:
         if name in self._tools:
             raise ValueError(f"duplicate tool: {name}")
         if mcp_server_id is not None and (not isinstance(mcp_server_id, str) or not mcp_server_id):
@@ -82,6 +85,9 @@ class ToolRegistry:
         if annotation_hints is not None and (not isinstance(annotation_hints, dict) or any(
                 key not in ANNOTATION_KEYS or type(value) is not bool for key, value in annotation_hints.items())):
             raise ValueError("annotation hints must map annotation names to booleans")
+        if on_interrupted is not None and (annotations is None or annotations.destructive or annotations.open_world):
+            # Only a call whose loss cannot hide an outside effect may be closed without reconciliation.
+            raise ValueError("on_interrupted needs annotations that are neither destructive nor open world")
         parameters = deepcopy(parameters)
         if type(contextual) is not bool or (contextual and "context" in parameters.get("properties", {})):
             raise ValueError("contextual tools reserve the context argument")
@@ -108,6 +114,8 @@ class ToolRegistry:
         self._annotations[name] = annotations
         if annotation_hints:
             self._annotation_hints[name] = dict(annotation_hints)
+        if on_interrupted is not None:
+            self._interrupted[name] = on_interrupted
 
     def origin(self, name: str) -> tuple[str, str | None]:
         """(source, mcp_server_id): ("mcp", server) for MCP-backed tools, ("local", None) otherwise."""
@@ -116,6 +124,18 @@ class ToolRegistry:
 
     def retry_safe(self, name: str) -> bool:
         return name in self._retry_safe
+
+    def closes_interrupted(self, name: str) -> bool:
+        return name in self._interrupted
+
+    def close_interrupted(self, name: str, arguments: dict[str, Any], *, context=None) -> ToolResult:
+        """The result of a call that started but never returned: current facts, the tool does not run."""
+        try:
+            return self.normalize_result(self._interrupted[name](arguments, context=context))
+        except ToolFailure as exc:
+            return ToolResult.failure(exc.code, str(exc), retryable=exc.retryable)
+        except Exception as exc:
+            return ToolResult.failure(ErrorCode.EXECUTION_FAILED, f"tool failed: {type(exc).__name__}")
 
     def annotations(self, name: str) -> ToolAnnotations:
         """Effective annotations; unknown names get the conservative defaults."""
@@ -140,7 +160,8 @@ class ToolRegistry:
             result.register(name, definition["description"], definition["parameters"], handler,
                             retry_safe=self.retry_safe(name), contextual=name in self._contextual,
                             mcp_server_id=self._mcp_servers.get(name), annotations=self.annotations(name),
-                            annotation_hints=self._annotation_hints.get(name))
+                            annotation_hints=self._annotation_hints.get(name),
+                            on_interrupted=self._interrupted.get(name))
         return result
 
     def contract(self) -> dict:

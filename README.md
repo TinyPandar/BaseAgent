@@ -12,6 +12,8 @@
 <!-- BAS-2 job-wait: BEGIN -->
 ## 施工中 / 本分支需求：可打断等待，接回后台任务（BAS-2）
 
+> **实现状态（2026-11-26）：** 已在本分支按方案 A 实现并离线验收，尚未合入 master；设计、行为与 AC 对照见 [docs/job_wait.md](docs/job_wait.md)。下面的需求原文不变。
+>
 > **状态：仅需求，尚未实现 job_wait。** 2026-11-25 复用原 `plan/job-wait`，普通合并更新至 `origin/master` `3607848366aac95ee84d9b166b659b2d47e15916`，不改写已推历史。插话收尾实现已在 master，前置已满足；可以先进入方案设计，须 Claude 交至少两套结构不同的方案、Frank 决定后才实现。`/side` 不是语义前置；能分别设计不代表没有集成冲突。
 
 ### What / Why：任务还能管、上下文能接上、结果能找回
@@ -93,7 +95,7 @@ coding 中长命令已经启动，用户可能插入一个问题或补充要求�
 | 命令级规则 | `--tool-policy` 条件规则支持 `argv_prefix`（如允许 `git status`、询问 `git push`、拒绝 `rm`）；可选 `"precedence": "strictest"`（deny > ask > allow）；放行 shell / 解释器前缀会告警。前缀规则只是弱黑名单，建议默认 `ask` / `deny` | [docs/command_rules.md](docs/command_rules.md) |
 | 工具属性与关键路径保护 | 每个工具标注 `read_only` / `destructive` / `idempotent` / `open_world`，`--tool-policy` 可按属性设 `ask` / `deny`（如所有破坏性工具都要询问）；MCP 服务器自带的提示不放宽权限。内置的关键路径保护始终生效，拒绝删除磁盘根、工作区根、家目录、`.git`、`.baseagent` 的命令（argv 层面的尽力检查，不是沙箱） | [docs/tool_annotations.md](docs/tool_annotations.md) |
 | OS 沙箱 | `--sandbox read-only\|workspace-write`（默认 `off`）：命令只能写工作区和临时目录，保护路径只读，默认断网（`--sandbox-network` 打开）；macOS `sandbox-exec`、Linux `bwrap`，**只做了单元测试，未在真机验证**；原生 Windows 不支持。不可用时退出码 3，不会退回不受限执行 | [docs/sandbox.md](docs/sandbox.md) |
-| 后台任务 | `--background-jobs`（默认关闭，需 `--allow-command`）增加 `start_job` / `job_list` / `job_output` / `job_kill`；任务不随轮次结束或取消而终止；`run_command` 超时转为后台任务而不是被杀；重启后可查到以前的任务（防 PID 复用）；`keep_running=true` 的任务在退出后继续运行；可在 OS 沙箱里运行；仅 LocalBackend | [docs/background_jobs.md](docs/background_jobs.md) |
+| 后台任务 | `--background-jobs`（默认关闭，需 `--allow-command`）增加 `start_job` / `job_list` / `job_output` / `job_kill` / `job_wait` / `job_settle`；任务不随轮次结束或取消而终止；可打断地安静等待一个任务并按负责人接回结果（[docs/job_wait.md](docs/job_wait.md)）；`run_command` 超时转为后台任务而不是被杀；重启后可查到以前的任务（防 PID 复用）；`keep_running=true` 的任务在退出后继续运行；可在 OS 沙箱里运行；仅 LocalBackend | [docs/background_jobs.md](docs/background_jobs.md) |
 | 检查点与撤销 | 每轮一个文件快照；`/checkpoints`、`/undo`、`/rewind N`；只撤文件工具的写入，撤不回命令 | [docs/checkpoints.md](docs/checkpoints.md) |
 | 多文件原子补丁 | `apply_patch` 一次最多 50 个文件，全有或全无，失败按快照回滚 | [docs/patch.md](docs/patch.md) |
 | 机器可读输出 | 一次性任务和 `--resume` 支持 `--output-format json\|jsonl`，`schema_version` 1 | [docs/output.md](docs/output.md) |
@@ -305,6 +307,7 @@ print(state.status, state.final_answer)
 | 完整行为契约、默认值与限制 | [docs/reference.md](docs/reference.md) |
 | 主 Agent 与 Worker | [docs/router_worker.md](docs/router_worker.md) |
 | TUI / Web 前端 | [docs/ui.md](docs/ui.md) |
+| 可打断等待、接回后台任务 | [docs/job_wait.md](docs/job_wait.md) |
 | 检查点与撤销 | [docs/checkpoints.md](docs/checkpoints.md) |
 | `apply_patch` | [docs/patch.md](docs/patch.md) |
 | JSON / JSONL 输出 | [docs/output.md](docs/output.md) |

@@ -58,6 +58,8 @@ EXPECTED = {
     "withdraw_memory": r(False, True, True, False),
     "run_command": r(False, True, False, True), "verify_command": r(False, True, False, True),
     "start_job": r(False, True, False, True), "job_kill": r(False, True, True, False),
+    # They write the job's link (confirmation, settlement), so they are not read-only and not retried.
+    "job_wait": r(False, False, False, False), "job_settle": r(False, False, False, False),
     "update_plan": r(False, False, True, False), "remember": r(False, False, True, False),
     "forget_memory": r(False, False, True, False), "set_history_summary": r(False, False, True, False),
 }

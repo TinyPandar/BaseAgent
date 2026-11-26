@@ -32,7 +32,9 @@ KINDS = {
                      "queue (next turn); queued true = waiting in the inbox, id = its inbox item"),
     "inbox_delivered": ("ids, sources, how", "inbox items reached the agent: how model_call (inside the running "
                         "turn) or new_turn (as / with the next turn)"),
-    "assistant_message": ("text, status", "a turn ended with a reply from the main agent (or single agent)"),
+    "assistant_message": ("text, status, [interim, key]", "a turn ended with a reply from the main agent (or single agent); "
+                          "interim true (status running) = a reply inside the turn, before a job_wait: the frontend "
+                          "confirms with ``mark_shown`` that it is on screen"),
     "tool_call": ("worker, call_id, name, arguments (preview)", "a tool call is dispatched (worker null = main agent)"),
     "tool_result": ("worker, call_id, name, ok, preview", "that tool call returned; preview only, never the body"),
     "worker_started": ("worker, task, allow_writes, session_id", "delegate_task started a background worker"),

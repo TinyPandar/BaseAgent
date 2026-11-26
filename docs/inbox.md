@@ -20,7 +20,7 @@
 
 只有一个送达点：`InboxMiddleware.before_model`，也就是**下一次模型调用之前**，并且上一批工具调用**每一个都已有结果**（`_tool_batch_open` 为假）。这时：
 
-1. 若配了后台任务（`--background-jobs`），先把本会话刚结束的任务通知放进收件箱（source `job`）；
+1. 若配了后台任务（`--background-jobs`），先把**这个 Agent 负责的**、已结束但它还没收到的任务通知放进收件箱（source `job`；已在对话里或已在收件箱里的不重复，见 [job_wait.md](job_wait.md#送达的三个阶段以及重新发现)）；
 2. 取出**所有** `steer` 消息（不分来源），合成**一条** user 消息追加到对话末尾；
 3. 把还没送达的消息（包括 `queue`）同步到 `state.metadata["inbox"]`。
 
@@ -60,6 +60,8 @@ Use job_output to read the log.
 **一轮正常结束（给出最终回答）后**：先看是否还有没送达的 `steer` 行——有就把它们合成下一轮自动发出（不会丢掉用户打过的字）；没有就取最早的一条 `queue` 开一轮；直到收件箱里没有用户的消息。Worker 结果不会自己开一轮（那会多花一次模型调用），它们等下一次模型调用或下一轮。
 
 **一轮没正常结束**（Ctrl+C / 取消、停在审批、撞上限）：收件箱里的消息保留，不自动开新的一轮。下一条用户消息先续跑那一轮（续跑时的模型调用会带上 `steer` 消息），续跑完成后再发新消息；然后排队的消息按顺序接着发。没送达的消息都在会话里，进程退出再进来也还在（见下）。
+
+`job_wait` 等待期间，本 Agent 的 `steer`（单 Agent 的用户一行、Worker 的 `/tell` / `message_worker`）会让这次等待立即返回 `interrupted`，任务继续运行；`/queue`、Worker 结果和任务通知不会。见 [job_wait.md](job_wait.md)。
 
 Ctrl+C 和 `/cancel` 的含义不变：Ctrl+C 取消主 Agent 当前这一轮，`/cancel <id|all>` 取消 Worker。普通 `steer` 行不取消任何东西：它最多让本 Agent 正在运行的 `run_command` 转后台（见上），不停止命令、不取消已经发出的模型请求。主 Agent 模式下普通一行只交给主 Agent，Worker 里正在跑的命令不受影响（要让 Worker 转向仍用 `/tell`）。
 

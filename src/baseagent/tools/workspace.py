@@ -350,7 +350,7 @@ class Workspace:
         handover = interjection = None
         if background_on_timeout and self.jobs is not None:
             from .jobs import TimeoutHandover, user_interjection
-            handover = TimeoutHandover.for_command(self.jobs, argv, self.root)
+            handover = TimeoutHandover.for_command(self.jobs, argv, self.root, context)
             if handover is not None:
                 interjection = user_interjection(context)
         result = self._run_bounded_command(argv, timeout, context=context, on_timeout=handover,

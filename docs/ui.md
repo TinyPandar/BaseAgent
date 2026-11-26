@@ -56,7 +56,7 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 | --- | --- | --- |
 | `user_message` | text, mode, queued, id | 一行对话被接受：mode `turn` 立即开始一轮，`steer` 插进正在进行的一轮，`queue` 排到下一轮；queued 为 true 表示还在收件箱里，id 是收件箱消息 id |
 | `inbox_delivered` | ids, sources, how | 收件箱消息送到了 Agent：how 为 `model_call`（本轮下一次模型调用）或 `new_turn`（作为/随下一轮） |
-| `assistant_message` | text, status | 一轮结束，主 Agent（或单 Agent）给出回复 |
+| `assistant_message` | text, status, [interim, key] | 一轮结束，主 Agent（或单 Agent）给出回复；`interim: true`（status `running`）是 `job_wait` 前的中途答复，前端显示后用 `mark_shown` / `POST /shown` 确认（[job_wait.md](job_wait.md#先答复用户看到后才再等)） |
 | `tool_call` | worker, call_id, name, arguments（预览） | 派发一个工具调用；worker 为 null 表示主 Agent |
 | `tool_result` | worker, call_id, name, ok, preview | 该调用返回；只有预览（300 字符），没有原文 |
 | `worker_started` | worker, task, allow_writes, session_id | `delegate_task` 启动了一个后台 Worker |
@@ -81,7 +81,7 @@ SSE 的 `id:` 写成 `<epoch>:<n>`，epoch 是这个进程的随机前缀。浏�
 
 ## Web
 
-- 接口：`GET /`（页面）、`GET /events`（SSE，`text/event-stream`，每条带 `id:`）、`POST /messages`、`POST /approvals`、`POST /workers/{id}/cancel`、`POST /workers/{id}/tell`、`GET /status`，静态文件只放行 `app.js`、`app.css`、`vendor/pico.min.css` 三个。
+- 接口：`GET /`（页面）、`GET /events`（SSE，`text/event-stream`，每条带 `id:`）、`POST /messages`、`POST /approvals`、`POST /workers/{id}/cancel`、`POST /workers/{id}/tell`、`POST /shown {"ids": ["<epoch>:<n>"]}`（`--background-jobs`：页面可见时确认中途答复已显示）、`GET /status`，静态文件只放行 `app.js`、`app.css`、`vendor/pico.min.css` 三个。
 - `/events` 保持连接最多 300 秒，每 15 秒一个注释心跳，然后由服务器关闭；`EventSource` 会带 `Last-Event-ID` 自动重连并补发。`?wait=0` 立即返回缓冲里的内容后关闭（测试和 `curl` 用）。心跳间隔和轮询间隔可以注入（`create_app(..., heartbeat_seconds=, poll_seconds=)`）。客户端断开后生成器停止轮询、不留后台任务（`tests/test_chat_leftovers.py` 用 ASGI 2.3 和 2.4 两种断开方式验证）；为此安全响应头改用纯 ASGI 中间件，`@app.middleware("http")` 会把断开信号挡在端点外面。
 - Worker 推送在 TUI/Web 里只作为 `worker_*` 事件出现，不进 CLI 的显示队列；关闭会话后仍在收尾的 Worker 也不再往队列里放。CLI 的显示队列有上限（`DISPLAY_LIMIT` = 1000 行），超出时丢最早的行并在下次打印时说明丢了几行。
 - 页面：一个静态 HTML、一个原生 JS 文件、仓库里自带的 Pico.css（`web/static/vendor/`，MIT，许可证同目录），运行时不访问 CDN，没有构建步骤。所有文字用 `textContent` 写入，不拼 HTML。页面带 CSP（只允许同源脚本/样式/连接）。

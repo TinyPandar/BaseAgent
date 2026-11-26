@@ -150,6 +150,16 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
         result = await run_in_threadpool(session.submit, text)
         return JSONResponse({"result": result}, status_code=409 if result == "rejected" else 200)
 
+    @app.post("/shown")
+    async def shown(request: Request):
+        """The page has these mid-turn replies (SSE ids ``<epoch>:<n>``) on a visible screen."""
+        ids = (await body(request)).get("ids")
+        if not isinstance(ids, list) or len(ids) > 100 or not all(isinstance(item, str) for item in ids):
+            raise HTTPException(400, "ids must be a list of event ids")
+        numbers = [session.events.parse_cursor(item) for item in ids if ":" in item]
+        session.mark_shown([number for number in numbers if number is not None])
+        return {"ok": True}
+
     @app.post("/approvals")
     async def approvals(request: Request):
         value = await body(request)

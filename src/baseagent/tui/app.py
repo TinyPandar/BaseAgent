@@ -24,6 +24,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Static
 
+from baseagent.chat.text import job_label
+
 POLL_SECONDS = 0.05
 TOOL_CHARS = 140   # tool previews are 300 chars; the transcript shows a shorter line
 LIST_HEADER_CHARS = 300   # glob/grep count line (total, shown, omitted, tool truncation) is never cut
@@ -130,6 +132,7 @@ class ChatApp(App):
         self.progress = {}
         self.last_status = None
         self.leaving = False
+        self.shown_keys = set()               # mid-turn replies a resync already put on screen
 
     # ----- layout ----------------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -163,6 +166,13 @@ class ChatApp(App):
         for item in items:
             self.cursor = item["id"]
             self.handle(item["kind"], item["data"])
+            if item["kind"] == "assistant_message" and item["data"].get("interim"):
+                self.confirm_shown([item["id"]])
+
+    def confirm_shown(self, ids) -> None:
+        """Report mid-turn replies as shown once the refresh that contains them has been drawn."""
+        if ids:
+            self.call_after_refresh(self.session.mark_shown, ids)
 
     def handle(self, kind, data) -> None:
         if kind == "resync":
@@ -176,7 +186,9 @@ class ChatApp(App):
                 self.write("system", "（已送达主 Agent" + ("：这一步就会看到）" if data.get("how") == "model_call"
                                                          else "：作为新的一轮）"))
         elif kind == "assistant_message":
-            self.write("assistant", data["text"])
+            # After a resync the snapshot may already hold a mid-turn reply whose event follows.
+            if not (data.get("interim") and data.get("key") in self.shown_keys):
+                self.write("assistant", data["text"])
         elif kind == "tool_call":
             self.write("tool", _clip(f"{_who(data)}→ {data['name']} {data['arguments']}"))
         elif kind == "tool_result":
@@ -212,8 +224,14 @@ class ChatApp(App):
         log = self.query_one("#log", RichLog)
         log.clear()
         self.entries.clear()
+        self.shown_keys = {item["key"] for item in snapshot["history"] if item.get("key")}
         for item in snapshot["history"]:
             self.write(item["role"], item["text"])
+        for answer in snapshot.get("interim", ()):
+            if answer["key"] not in self.shown_keys:
+                self.shown_keys.add(answer["key"])
+                self.write("assistant", answer["text"])
+        self.confirm_shown([answer["id"] for answer in snapshot.get("interim", ())])
         self.approvals = OrderedDict((_key(view), view) for view in snapshot["approvals"])
         self.show_status(snapshot["status"])
         self.ask_next()
@@ -238,6 +256,7 @@ class ChatApp(App):
         parts.append(f"tokens {status.get('tokens', 0)}")
         if status.get("busy"):
             parts.append("主 Agent 回复中…")
+        parts.extend(job_label(job) for job in status.get("jobs") or () if job["waiting"] or job["status"] == "running")
         self.query_one("#statusbar", Static).update(" · ".join(parts))
         self.render_workers()
 

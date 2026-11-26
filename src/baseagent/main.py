@@ -418,7 +418,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
     parser.add_argument("--tool-retries", type=int, default=0, help="Retries of explicitly safe, retryable tool failures (0-4)")
     parser.add_argument("--allow-write", action=argparse.BooleanOptionalAction, default=False, help="Allow file writes")
     parser.add_argument("--allow-command", action=argparse.BooleanOptionalAction, default=False, help="Allow subprocess commands")
-    parser.add_argument("--background-jobs", action=argparse.BooleanOptionalAction, default=False, help="Add start_job/job_list/job_output/job_kill: long-running argv commands that outlive the turn (requires --allow-command to start or kill; local backend only; a timed-out run_command moves to a job; jobs end with this process unless started with keep_running); see docs/background_jobs.md")
+    parser.add_argument("--background-jobs", action=argparse.BooleanOptionalAction, default=False, help="Add start_job/job_list/job_output/job_kill/job_wait/job_settle: long-running argv commands that outlive the turn (requires --allow-command to start or kill; local backend only; a timed-out run_command moves to a job; jobs end with this process unless started with keep_running); see docs/background_jobs.md")
     parser.add_argument("--allow-memory-publish", action=argparse.BooleanOptionalAction, default=False, help="Allow publishing/withdrawing workspace-shared reference notes")
     parser.add_argument("--mode", choices=list(MODES), help="Permission preset: read-only (default: no writes or commands), edit (= --allow-write), full (= --allow-write --allow-command); replaces permission settings from --config; --tool-policy can only restrict it further")
     parser.add_argument("--auto-approve", action=argparse.BooleanOptionalAction, default=False, help="--mode full: run commands (run_command, verify_command, start_job) and non-read-only MCP tools without asking, as before; by default --mode full asks before each of them. --tool-policy still applies. Only valid with --mode full (ignored when it comes from --config)")
@@ -1074,7 +1074,23 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         # One inbox for the main (or single) agent: mid-turn user lines, worker results, job notices (docs/inbox.md).
         from baseagent.agent.inbox import Inbox, InboxMiddleware
         inbox = Inbox()
-        layers.append(InboxMiddleware(inbox, jobs=jobs))
+        if jobs is not None:
+            from baseagent.agent.inbox import JobOwnerMiddleware
+            layers.append(JobOwnerMiddleware(jobs))
+        # A worker handles its own jobs; the main agent takes over those of a worker that has ended. Only a
+        # single agent has job_settle, so only there a stated next step stays open after a completed turn.
+        layers.append(InboxMiddleware(inbox, jobs=jobs, settles=not main_agent,
+                                      active=lambda sid: workers is not None and workers.is_active(sid)))
+        interim = None
+        if jobs is not None:
+            from baseagent.agent.interim import InterimAnswerMiddleware, InterimAnswers
+            interim = InterimAnswers()   # the chat session connects it; one-shot text runs print to stderr
+            if not interactive and not machine.enabled:
+                def print_interim(answer):
+                    print(answer.text, file=sys.stderr, flush=True)
+                    return None, True
+                interim.publish = print_interim
+            layers.append(InterimAnswerMiddleware(interim))
         chat_events = None
         from baseagent.chat.middleware import PatchDisplayMiddleware
         if interactive:
@@ -1298,7 +1314,7 @@ def main(argv=None, *, configure_parser=None, capability_factory=None,
         if interactive:
             from baseagent.chat import ChatSession
             chat = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=args.session,
-                               workers=workers, main_agent=main_agent, events=chat_events, inbox=inbox,
+                               workers=workers, main_agent=main_agent, events=chat_events, inbox=inbox, interim=interim,
                                continue_steps=args.max_steps or CHAT_MAX_STEPS,
                                continue_tool_calls=args.max_tool_calls or 32)
             if args.ui == "tui":

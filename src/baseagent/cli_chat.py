@@ -75,7 +75,7 @@ class PromptLine:
                 self.out.write("\r\x1b[K" + text + "\n" + self._prompt + (self.line_buffer() or ""))
                 self.out.flush()
                 return
-        print(text, file=file)
+        print(text, file=file, flush=True)
 
     def try_print(self, stream, text):
         if not self.live:
@@ -170,7 +170,8 @@ def run_chat(*, run_turn=None, store=None, session_id=None, workspace=None, out=
     if session is None:
         session = ChatSession(run_turn=run_turn, store=store, workspace=workspace, session_id=session_id,
                               workers=workers, main_agent=main_agent)
-    session.printer = lambda stream, text: print(text, file=out if stream == "out" else err)
+    # Flushed: a printed mid-turn answer counts as shown (baseagent.agent.interim).
+    session.printer = lambda stream, text: print(text, file=out if stream == "out" else err, flush=True)
     session.status_events = False
     workers, workspace = session.workers, session.workspace
     print(f"Interactive chat. Workspace: {workspace.root}", file=out)

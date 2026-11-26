@@ -52,6 +52,7 @@ ask)。规则:
 | `update_plan` `remember` `forget_memory` `set_history_summary`(会话内状态,带版本号) | – | – | ✔ | – |
 | `run_command` `verify_command` `start_job` | – | ✔ | – | ✔ |
 | `job_kill` | – | ✔ | ✔ | – |
+| `job_wait` `job_settle`(写任务关联:确认、结算;不碰进程,也不 `retry_safe`) | – | – | – | – |
 | `delegate_task` `message_worker` `run_subtask`(子代理的每次工具调用另行授权) | – | – | – | – |
 | 未注解的工具(如评测用的 `effect`)、未声明只读的 MCP 工具 | – | ✔ | – | ✔ |
 | 配置为 `readOnly` 的 MCP 工具;`knowledge_search`(retry_safe 未显式注解,所引代码是评测题的证据,故不改动) | ✔ | – | ✔ | ✔ |

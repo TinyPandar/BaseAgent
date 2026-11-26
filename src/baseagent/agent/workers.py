@@ -721,6 +721,11 @@ class WorkerManager:
             return ToolResult(data={"task_id": task_id, "queued": True, "note": message})
         return ToolResult.failure(ErrorCode.NOT_FOUND if message.startswith("unknown") else ErrorCode.EXECUTION_FAILED, message)
 
+    def is_active(self, session_id):
+        """Is the worker of this session still able to handle its own background jobs?"""
+        with self._lock:
+            return any(record.session_id == session_id and record.status in ACTIVE for record in self.records.values())
+
     def running(self):
         with self._lock:
             return [record for record in self.records.values() if record.thread is not None]

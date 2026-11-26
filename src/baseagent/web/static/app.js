@@ -8,6 +8,11 @@ const transcript = $("transcript");
 const approvals = new Map();   // key "<worker|main>:<call_id>" -> approval view
 let workers = [];
 let progress = {};             // worker id -> last trace line
+let epoch = "";                // of the SSE ids; another server process has another epoch
+let shownKeys = new Set();     // mid-turn replies a resync already put on the page
+let unconfirmed = [];          // mid-turn replies on the page that the server does not know are visible yet
+
+const WAIT_LABELS = {showing_answer: "回答还没显示，等待尚未开始", waiting: "正在等待（可以继续输入）"};
 
 function line(kind, text) {
   const div = document.createElement("div");
@@ -26,6 +31,20 @@ async function post(path, body) {
   let value = {};
   try { value = await response.json(); } catch (error) { /* empty body */ }
   return {ok: response.ok, value};
+}
+
+// A reply given before a wait counts as shown only when it is on a visible page, after the frame with it was drawn.
+async function confirmShown(ids) {
+  unconfirmed.push(...ids);
+  if (!unconfirmed.length || document.visibilityState !== "visible") return;
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  if (document.visibilityState !== "visible") return;
+  const sent = unconfirmed;
+  unconfirmed = [];
+  try {
+    const result = await post("/shown" + query, {ids: sent});
+    if (!result.ok) unconfirmed.push(...sent);
+  } catch (error) { unconfirmed.push(...sent); }   // offline: repeated when the stream reconnects
 }
 
 function seconds(worker) {
@@ -81,6 +100,9 @@ function renderStatus(status) {
     if (b.budget_cny) budget += ` · ¥${b.cost_cny}/${b.budget_cny}`;
   }
   $("budget").textContent = budget + ` · tokens ${status.tokens}`;
+  const jobs = (status.jobs || []).filter((job) => job.waiting || job.status === "running");
+  if (jobs.length) $("session").textContent += jobs.map((job) => ` · 后台任务 ${job.job_id} ${job.status}`
+    + (job.waiting ? `，${WAIT_LABELS[job.waiting] || job.waiting}` : "")).join("");
   workers = status.workers || [];
   renderWorkers();
 }
@@ -120,7 +142,13 @@ function renderApprovals() {
 
 function resync(snapshot) {
   transcript.replaceChildren();
+  shownKeys = new Set(snapshot.history.map((item) => item.key).filter(Boolean));
   for (const item of snapshot.history) line(item.role, item.text);
+  unconfirmed = [];
+  for (const answer of snapshot.interim || []) {
+    if (!shownKeys.has(answer.key)) { shownKeys.add(answer.key); line("assistant", answer.text); }
+  }
+  confirmShown((snapshot.interim || []).map((answer) => `${epoch}:${answer.id}`));
   approvals.clear();
   for (const view of snapshot.approvals) approvals.set(approvalKey(view), view);
   renderApprovals();
@@ -137,7 +165,10 @@ function handle(event) {
     case "inbox_delivered":
       if ((d.sources || []).includes("user")) line("system", d.how === "model_call" ? "（已送达主 Agent：这一步就会看到）" : "（已送达主 Agent：作为新的一轮）");
       break;
-    case "assistant_message": line("assistant", d.text); break;
+    case "assistant_message":
+      if (!(d.interim && shownKeys.has(d.key))) line("assistant", d.text);
+      if (d.interim) confirmShown([`${epoch}:${event.id}`]);
+      break;
     case "tool_call": line("tool", `${d.worker ? "[" + d.worker + "] " : ""}→ ${d.name} ${d.arguments}`); break;
     case "tool_result": line("tool", `${d.worker ? "[" + d.worker + "] " : ""}← ${d.name} ${d.ok ? "ok" : "失败"}: ${d.preview}`); break;
     case "worker_started": line("system", `已派出 ${d.worker}${d.allow_writes ? "（可写）" : "（只读）"}：${d.task}`); break;
@@ -154,9 +185,12 @@ function handle(event) {
 
 function connect() {
   const source = new EventSource("/events" + query);   // reconnects by itself and sends Last-Event-ID
-  source.onopen = () => { $("connection").textContent = "已连接"; };
+  source.onopen = () => { $("connection").textContent = "已连接"; confirmShown([]); };
   source.onerror = () => { $("connection").textContent = "重连中…"; };
-  source.onmessage = (message) => handle(JSON.parse(message.data));
+  source.onmessage = (message) => {
+    if (message.lastEventId) epoch = message.lastEventId.split(":")[0];
+    handle(JSON.parse(message.data));
+  };
 }
 
 $("composer").addEventListener("submit", async (event) => {
@@ -168,5 +202,6 @@ $("composer").addEventListener("submit", async (event) => {
   if (result.ok) input.value = "";   // keep the text when it was rejected; while answering it is steered or queued
 });
 $("cancel-all").addEventListener("click", () => post("/workers/all/cancel" + query, {}));
+document.addEventListener("visibilitychange", () => confirmShown([]));
 setInterval(renderWorkers, 1000);    // elapsed time ticks locally between status events
 connect();

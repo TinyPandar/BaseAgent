@@ -344,6 +344,31 @@ def _status_lines(store, state, session_id, workspace, workers=None):
     return out
 
 
+WAIT_LABELS = {"showing_answer": "回答还没显示，等待尚未开始", "waiting": "正在等待它结束（可以继续输入）"}
+DELIVERY_LABELS = {"finished": "已结束，结果未送达", "taken": "通知已取出，模型尚未收到", "received": "模型已收到，后续未确认处理",
+                   "handled": "后续已处理", "reported": "结果已答复/汇报", "legacy": "旧记录"}
+
+
+def job_label(job):
+    """One background job for status displays: process state, wait state and delivery are separate facts."""
+    parts = [job["job_id"], job["status"]]
+    if job.get("exit_code") is not None:
+        parts.append(f"退出码 {job['exit_code']}")
+    if job.get("waiting"):
+        parts.append(WAIT_LABELS.get(job["waiting"], job["waiting"]))
+    if job["delivery"] in DELIVERY_LABELS:
+        parts.append(DELIVERY_LABELS[job["delivery"]])
+    if job["goal"] == "dropped":
+        parts.append("目标已放弃")
+    if job.get("purpose"):
+        parts.append(job["purpose"][:60])
+    return " · ".join(parts)
+
+
+def job_lines(jobs):
+    return ["Background jobs of this session:", *("  " + job_label(job) for job in jobs)] if jobs else []
+
+
 def rules_lines(workspace):
     """The project rules line of /status: loaded or not, which file, size, truncated (never the text)."""
     if not hasattr(workspace, "get_instructions"):

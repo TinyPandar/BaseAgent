@@ -27,6 +27,7 @@ import time
 
 from baseagent.agent.inbox import METADATA_KEY as INBOX_KEY
 from baseagent.agent.inbox import QUEUE, STEER, USER, Inbox, is_inbox_message, user_parts
+from baseagent.agent.interim import InterimAnswers, answer_key, has_text
 from baseagent.agent.state import RunStatus
 from baseagent.agent.workers import ACTIVE, AWAITING, INBOX_HEADER, PUSH_HEADER, USER_HEADER, preview
 from baseagent.agent.workers import worker_label as duplex_worker_label
@@ -38,7 +39,7 @@ from baseagent.session.checkpoints import summary as checkpoint_summary
 from baseagent.timestamps import iso_utc
 
 from .events import EventBuffer
-from .text import (arguments_preview, call_request_json, node_arguments_preview, patch_approval_text, pending_worker, status_lines, stop_explanation,
+from .text import (arguments_preview, call_request_json, job_lines, node_arguments_preview, patch_approval_text, pending_worker, status_lines, stop_explanation,
                    worker_explanation, worker_nodes)
 
 ERRORS = (ValueError, SessionBusy, OSError, sqlite3.Error)
@@ -77,7 +78,7 @@ class ChatSession:
 
     def __init__(self, *, run_turn, store, workspace, session_id=None, workers=None, main_agent=False,
                  events=None, printer=None, status_events=True, continue_steps=CONTINUE_STEPS,
-                 continue_tool_calls=CONTINUE_TOOL_CALLS, inbox=None):
+                 continue_tool_calls=CONTINUE_TOOL_CALLS, inbox=None, interim=None):
         self.run_turn = run_turn
         # /continue: how much more the current turn gets by default (the chat's per-turn allowance).
         self.continue_steps, self.continue_tool_calls = continue_steps, continue_tool_calls
@@ -104,6 +105,12 @@ class ChatSession:
         if workers is not None:
             workers.inbox = inbox
         inbox.listeners.append(self._on_inbox)
+        # Replies inside a turn (before a job_wait) and whether this session's frontend has shown them.
+        self.interim = interim if interim is not None else InterimAnswers()
+        self.interim.publish = self._publish_interim
+        self.jobs = getattr(workspace, "jobs", None)
+        if self.jobs is not None:
+            self.jobs.wait_observers.append(lambda: self.publish_status(force=True))
         self._status_at = 0.0
         # Compute and publish each status under one lock: a snapshot taken earlier is never published later.
         self._status_lock = threading.Lock()
@@ -127,6 +134,18 @@ class ChatSession:
 
     def _fail(self, text):
         self._say("err", text, kind="error")
+
+    def _publish_interim(self, answer):
+        """Show a mid-turn reply. A printed line is on screen; a GUI confirms with ``mark_shown``."""
+        item = self.events.publish("assistant_message", text=answer.text, status="running", interim=True, key=answer.key)
+        if self.printer is not None:
+            self.printer("out", answer.text)
+            return item.id, True
+        return item.id, False
+
+    def mark_shown(self, event_ids):
+        """A GUI has these mid-turn replies on screen. Ids of other events change nothing; repeating is harmless."""
+        self.interim.mark_shown(event_ids)
 
     # ----- lifecycle --------------------------------------------------------------------
     def start(self):
@@ -923,7 +942,8 @@ class ChatSession:
     # ----- status and snapshots ---------------------------------------------------------
     def status_lines(self):
         """The CLI's /status block (same words in every frontend)."""
-        return status_lines(self.store, self.state, self.requested_session_id, self.workspace, self.workers)
+        lines = status_lines(self.store, self.state, self.requested_session_id, self.workspace, self.workers)
+        return lines + (job_lines(self.jobs.overview()) if self.jobs is not None else [])
 
     def _stored_state(self):
         if not self.session_id:
@@ -978,6 +998,8 @@ class ChatSession:
             "max_workers": self.workers.max_workers if self.workers is not None else 0,
             "pending_approvals": len(self.pending_approvals(previews=False)),
         }
+        if self.jobs is not None:
+            value["jobs"] = self.jobs.overview()    # --background-jobs only; absent otherwise
         describe = getattr(getattr(self.workspace, "backend", None), "describe", None)
         if callable(describe):
             value["backend"] = describe()       # --backend docker only; absent means local
@@ -1004,7 +1026,7 @@ class ChatSession:
         if state is None:
             return []
         items = []
-        for message in state.messages:
+        for index, message in enumerate(state.messages):
             content = message.get("content")
             if not isinstance(content, str) or not content.strip():
                 continue
@@ -1017,16 +1039,21 @@ class ChatSession:
                     continue
                 items.append({"role": "user", "text": strip_attachments(content)})
             elif message.get("role") == "assistant":
-                items.append({"role": "assistant", "text": content})
+                item = {"role": "assistant", "text": content}
+                if self.jobs is not None and index >= state.turn_start and has_text(message) and message.get("tool_calls"):
+                    item["key"] = answer_key(state.turn_id, message)   # so a replayed event is not shown twice
+                items.append(item)
         return items[-limit:]
 
     def snapshot(self):
         """Everything a frontend needs to rebuild its view; events after ``last_id`` follow."""
         last_id = self.events.last_id
+        pending = [{"id": answer.event_id, "key": answer.key, "text": answer.text} for answer in self.interim.pending()]
+        extra = {"interim": pending} if self.jobs is not None else {}
         return {"last_id": last_id, "session_id": self.session_id, "workspace": str(self.workspace.root),
                 "mode": "main-agent" if self.main_agent else "single-agent", "history": self.history(),
                 "status": self.status(), "approvals": self.pending_approvals(),
-                "inbox": [item.to_dict() for item in self.inbox.pending(source=USER)]}
+                "inbox": [item.to_dict() for item in self.inbox.pending(source=USER)], **extra}
 
     def events_after(self, after_id):
         """Buffered events after an id, or one synthetic ``resync`` event carrying a snapshot."""

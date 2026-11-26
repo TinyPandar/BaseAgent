@@ -95,6 +95,14 @@ def _parallel_config(state):
     return {"readonly": False, **state.metadata.get("parallel_config", {})}
 
 
+def _closes_interrupted(tools, record) -> bool:
+    """A running ledger entry of a tool that declared how to close a cut-off call (ToolRegistry.register)."""
+    try:
+        return tools.closes_interrupted(json.loads(record["request_json"])["function"]["name"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 _DEFERRED_HINTS = "deferred_watchdog_hints"
 
 
@@ -475,7 +483,7 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         return ToolContext(state, checkpoint, cancellation, store, remaining_seconds, call_id, scope, tools, policy, model, pipeline.layers, accept_config_changes)
 
     if store:
-        state.blocked_tool_calls = [record["call_id"] for record in store.calls(state.session_id, state.turn_id) if record["status"] == "running" and not (subtasks and subtasks.managed(tool_context(record["call_id"]), record))]
+        state.blocked_tool_calls = [record["call_id"] for record in store.calls(state.session_id, state.turn_id) if record["status"] == "running" and not (subtasks and subtasks.managed(tool_context(record["call_id"]), record)) and not _closes_interrupted(tools, record)]
         if state.blocked_tool_calls:
             state.status = RunStatus.NEEDS_RECOVERY
             state.error = "tool outcome requires reconciliation: " + ", ".join(state.blocked_tool_calls)
@@ -685,6 +693,18 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
             if record and subtasks and subtasks.managed(tool_context(request.call_id), record):
                 tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": None}
                 return tools.normalize_result(subtasks.resume(tool_context(request.call_id), record))
+            if record and record["status"] == "running" and _closes_interrupted(tools, record):
+                # The call was cut off (Ctrl+C, process exit) before its result was committed. It is closed
+                # with the result it had already returned, or with current facts; the tool does not run again.
+                tool_prep[request.call_id] = {"call_id": request.call_id, "record": record, "action": None}
+                if record.get("terminal_result_json"):
+                    return ToolResult.from_dict(json.loads(record["terminal_result_json"]))
+                try:
+                    parsed = json.loads(request.arguments or "{}")
+                except (ValueError, TypeError, RecursionError):
+                    parsed = {}
+                return tools.close_interrupted(request.name, parsed if isinstance(parsed, dict) else {},
+                                               context=tool_context(request.call_id))
             scope.admit_tool()
             cancellation.check()
             pipeline.before_tool(request)
