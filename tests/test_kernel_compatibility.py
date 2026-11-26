@@ -239,7 +239,7 @@ class KernelCompatibilityTests(unittest.TestCase):
 
     def test_sync_signature_and_public_kernel_export_are_preserved(self):
         current = inspect.signature(adapter.run_agent)
-        additions = {"compaction_max_chars", "compaction_keep_turns", "summarizer"}
+        additions = {"compaction_max_chars", "compaction_keep_turns", "summarizer", "request_observer"}
         for name in additions:
             self.assertEqual(current.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertIsNone(current.parameters[name].default)

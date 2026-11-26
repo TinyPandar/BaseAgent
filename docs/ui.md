@@ -45,6 +45,9 @@ baseagent --ui web --root . --session demo [--host 127.0.0.1] [--port 8765] [--t
 | `tell(id, text)` | `/tell <id> <text>` | `/tell` | `POST /workers/{id}/tell {"text"}` |
 | `status()` / `status_lines()` | `/status` | F5、状态栏、Worker 面板 | `GET /status`、`status` 事件 |
 | `exit(force=False)` | `/exit`，有 Worker 在跑先问 c/w | Ctrl+Q，同样先问 | 终端 Ctrl+C 停服务（运行中的 Worker 记为取消） |
+| `side_command` / `side_ask(text, op_id=)` | `/side <问题>`、`/side-stop`、`/side-retry`、`/side-end`；主 Agent 空闲时 Ctrl+C 只停侧聊 | 右栏侧聊输入框（Tab 切换焦点；`/side-stop` 停止）；主输入框的 `/side …` 也送到侧聊 | 侧聊面板：`POST /side/messages {"text","op_id"}`、`/side/stop`、`/side/retry`、`/side/end`，事件走 `GET /side/events` |
+
+侧聊（[side.md](side.md)）有**自己的**事件缓冲和游标（`ChatSession.side_events`、`side_events_after`），类型见 side.md：它的流式片段不会挤掉主线事件，主线的 `/events` 也不包含侧聊事件。
 
 审批时 call_id 或 digest 和当前待审批的调用对不上就拒绝（`ApprovalMismatch`，Web 返回 409），和 CLI 一样只作用于显示出来的那一个调用。`worker` 参数可以把匹配限定到某个 Worker，`null` 表示主 Agent 自己的调用。
 

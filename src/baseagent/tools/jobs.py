@@ -903,6 +903,16 @@ class JobManager:
             value["omitted"] = len(jobs) - len(shown)
         return value
 
+    def peek(self) -> list[dict]:
+        """Jobs this manager holds, as last observed: no refresh, no disk access, no notice taken or marked.
+
+        For read-only displays (the side chat's task reference, docs/side.md). ``notified`` says whether the
+        owning agent has already been told that the job finished.
+        """
+        with self._lock:
+            jobs = sorted(self._jobs.values(), key=lambda job: job.started_at)
+            return [{**job.describe(self.root), "notified": job.notified} for job in jobs]
+
     def wait(self, job_id, timeout=None) -> dict:
         job = self._get(job_id)
         if job.loaded:

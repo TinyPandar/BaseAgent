@@ -51,6 +51,23 @@ KINDS = {
     "resync": ("snapshot", "synthetic: the requested id is no longer buffered; replace the view"),
 }
 
+# The side chat (/side, docs/side.md) has its own buffer and cursor: its streamed text never pushes main-line
+# events out, and main-line events never enter the side panel.
+SIDE_KINDS = {
+    "side_opened": ("side, origin, mode, turn, taken_at, notes, streams", "a side chat was opened (snapshot fixed)"),
+    "side_question": ("side, attempt, op_id, text, turn", "a side question was accepted; its request is being sent"),
+    "side_delta": ("side, attempt, offset, text", "part of the answer arrived (offset = characters before it)"),
+    "side_answer": ("side, attempt, status, text", "the answer is complete (status completed or tool_requested)"),
+    "side_stopped": ("side, attempt, text", "the user stopped the request; text = what was shown"),
+    "side_failed": ("side, attempt, error, text", "the request failed; text = what had arrived"),
+    "side_usage": ("side, attempt, late, usage, prompt_tokens?, completion_tokens?",
+                   "usage of an attempt is known (reported) or will not arrive (unknown); late = after a stop"),
+    "side_notice": ("side, text", "an explanation (refusal, mode change)"),
+    "side_ended": ("side, attempts, prompt_tokens, completion_tokens, unknown, pending, stopped",
+                   "the side chat ended; its usage stays recorded"),
+    "resync": ("snapshot", "synthetic: replace the side panel with the snapshot"),
+}
+
 
 @dataclass(frozen=True)
 class ChatEvent:
@@ -66,10 +83,11 @@ class ChatEvent:
 class EventBuffer:
     """Thread-safe bounded event log with monotonically increasing ids."""
 
-    def __init__(self, capacity=DEFAULT_CAPACITY):
+    def __init__(self, capacity=DEFAULT_CAPACITY, *, kinds=None):
         if type(capacity) is not int or capacity < 1:
             raise ValueError("event buffer capacity must be a positive integer")
         self.capacity = capacity
+        self.kinds = KINDS if kinds is None else kinds
         # Distinguishes this process's ids from another process serving the same session.
         self.epoch = uuid4().hex[:8]
         self._events = deque(maxlen=capacity)
@@ -83,7 +101,7 @@ class EventBuffer:
             return self._last
 
     def publish(self, kind, **data):
-        if kind not in KINDS or kind == "resync":
+        if kind not in self.kinds or kind == "resync":
             raise ValueError(f"unknown chat event kind: {kind}")
         with self._changed:
             self._last += 1

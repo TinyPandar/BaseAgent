@@ -31,4 +31,9 @@ button.small { padding: .15rem .5rem; font-size: .8em; width: auto; margin: 0; }
 .approval pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8em; margin: .4rem 0; padding: .4rem; }
 .approval .buttons { display: flex; gap: .5rem; }
 .approval .buttons button { margin: 0; }
+.sidechat { padding: .75rem; }
+.side-log { max-height: 40vh; overflow-y: auto; font-size: .88em; }
+.side-log .msg { margin: .3rem 0; }
+.small-note { font-size: .78em; margin: .1rem 0 .4rem; }
+.side-buttons { display: flex; gap: .4rem; margin-top: .4rem; }
 @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .chat { height: 70vh; } }

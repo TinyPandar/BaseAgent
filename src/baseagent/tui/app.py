@@ -103,6 +103,10 @@ class ChatApp(App):
     #input { dock: bottom; }
     #side { width: 50; }
     #workers { height: 1fr; border: round $secondary-darken-2; }
+    #sidechat { height: 2fr; border: round $accent-darken-2; }
+    #sidechat-title { padding: 0 1; text-style: bold; }
+    #side-log { height: 1fr; padding: 0 1; }
+    #side-live { height: auto; max-height: 12; padding: 0 1; color: $text; }
     #worker-detail { height: auto; max-height: 8; border: round $secondary-darken-2; padding: 0 1; color: $text-muted; }
     #side-title { padding: 0 1; text-style: bold; }
     #statusbar { height: 1; background: $boost; color: $text-muted; padding: 0 1; }
@@ -133,6 +137,10 @@ class ChatApp(App):
         self.last_status = None
         self.leaving = False
         self.shown_keys = set()               # mid-turn replies a resync already put on screen
+        # Side chat panel: its own cursor on the side event buffer, its own transcript and input.
+        self.side_cursor = None
+        self.side_entries = []                # (kind, text) shown in the side panel; tests read it
+        self.side_live = {}                   # attempt -> text that arrived so far
 
     # ----- layout ----------------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -144,6 +152,11 @@ class ChatApp(App):
                 yield Label("Workers", id="side-title")
                 yield DataTable(id="workers", cursor_type="row", zebra_stripes=True)
                 yield Static("", id="worker-detail")
+                with Vertical(id="sidechat"):
+                    yield Label("侧聊（只看创建时的上下文，不执行工具，不回到主任务）", id="sidechat-title")
+                    yield RichLog(id="side-log", wrap=True, markup=False, highlight=False, auto_scroll=True)
+                    yield Static("", id="side-live")
+                    yield Input(placeholder="侧聊提问（Tab 切换输入框；/side-stop 停止，/side-end 结束）", id="side-input")
         yield Static("", id="statusbar")
         yield Footer()
 
@@ -153,6 +166,7 @@ class ChatApp(App):
         self.set_interval(1.0, self.render_detail)
         self.session.open()
         self.apply(self.session.events_after(None))
+        self.apply_side(self.session.side_events_after(None))
         self.query_one("#input", Input).focus()
         self.set_interval(self.poll, self.pump)
         self.set_interval(1.0, self.render_workers)
@@ -161,6 +175,82 @@ class ChatApp(App):
     def pump(self) -> None:
         if not self.leaving:
             self.apply(self.session.events_after(self.cursor))
+            self.apply_side(self.session.side_events_after(self.side_cursor))
+
+    # ----- side chat panel ---------------------------------------------------------------
+    def apply_side(self, items) -> None:
+        for item in items:
+            self.side_cursor = item["id"]
+            self.handle_side(item["kind"], item["data"])
+
+    def side_write(self, kind, text) -> None:
+        self.side_entries.append((kind, text))
+        prefix = {"user": "你 › ", "assistant": "侧聊 › "}.get(kind, "")
+        self.query_one("#side-log", RichLog).write(Text(prefix + text, style=STYLES.get(kind, "")))
+
+    def render_side_live(self) -> None:
+        text = "\n".join(self.side_live.values())
+        self.query_one("#side-live", Static).update(Text(("侧聊 › " + text) if text else ""))
+
+    def handle_side(self, kind, data) -> None:
+        attempt = data.get("attempt")
+        if kind == "resync":
+            self.query_one("#side-log", RichLog).clear()
+            self.side_entries.clear()
+            self.side_live.clear()
+            view = data["snapshot"].get("side")
+            if view:
+                for note in view["notes"]:
+                    self.side_write("system", note)
+                for item in view["attempts"]:
+                    self.side_write("user", item["question"])
+                    if item["status"] in ("dispatching", "streaming"):
+                        self.side_live[item["attempt"]] = item["text"]
+                    else:
+                        self.side_write("assistant", item["text"] + {"stopped": "（已停止）",
+                                                                     "failed": "（失败）"}.get(item["status"], ""))
+            self.render_side_live()
+        elif kind == "side_opened":
+            origin = "主任务最近一次真实请求" if data["origin"] == "live" else "已保存的会话（文本化）"
+            self.side_write("system", f"已打开：主会话第 {data['turn']} 轮的快照（{origin}）")
+            for note in data.get("notes") or ():
+                self.side_write("system", note)
+        elif kind == "side_question":
+            self.side_write("user", data["text"])
+            self.side_live[attempt] = ""
+            self.render_side_live()
+        elif kind == "side_delta":
+            self.side_live[attempt] = self.side_live.get(attempt, "") + data["text"]
+            self.render_side_live()
+        elif kind in ("side_answer", "side_stopped", "side_failed"):
+            self.side_live.pop(attempt, None)
+            suffix = {"side_stopped": "（已停止）", "side_failed": f"（失败：{data.get('error')}）"}.get(kind, "")
+            self.side_write("assistant" if kind == "side_answer" else "warn", (data.get("text") or "") + suffix)
+            self.render_side_live()
+        elif kind == "side_usage":
+            if data.get("usage") == "unknown":
+                self.side_write("system", "（这次请求的用量未知，不按 0 计）")
+            elif data.get("late"):
+                self.side_write("system", f"（已停止那一问的用量后到：{data.get('prompt_tokens')}+"
+                                          f"{data.get('completion_tokens')} tokens，已记入）")
+        elif kind == "side_notice":
+            self.side_write("warn", data["text"])
+        elif kind == "side_ended":
+            self.side_live.clear()
+            self.render_side_live()
+            self.side_write("system", f"侧聊已结束：{data['attempts']} 次请求，未知用量 {data['unknown']} 次")
+
+    @work(thread=True)
+    def side_submit(self, text) -> None:
+        line = text if text.startswith("/side") else "/side " + text
+        result = self.session.side_command(line)
+        if result.get("result") in ("refused", "busy") and not text.startswith("/side-"):
+            self.call_from_thread(self.restore_side_input, text)
+
+    def restore_side_input(self, text) -> None:
+        field = self.query_one("#side-input", Input)
+        if not field.value:
+            field.value = text
 
     def apply(self, items) -> None:
         for item in items:
@@ -326,6 +416,10 @@ class ChatApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
+            return
+        if event.input.id == "side-input":
+            event.input.clear()
+            self.side_submit(text)
             return
         if text in {"/exit", "/quit"}:
             event.input.clear()

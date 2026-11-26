@@ -225,6 +225,7 @@ def run_agent(
     preauthorize_model: bool | None = None,
     accept_request_bound_violation: bool = False,
     subtasks=None,
+    request_observer=None,
 ) -> State:
     """A prompt starts a turn; no prompt resumes a persisted turn without resetting budgets."""
     if store is None and subtasks is not None:
@@ -409,7 +410,7 @@ def run_agent(
     if store is None:
         if session_id is not None:
             raise ValueError("session_id requires a SessionStore")
-        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store)
+        return _run_loop(model, prepare(None), tools, middleware, None, policy, cancellation or CancellationToken(), completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store, request_observer=request_observer)
     session_id = session_id or uuid4().hex
     with store.exclusive(session_id):
         existing = store.load(session_id)
@@ -433,10 +434,21 @@ def run_agent(
         store.save(state)
         supplied = cancellation
         token = CancellationToken(lambda: bool((supplied and supplied.cancelled()) or store.cancellation(state.session_id, state.turn_id)))
-        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store)
+        return _run_loop(model, state, tools, middleware, store, policy, token, completion_policy, subtasks=subtasks, accept_config_changes=accept_config_changes, summarizer=summarizer, spill_store=spill_store, request_observer=request_observer)
 
 
-def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None, spill_store=None) -> State:
+def _observe(observer, hook, *args) -> None:
+    """Report to a passive request observer (side chat, docs/side.md); it never affects the run."""
+    method = getattr(observer, hook, None) if observer is not None else None
+    if method is None:
+        return
+    try:
+        method(*args)
+    except Exception:  # noqa: BLE001 -- an observer failure must not change the task.
+        pass
+
+
+def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Iterable[AgentMiddleware], store: SessionStore | None, policy: ToolPolicy, cancellation: CancellationToken, completion_policy, *, execution_scope=None, subtasks=None, accept_config_changes=False, summarizer=None, spill_store=None, request_observer=None) -> State:
     from .spill import SpillStore
     if spill_store is None:
         # Derived worker sessions (including node views) use the same
@@ -538,6 +550,8 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
         checkpoint("model_started", attempt=state.model_calls, input_bytes=view.input_bytes,
                    reserved_tokens=reservation.total_tokens if reservation else None,
                    reservation_mode="estimated" if isinstance(reservation, TokenEstimate) else "strict" if reservation else None)
+        # After the checkpoint: the saved state already covers everything this request was built from.
+        _observe(request_observer, "sent", state, view.messages, request.tools)
         started = time.monotonic()
         try:
             remaining = remaining_seconds()
@@ -585,7 +599,9 @@ def _run_loop(model: Model, state: State, tools: ToolRegistry, middleware: Itera
                 response = model.complete(view.messages, deepcopy(request.tools))
         except BaseException as exc:
             checkpoint("model_failed", attempt=state.model_calls, error_type=type(exc).__name__, duration_seconds=time.monotonic() - started)
+            _observe(request_observer, "failed", state)
             raise
+        _observe(request_observer, "returned", state)
         usage = response.usage if isinstance(response, ModelResponse) else None
         scope.model_returned(usage, reservation, reservation_keys)
         checkpoint("model_returned", attempt=state.model_calls, usage_reported=usage is not None,

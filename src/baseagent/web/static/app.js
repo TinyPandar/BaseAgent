@@ -193,6 +193,100 @@ function connect() {
   };
 }
 
+// ----- side chat: its own stream, input and buttons (docs/side.md) -----------------------------------
+const sideLog = $("side-log");
+const sideLive = new Map();   // attempt -> element showing the answer as it arrives
+const sideShown = new Map();  // attempt -> characters shown (Python counts code points, so count them the same way)
+
+function opId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+}
+
+function sideLine(kind, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  div.textContent = text;
+  sideLog.appendChild(div);
+  sideLog.scrollTop = sideLog.scrollHeight;
+  return div;
+}
+
+function sideState(text) { $("side-state").textContent = text; }
+
+function liveLine(attempt) {
+  if (!sideLive.has(attempt)) sideLive.set(attempt, sideLine("assistant", ""));
+  return sideLive.get(attempt);
+}
+
+function finishLive(attempt, text, suffix) {
+  const element = liveLine(attempt);
+  element.textContent = (text || "") + (suffix || "");
+  sideLive.delete(attempt);
+}
+
+function sideResync(snapshot) {
+  sideLog.replaceChildren(); sideLive.clear();
+  const view = snapshot.side;
+  if (!view) { sideState("未打开"); return; }
+  for (const note of view.notes) sideLine("system", note);
+  for (const item of view.attempts) {
+    sideLine("user", item.question);
+    const element = sideLine("assistant", item.text);
+    sideShown.set(item.attempt, Array.from(item.text).length);
+    if (item.status === "dispatching" || item.status === "streaming") sideLive.set(item.attempt, element);
+    else if (item.status === "stopped") element.textContent += "（已停止）";
+    else if (item.status === "failed") element.textContent += "（失败）";
+  }
+  sideState(view.ended ? "已结束" : (view.active ? "回答中…" : "打开中"));
+}
+
+function handleSide(event) {
+  const d = event.data;
+  switch (event.kind) {
+    case "resync": sideResync(d.snapshot); break;
+    case "side_opened":
+      sideLine("system", `已打开：主会话第 ${d.turn} 轮的快照（${d.origin === "live" ? "主任务最近一次真实请求" : "已保存的会话，文本化"}）`);
+      for (const note of d.notes || []) sideLine("system", note);
+      sideState("打开中"); break;
+    case "side_question": sideLine("user", d.text); liveLine(d.attempt); sideState("回答中…"); break;
+    case "side_delta": {
+      const element = liveLine(d.attempt);
+      if ((sideShown.get(d.attempt) || 0) === d.offset) {    // a replayed piece is never added twice
+        element.textContent += d.text;
+        sideShown.set(d.attempt, d.offset + Array.from(d.text).length);
+      }
+      break;
+    }
+    case "side_answer": finishLive(d.attempt, d.text); sideState("打开中"); break;
+    case "side_stopped": finishLive(d.attempt, d.text, "（已停止）"); sideState("打开中"); break;
+    case "side_failed": finishLive(d.attempt, d.text, `（失败：${d.error}）`); sideState("打开中"); break;
+    case "side_usage":
+      if (d.usage === "unknown") sideLine("system", "（这次请求的用量未知，不按 0 计）");
+      else if (d.late) sideLine("system", `（已停止那一问的用量后到：${d.prompt_tokens}+${d.completion_tokens} tokens，已记入）`);
+      break;
+    case "side_notice": sideLine("warn", d.text); break;
+    case "side_ended": sideLive.clear(); sideLine("system", `侧聊已结束：${d.attempts} 次请求，未知用量 ${d.unknown} 次`); sideState("已结束"); break;
+  }
+}
+
+function connectSide() {
+  const source = new EventSource("/side/events" + query);   // reconnecting only replays what is shown
+  source.onmessage = (message) => handleSide(JSON.parse(message.data));
+}
+
+$("side-composer").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("side-input");
+  const text = input.value.trim();
+  if (!text) return;
+  const result = await post("/side/messages" + query, {text, op_id: opId()});
+  if (result.ok) input.value = "";   // refused or busy: the text stays
+});
+$("side-stop").addEventListener("click", () => post("/side/stop" + query, {}));
+$("side-retry").addEventListener("click", () => post("/side/retry" + query, {op_id: opId()}));
+$("side-end").addEventListener("click", () => post("/side/end" + query, {}));
+
 $("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("input");
@@ -205,3 +299,4 @@ $("cancel-all").addEventListener("click", () => post("/workers/all/cancel" + que
 document.addEventListener("visibilitychange", () => confirmShown([]));
 setInterval(renderWorkers, 1000);    // elapsed time ticks locally between status events
 connect();
+connectSide();

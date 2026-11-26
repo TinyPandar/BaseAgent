@@ -32,6 +32,20 @@
         </table>
       </article>
       <section id="approvals"></section>
+      <article class="sidechat">
+        <header class="row"><strong>侧聊</strong><span id="side-state" class="muted">未打开</span></header>
+        <p class="muted small-note">只看打开时的主会话上下文，不执行工具，回答不回到主任务。关闭页面不会停止侧聊；用下面的按钮停止或结束。</p>
+        <div id="side-log" class="side-log" aria-live="polite"></div>
+        <form id="side-composer" class="composer">
+          <input id="side-input" name="text" autocomplete="off" placeholder="侧聊提问" required>
+          <button type="submit">提问</button>
+        </form>
+        <div class="buttons side-buttons">
+          <button id="side-stop" class="outline secondary small" type="button">停止</button>
+          <button id="side-retry" class="outline small" type="button">重试上一问</button>
+          <button id="side-end" class="outline secondary small" type="button">结束侧聊</button>
+        </div>
+      </article>
     </aside>
   </main>
 </body>

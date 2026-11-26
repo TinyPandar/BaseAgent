@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,7 @@ STREAM_SECONDS = 300.0   # an EventSource reconnects with Last-Event-ID after th
 HEARTBEAT_SECONDS = 15.0
 POLL_SECONDS = 0.1
 MAX_TEXT = 16000
+OP_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 HEADERS = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"}
 PAGE_POLICY = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -110,11 +112,10 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
         authorize(request)
         return session.status()
 
-    @app.get("/events")
-    async def events(request: Request, wait: float | None = None, after: str | None = None):
-        """SSE: one JSON event per message, ``id: <epoch>:<n>``. A stale or missing id starts with resync."""
-        authorize(request)
-        cursor = session.events.parse_cursor(request.headers.get("last-event-id") or after)
+    def sse(request, buffer, events_after, wait, after):
+        """One SSE stream over ``buffer``: ``id: <epoch>:<n>``; a stale or missing id starts with resync.
+        Reconnecting only replays display events; it never submits anything."""
+        cursor = buffer.parse_cursor(request.headers.get("last-event-id") or after)
         hold = stream_seconds if wait is None else max(0.0, min(float(wait), stream_seconds))
 
         async def stream():
@@ -123,11 +124,11 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
             deadline = time.monotonic() + hold
             beat = time.monotonic() + heartbeat_seconds
             while True:
-                items = session.events_after(cursor)
+                items = events_after(cursor)
                 for item in items:
                     cursor = item["id"]
                     payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
-                    yield f"id: {session.events.cursor(item['id'])}\ndata: {payload}\n\n"
+                    yield f"id: {buffer.cursor(item['id'])}\ndata: {payload}\n\n"
                 now = time.monotonic()
                 if now >= deadline or await request.is_disconnected():
                     return
@@ -138,6 +139,56 @@ def create_app(session, *, token=None, host=DEFAULT_HOST, stream_seconds=STREAM_
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @app.get("/events")
+    async def events(request: Request, wait: float | None = None, after: str | None = None):
+        """SSE: one JSON event per message, ``id: <epoch>:<n>``. A stale or missing id starts with resync."""
+        authorize(request)
+        return sse(request, session.events, session.events_after, wait, after)
+
+    # ----- side chat (docs/side.md): its own stream and commands, never the main input --------
+    @app.get("/side/events")
+    async def side_events(request: Request, wait: float | None = None, after: str | None = None):
+        authorize(request)
+        return sse(request, session.side_events, session.side_events_after, wait, after)
+
+    @app.get("/side")
+    def side_view(request: Request):
+        authorize(request)
+        return session.side_snapshot()
+
+    def op_field(value):
+        op_id = value.get("op_id")
+        if not isinstance(op_id, str) or not OP_ID.match(op_id):
+            raise HTTPException(400, "op_id must be 1-64 letters, digits, '-' or '_' (one per submission)")
+        return op_id
+
+    def side_reply(result):
+        ok = result.get("result") in ("accepted", "duplicate", "stopped") or result.get("attempts") is not None
+        return JSONResponse(result, status_code=200 if ok else 409)
+
+    @app.post("/side/messages")
+    async def side_message(request: Request):
+        value = await body(request)
+        text, op_id = text_field(value, "text").strip(), op_field(value)
+        return side_reply(await run_in_threadpool(lambda: session.side_ask(text, op_id=op_id)))
+
+    @app.post("/side/retry")
+    async def side_retry(request: Request):
+        value = await body(request)
+        op_id = op_field(value)
+        return side_reply(await run_in_threadpool(lambda: session.side_command("/side-retry", op_id=op_id)))
+
+    @app.post("/side/stop")
+    async def side_stop(request: Request):
+        await body(request)
+        return side_reply(await run_in_threadpool(lambda: session.side_command("/side-stop")))
+
+    @app.post("/side/end")
+    async def side_end(request: Request):
+        await body(request)
+        result = await run_in_threadpool(lambda: session.side_command("/side-end"))
+        return JSONResponse(result or {"result": "nothing_open"}, status_code=200)
 
     @app.post("/messages")
     async def messages(request: Request):
